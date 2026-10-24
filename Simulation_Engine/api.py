@@ -27,6 +27,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/")
+def root():
+    return {
+        "status": "online",
+        "service": "SPOT Simulation Engine",
+        "docs": "/docs"
+    }
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
 class ProcessInput(BaseModel):
     process_json: dict
     config: dict = None
