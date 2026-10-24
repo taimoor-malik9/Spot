@@ -1,0 +1,399 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&display=swap');
+
+.spot-auth {
+  font-family: 'Manrope', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: #5A5A72;
+  min-height: 100vh;
+  width: 100%;
+  display: flex;
+  background-color: #ffffff;
+  box-sizing: border-box;
+}
+
+.spot-auth * {
+  box-sizing: border-box;
+}
+
+/* Left Column */
+.spot-auth-left {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 32px 48px;
+  background-color: #ffffff;
+  min-height: 100vh;
+  overflow-y: auto;
+}
+
+@media (max-width: 640px) {
+  .spot-auth-left {
+    padding: 24px 20px;
+  }
+}
+
+.spot-auth-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-bottom: 24px;
+}
+
+.spot-auth-header-link {
+  font-size: 14px;
+  font-weight: 600;
+  color: #5A5A72;
+  text-decoration: none;
+}
+
+.spot-auth-header-link a {
+  color: #5B3FE0;
+  text-decoration: none;
+  font-weight: 700;
+  margin-left: 6px;
+}
+
+.spot-auth-header-link a:hover {
+  text-decoration: underline;
+}
+
+/* Form Container */
+.spot-auth-form-shell {
+  width: 100%;
+  max-width: 400px;
+  margin: auto;
+  padding: 20px 0;
+}
+
+.spot-auth-heading {
+  font-size: 28px;
+  font-weight: 800;
+  color: #16162A;
+  margin: 0 0 24px 0;
+  line-height: 1.25;
+}
+
+/* Server alert */
+.spot-auth-alert {
+  background-color: #FEF3F2;
+  border: 1px solid #FECDCA;
+  color: #B42318;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 13.5px;
+  font-weight: 600;
+  margin-bottom: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.spot-auth-success-alert {
+  background-color: #ECFDF3;
+  border: 1px solid #A6F4C5;
+  color: #027A48;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 13.5px;
+  font-weight: 600;
+  margin-bottom: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Buttons */
+.spot-auth-google-btn {
+  width: 100%;
+  height: 48px;
+  background-color: #ffffff;
+  border: 1px solid #D5D3E6;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #2B2B45;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  outline: none;
+}
+
+.spot-auth-google-btn:hover:not(:disabled) {
+  background-color: #F8F9FD;
+  border-color: #BEBAD8;
+}
+
+.spot-auth-google-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.spot-auth-google-btn:focus-visible {
+  outline: 2px solid #5B3FE0;
+  outline-offset: 2px;
+}
+
+.spot-auth-divider {
+  display: flex;
+  align-items: center;
+  margin: 20px 0;
+  color: #8C8CA1;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.spot-auth-divider::before,
+.spot-auth-divider::after {
+  content: "";
+  flex: 1;
+  border-bottom: 1px solid #E5E4F0;
+}
+
+.spot-auth-divider span {
+  padding: 0 12px;
+}
+
+/* Form fields */
+.spot-auth-field {
+  margin-bottom: 18px;
+  position: relative;
+}
+
+.spot-auth-label {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  color: #2B2B45;
+  margin-bottom: 6px;
+}
+
+.spot-auth-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.spot-auth-input {
+  width: 100%;
+  height: 46px;
+  background-color: #ffffff;
+  border: 1px solid #D5D3E6;
+  border-radius: 10px;
+  padding: 0 14px;
+  font-size: 15px;
+  font-family: inherit;
+  color: #16162A;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  outline: none;
+}
+
+.spot-auth-input::placeholder {
+  color: #6B6B85;
+}
+
+.spot-auth-input:focus {
+  border-color: #5B3FE0;
+  outline: 2px solid #5B3FE0;
+  outline-offset: 0;
+}
+
+.spot-auth-input.has-error {
+  border-color: #B42318;
+}
+
+.spot-auth-toggle-pwd {
+  position: absolute;
+  right: 12px;
+  background: none;
+  border: none;
+  color: #6B6B85;
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.spot-auth-toggle-pwd:hover {
+  color: #16162A;
+}
+
+.spot-auth-error-msg {
+  color: #B42318;
+  font-size: 13px;
+  margin-top: 5px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 500;
+}
+
+/* Password checklist (2x2 grid) */
+.spot-auth-pwd-checklist {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  background-color: #F8F9FD;
+  border-radius: 8px;
+  border: 1px solid #EBE9F5;
+}
+
+.spot-auth-pwd-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: #6B6B85;
+  font-weight: 600;
+  transition: color 0.15s ease;
+}
+
+.spot-auth-pwd-item.met {
+  color: #0B7A6B;
+}
+
+/* Row options (Remember me / Forgot password) */
+.spot-auth-row-options {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 18px 0 24px 0;
+  font-size: 13.5px;
+}
+
+.spot-auth-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #5A5A72;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.spot-auth-checkbox {
+  width: 17px;
+  height: 17px;
+  border-radius: 4px;
+  border: 1.5px solid #D5D3E6;
+  accent-color: #5B3FE0;
+  cursor: pointer;
+}
+
+.spot-auth-forgot-link {
+  color: #5B3FE0;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 13.5px;
+}
+
+.spot-auth-forgot-link:hover {
+  text-decoration: underline;
+}
+
+/* Submit button */
+.spot-auth-primary-btn {
+  width: 100%;
+  height: 48px;
+  background: linear-gradient(135deg, #5B3FE0, #6D4DF0);
+  border: none;
+  border-radius: 10px;
+  font-size: 15.5px;
+  font-weight: 700;
+  color: #ffffff;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(91, 63, 224, 0.28);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+  outline: none;
+}
+
+.spot-auth-primary-btn:hover:not(:disabled) {
+  box-shadow: 0 6px 18px rgba(91, 63, 224, 0.36);
+  transform: translateY(-1px);
+}
+
+.spot-auth-primary-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.spot-auth-primary-btn:focus-visible {
+  outline: 2px solid #5B3FE0;
+  outline-offset: 2px;
+}
+
+/* Guest link under form */
+.spot-auth-guest-link-box {
+  margin-top: 18px;
+  text-align: center;
+}
+
+.spot-auth-guest-link {
+  background: none;
+  border: none;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #6B6B85;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 4px 8px;
+  transition: color 0.15s ease;
+  font-family: inherit;
+}
+
+.spot-auth-guest-link:hover {
+  color: #5B3FE0;
+}
+
+/* Left Footer */
+.spot-auth-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-top: 32px;
+  font-size: 13px;
+  color: #8C8CA1;
+}
+
+.spot-auth-footer-links {
+  display: flex;
+  gap: 16px;
+}
+
+.spot-auth-footer-links a {
+  color: #8C8CA1;
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+.spot-auth-footer-links a:hover {
+  color: #5A5A72;
+}
+
+/* Right Column (Hero / Showcase Panel) */
+.spot-auth-right {
+  flex: 1.08;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+
+@media (max-width: 900px) {
+  .spot-auth-right {
+    display: none;
+  }
+}
+

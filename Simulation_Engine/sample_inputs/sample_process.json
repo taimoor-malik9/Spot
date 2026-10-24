@@ -1,0 +1,22 @@
+{
+  "nodes": [
+    { "id": "start_1", "type": "start", "label": "Start" },
+    { "id": "task_1", "type": "task", "label": "Review Application", "duration_min": 3, "duration_max": 7, "resource": "person" },
+    { "id": "gw_1", "type": "exclusive-gateway", "label": "Approval Decision", "gateway_type": "XOR" },
+    { "id": "task_2", "type": "task", "label": "Approve", "duration_min": 1, "duration_max": 3, "resource": "computer" },
+    { "id": "task_3", "type": "task", "label": "Reject", "duration_min": 1, "duration_max": 2, "resource": "person" },
+    { "id": "end_1", "type": "end", "label": "End" }
+  ],
+  "edges": [
+    { "source": "start_1", "target": "task_1" },
+    { "source": "task_1", "target": "gw_1" },
+    { "source": "gw_1", "target": "task_2", "probability": 0.7 },
+    { "source": "gw_1", "target": "task_3", "probability": 0.3 },
+    { "source": "task_2", "target": "end_1" },
+    { "source": "task_3", "target": "end_1" }
+  ],
+  "resources": {
+    "person": 2,
+    "computer": 1
+  }
+}
