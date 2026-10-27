@@ -71,7 +71,11 @@ export default function Login() {
     setServerError('');
     setIsGoogleLoading(true);
     try {
-      await googleLogin(codeResponse.code);
+      const res = await googleLogin(codeResponse.code);
+      if (res?.requireSecurityQuestions) {
+        navigate('/signup', { state: { googleSignupData: res }, replace: true });
+        return;
+      }
       const target = location.state?.from?.pathname || '/model';
       navigate(target, { replace: true });
     } catch (err) {

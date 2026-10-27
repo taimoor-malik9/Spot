@@ -22,7 +22,7 @@ let validateBpmnFn = null;
 async function getValidateBpmn() {
   if (!validateBpmnFn) {
     const validatorPath = path.resolve(__dirname, '../../Mystery_Frontend/src/lib/intake/validateBpmn.js');
-    const mod = await import(validatorPath);
+    const mod = await import(require('url').pathToFileURL(path.resolve(validatorPath)).href);
     validateBpmnFn = mod.validateBpmn;
   }
   return validateBpmnFn;

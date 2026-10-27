@@ -13,7 +13,7 @@ let compileBpmnModule = null;
 async function getCompiler() {
   if (!compileBpmnModule) {
     const compilerPath = path.resolve(__dirname, '../../Mystery_Frontend/src/lib/intake/compileBpmn.js');
-    compileBpmnModule = await import(compilerPath);
+    compileBpmnModule = await import(require('url').pathToFileURL(path.resolve(compilerPath)).href);
   }
   return compileBpmnModule;
 }
@@ -22,7 +22,7 @@ let validateBpmnModule = null;
 async function getValidator() {
   if (!validateBpmnModule) {
     const validatorPath = path.resolve(__dirname, '../../Mystery_Frontend/src/lib/intake/validateBpmn.js');
-    validateBpmnModule = await import(validatorPath);
+    validateBpmnModule = await import(require('url').pathToFileURL(path.resolve(validatorPath)).href);
   }
   return validateBpmnModule;
 }

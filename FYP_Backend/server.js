@@ -240,12 +240,7 @@ app.post('/api/process/:id', requireAuth, async (req, res) => {
     }
 });
 
-// ==================== ROOT & HEALTH CHECK ====================
-app.get('/', (req, res) => res.json({
-  status: 'online',
-  message: 'SPOT Backend API is operational',
-  health: '/health'
-}));
+// ==================== HEALTH CHECK ====================
 app.get('/health', (req, res) => res.json({ status: 'Server running' }));
 
 const PORT = process.env.PORT || 5000;

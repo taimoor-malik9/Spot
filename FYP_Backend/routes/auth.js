@@ -202,9 +202,9 @@ router.post('/login', authLimiter, async (req, res) => {
 // POST /api/auth/google
 router.post('/google', async (req, res) => {
   try {
-    const { code, credential } = req.body || {};
-    if (!code && !credential) {
-      return res.status(400).json({ error: 'Authorization code or credential is required' });
+    const { code, credential, googleSignupToken, securityQuestions, mode } = req.body || {};
+    if (!code && !credential && !googleSignupToken) {
+      return res.status(400).json({ error: 'Authorization code, credential, or signup token is required' });
     }
 
     const clientId = process.env.GOOGLE_CLIENT_ID;
@@ -215,61 +215,82 @@ router.post('/google', async (req, res) => {
       return res.status(500).json({ error: 'Google client ID not configured on server' });
     }
 
-    let idToken = credential;
+    let googleId, normalizedEmail, name, picture;
 
-    if (code) {
-      if (!clientSecret || clientSecret.includes('placeholder')) {
-        console.error('❌ GOOGLE_CLIENT_SECRET is missing or set to placeholder in FYP_Backend/.env');
-        return res.status(400).json({ error: 'Google client secret not configured on server' });
-      }
-
-      const oauth2Client = new OAuth2Client(clientId, clientSecret, 'postmessage');
-      let tokens;
+    if (googleSignupToken) {
+      let decoded;
       try {
-        const tokenRes = await oauth2Client.getToken(code);
-        tokens = tokenRes.tokens;
-      } catch (tokenErr) {
-        console.error('Google token exchange error:', tokenErr.message);
-        if (tokenErr.message.includes('invalid_client')) {
-          return res.status(401).json({ error: 'Invalid Google client secret on server' });
+        decoded = jwt.verify(googleSignupToken, process.env.JWT_SECRET);
+      } catch (err) {
+        return res.status(400).json({ error: 'Google signup session expired. Please sign in again.' });
+      }
+      if (!decoded || decoded.purpose !== 'google-signup') {
+        return res.status(400).json({ error: 'Invalid signup token.' });
+      }
+      googleId = decoded.googleId;
+      normalizedEmail = decoded.email;
+      name = decoded.name;
+      picture = decoded.picture || null;
+    } else {
+      let idToken = credential;
+
+      if (code) {
+        if (!clientSecret || clientSecret.includes('placeholder')) {
+          console.error('❌ GOOGLE_CLIENT_SECRET is missing or set to placeholder in FYP_Backend/.env');
+          return res.status(400).json({ error: 'Google client secret not configured on server' });
         }
-        if (tokenErr.message.includes('invalid_grant')) {
-          return res.status(400).json({ error: 'Google authorization code expired' });
+
+        const oauth2Client = new OAuth2Client(clientId, clientSecret, 'postmessage');
+        let tokens;
+        try {
+          const tokenRes = await oauth2Client.getToken(code);
+          tokens = tokenRes.tokens;
+        } catch (tokenErr) {
+          console.error('Google token exchange error:', tokenErr.message);
+          if (tokenErr.message.includes('invalid_client')) {
+            return res.status(401).json({ error: 'Invalid Google client secret on server' });
+          }
+          if (tokenErr.message.includes('invalid_grant')) {
+            return res.status(400).json({ error: 'Google authorization code expired' });
+          }
+          return res.status(400).json({ error: tokenErr.message || 'Google token exchange failed' });
         }
-        return res.status(400).json({ error: tokenErr.message || 'Google token exchange failed' });
+
+        if (!tokens || !tokens.id_token) {
+          return res.status(400).json({ error: 'Failed to retrieve Google token' });
+        }
+        idToken = tokens.id_token;
       }
 
-      if (!tokens || !tokens.id_token) {
-        return res.status(400).json({ error: 'Failed to retrieve Google token' });
+      const oauth2Client = new OAuth2Client(clientId);
+      const ticket = await oauth2Client.verifyIdToken({
+        idToken,
+        audience: clientId,
+      });
+
+      const payload = ticket.getPayload();
+      if (!payload || !payload.email) {
+        console.warn('Google ID token does not contain an email address');
+        return res.status(401).json({ error: 'Invalid Google account data' });
       }
-      idToken = tokens.id_token;
+
+      if (payload.email_verified === false) {
+        console.warn(`Google account email ${payload.email} is not verified`);
+        return res.status(401).json({ error: 'Google email not verified' });
+      }
+
+      googleId = payload.sub;
+      normalizedEmail = payload.email.trim().toLowerCase();
+      name = payload.name || payload.given_name || normalizedEmail.split('@')[0];
+      picture = payload.picture || null;
     }
-
-    const oauth2Client = new OAuth2Client(clientId);
-    const ticket = await oauth2Client.verifyIdToken({
-      idToken,
-      audience: clientId,
-    });
-
-    const payload = ticket.getPayload();
-    if (!payload || !payload.email) {
-      console.warn('Google ID token does not contain an email address');
-      return res.status(401).json({ error: 'Invalid Google account data' });
-    }
-
-    if (payload.email_verified === false) {
-      console.warn(`Google account email ${payload.email} is not verified`);
-      return res.status(401).json({ error: 'Google email not verified' });
-    }
-
-    const googleId = payload.sub;
-    const normalizedEmail = payload.email.trim().toLowerCase();
-    const name = payload.name || payload.given_name || normalizedEmail.split('@')[0];
-    const picture = payload.picture || null;
 
     let user = await User.findOne({ email: normalizedEmail });
 
     if (user) {
+      if (mode === 'signup') {
+        return res.status(409).json({ error: 'You already have an account. Please log in.' });
+      }
       let changed = false;
       if (!user.googleId) {
         user.googleId = googleId;
@@ -283,12 +304,52 @@ router.post('/google', async (req, res) => {
         await user.save();
       }
     } else {
+      if (!securityQuestions) {
+        const tempToken = jwt.sign(
+          { googleId, email: normalizedEmail, name, picture, purpose: 'google-signup' },
+          process.env.JWT_SECRET,
+          { expiresIn: '15m' }
+        );
+        return res.json({
+          requireSecurityQuestions: true,
+          googleSignupToken: tempToken,
+          email: normalizedEmail,
+          name
+        });
+      }
+
+      if (!Array.isArray(securityQuestions) || securityQuestions.length !== 2) {
+        return res.status(400).json({ error: 'Choose two questions' });
+      }
+
+      const q1Id = securityQuestions[0]?.questionId;
+      const q2Id = securityQuestions[1]?.questionId;
+      const validIds = SECURITY_QUESTIONS.map(q => q.id);
+
+      if (!validIds.includes(q1Id) || !validIds.includes(q2Id) || q1Id === q2Id) {
+        return res.status(400).json({ error: 'Choose two different questions' });
+      }
+
+      const a1Norm = normalizeAnswer(securityQuestions[0]?.answer);
+      const a2Norm = normalizeAnswer(securityQuestions[1]?.answer);
+
+      if (a1Norm.length < 3 || a2Norm.length < 3) {
+        return res.status(400).json({ error: 'Answer is too short' });
+      }
+
+      const answer1Hash = await bcrypt.hash(a1Norm, 12);
+      const answer2Hash = await bcrypt.hash(a2Norm, 12);
+
       user = new User({
         name,
         email: normalizedEmail,
         googleId,
         provider: 'google',
         picture,
+        securityQuestions: [
+          { questionId: q1Id, answerHash: answer1Hash },
+          { questionId: q2Id, answerHash: answer2Hash }
+        ]
       });
       await user.save();
     }

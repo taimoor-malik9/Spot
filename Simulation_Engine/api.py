@@ -27,13 +27,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-def root():
-    return {
-        "status": "online",
-        "service": "SPOT Simulation Engine",
-        "docs": "/docs"
-    }
 
 @app.get("/health")
 def health():

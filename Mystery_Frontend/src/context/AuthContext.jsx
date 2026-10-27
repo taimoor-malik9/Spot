@@ -135,16 +135,25 @@ export function AuthProvider({ children }) {
     return data.user;
   };
 
-  const googleLogin = async (code) => {
+  const googleLogin = async (codeOrPayload) => {
+    const body = typeof codeOrPayload === 'string'
+      ? { code: codeOrPayload }
+      : codeOrPayload;
     const res = await fetch('/api/auth/google', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code })
+      body: JSON.stringify(body)
     });
 
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      throw new Error(data.error || 'Google login failed');
+      const err = new Error(data.error || 'Google login failed');
+      err.status = res.status;
+      throw err;
+    }
+
+    if (data.requireSecurityQuestions) {
+      return data;
     }
 
     saveAuthSuccess(data.token, data.user, true);
