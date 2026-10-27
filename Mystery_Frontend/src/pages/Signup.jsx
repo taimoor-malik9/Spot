@@ -4,6 +4,7 @@ import { useGoogleLogin } from '@react-oauth/google';
 import { Eye, EyeOff, Check, X, Loader2, AlertCircle } from 'lucide-react';
 import SpotLogo from '@/components/SpotLogo';
 import { useAuth } from '@/context/AuthContext';
+import { request } from '@/lib/apiService';
 import AuthShowcase from '@/components/AuthShowcase';
 import '@/styles/auth.css';
 
@@ -45,8 +46,7 @@ export default function Signup() {
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
 
   useEffect(() => {
-    fetch('/api/auth/security-questions')
-      .then(res => res.json())
+    request('/api/auth/security-questions')
       .then(data => {
         if (Array.isArray(data) && data.length > 0) {
           setAvailableQuestions(data);

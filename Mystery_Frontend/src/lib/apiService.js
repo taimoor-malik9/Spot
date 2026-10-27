@@ -9,7 +9,7 @@ function getFullUrl(path) {
   return BASE_URL === '/api' ? `/api${cleanPath}` : `${BASE_URL}${cleanPath}`;
 }
 
-async function request(path, options = {}) {
+export async function request(path, options = {}) {
   const url = getFullUrl(path);
   const token = typeof window !== 'undefined'
     ? (localStorage.getItem('spot_token') || sessionStorage.getItem('spot_token'))
@@ -49,7 +49,10 @@ async function request(path, options = {}) {
         }
       }
       const errorMsg = data?.error || data?.message || `HTTP ${res.status}`;
-      throw new Error(errorMsg);
+      const error = new Error(errorMsg);
+      error.status = res.status;
+      error.code = data?.code;
+      throw error;
     }
 
     return data;
