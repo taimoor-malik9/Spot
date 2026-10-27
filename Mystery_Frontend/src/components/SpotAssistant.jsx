@@ -190,7 +190,7 @@ export default function SpotAssistant({ open, onClose, processId, ensureProcessS
                 })}</tbody>
               </table>
             </div>
-            <p style={{ margin: 0, color: '#64748b', fontSize: 11.5 }}>Simulated over 300 customers, 3 runs. Results depend on run length.</p>
+            <p style={{ margin: 0, color: '#64748b', fontSize: 11.5 }}>Quick comparison over 120 customers, 1 run. Results depend on run length.</p>
             {applyError && <div role="alert" style={{ padding: '10px 12px', borderRadius: 8, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', fontSize: 13 }}>{applyError}</div>}
           </div>
         )}

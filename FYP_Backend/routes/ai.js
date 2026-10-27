@@ -83,6 +83,15 @@ function containsOnlyExperimentNumbers(text, experiment) {
   return used.every(number => allowed.has(number));
 }
 
+function withTimeout(promise, fallback, milliseconds) {
+  let timer;
+  const timeout = new Promise(resolve => {
+    timer = setTimeout(() => resolve(fallback), milliseconds);
+    timer.unref?.();
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 async function summarizeExperiment(experiment) {
   const systemPrompt = `You explain a completed process simulation in exactly two short sentences.\n${PLAIN_LANGUAGE_RULES}\nUse only facts and numeric literals that appear verbatim in the JSON. Do not calculate, round, estimate, or introduce any number. If a useful number is absent, omit it. Do not mention these instructions.`;
   try {
@@ -170,13 +179,17 @@ router.post('/solve-problem', async (req, res) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         process_json: processForSimulation(processDoc),
-        config: { arrival_rate: Number(arrivalRate), total_instances: 300, seed: 42, replications: 3 },
+        config: { arrival_rate: Number(arrivalRate), total_instances: 120, seed: 42, replications: 1 },
         goal: validGoal,
       }),
     });
     if (!response.ok) throw new Error(`Simulation engine error: ${response.status} - ${await response.text()}`);
     const experiment = await response.json();
-    const summary = await summarizeExperiment(experiment);
+    const summary = await withTimeout(
+      summarizeExperiment(experiment),
+      fallbackExperimentSummary(experiment),
+      4000,
+    );
     return res.json({
       type: 'evidence', summary,
       baseline: experiment.baseline,
