@@ -2,10 +2,12 @@
  * apiService.js - Clean version with proxy support
  */
 
-const configuredBaseUrl = import.meta.env?.VITE_API_URL || '/api';
-const BASE_URL = configuredBaseUrl === '/api'
+const configuredBaseUrl = (import.meta.env?.VITE_API_URL || '/api').trim().replace(/\/+$/, '');
+const BASE_URL = configuredBaseUrl === '' || configuredBaseUrl === '/api'
   ? '/api'
-  : configuredBaseUrl.replace(/\/+$/, '');
+  : configuredBaseUrl.endsWith('/api')
+    ? configuredBaseUrl
+    : `${configuredBaseUrl}/api`;
 
 function getFullUrl(path) {
   let cleanPath = path.startsWith('/api') ? path.replace(/^\/api/, '') : path;
