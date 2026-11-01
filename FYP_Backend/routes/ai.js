@@ -267,8 +267,8 @@ router.post('/solve-problem', async (req, res) => {
     if (!response.ok) throw new Error(`Simulation engine error: ${response.status} - ${await response.text()}`);
     const experiment = await response.json();
     const [summary, explanation] = await Promise.all([
-      withTimeout(summarizeExperiment(experiment), fallbackExperimentSummary(experiment), 4000),
-      withTimeout(explainTargetGap(experiment), experiment.reason, 4000),
+      withTimeout(summarizeExperiment(experiment), fallbackExperimentSummary(experiment), 15000),
+      withTimeout(explainTargetGap(experiment), experiment.reason, 15000),
     ]);
     return res.json({
       type: 'evidence',
