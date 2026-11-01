@@ -3,6 +3,28 @@
 function processForSimulation(processDoc) {
   const processData = typeof processDoc.toJSON === 'function' ? processDoc.toJSON() : processDoc;
 
+  const nodePoolMap = {};
+  (processData.nodes || []).forEach(node => {
+    nodePoolMap[node.id] = node.pool || node.data?.pool || null;
+  });
+
+  const rawEdges = processData.edges || [];
+  const msgEdges = rawEdges.filter(e =>
+    e.flowType === 'message' || e.type === 'message' || e.data?.flowType === 'message'
+  );
+
+  const outMsgSources = new Set(
+    msgEdges
+      .filter(e => nodePoolMap[e.source] && nodePoolMap[e.target] && nodePoolMap[e.source] !== nodePoolMap[e.target])
+      .map(e => e.source)
+  );
+
+  const inMsgTargets = new Set(
+    msgEdges
+      .filter(e => nodePoolMap[e.source] && nodePoolMap[e.target] && nodePoolMap[e.source] !== nodePoolMap[e.target])
+      .map(e => e.target)
+  );
+
   const cleanNodes = (processData.nodes || []).map(node => {
     const d = node.data || {};
     let taskResources = d.resources || {};
@@ -20,6 +42,7 @@ function processForSimulation(processDoc) {
     return {
       id: node.id,
       type: node.type,
+      pool: node.pool || node.data?.pool || null,
       data: {
         label: d.label || node.label || '',
         duration: (d.duration !== undefined && d.duration !== null) ? Number(d.duration) : ((node.duration !== undefined && node.duration !== null) ? Number(node.duration) : null),
@@ -32,18 +55,28 @@ function processForSimulation(processDoc) {
     };
   });
 
-  const cleanEdges = (processData.edges || []).map(edge => {
-    let edgeData = edge.data || {};
-    if (typeof edgeData === 'string') {
-      try { edgeData = JSON.parse(edgeData); } catch { edgeData = {}; }
-    }
-    return {
-      source: edge.source,
-      target: edge.target,
-      probability: edgeData.probability ?? null,
-      data: edgeData,
-    };
-  });
+  const cleanEdges = rawEdges
+    .filter(edge => {
+      const src = edge.source;
+      const tgt = edge.target;
+      const isIntraPool = nodePoolMap[src] && nodePoolMap[tgt] && nodePoolMap[src] === nodePoolMap[tgt];
+      if (isIntraPool && outMsgSources.has(src) && inMsgTargets.has(tgt)) {
+        return false;
+      }
+      return true;
+    })
+    .map(edge => {
+      let edgeData = edge.data || {};
+      if (typeof edgeData === 'string') {
+        try { edgeData = JSON.parse(edgeData); } catch { edgeData = {}; }
+      }
+      return {
+        source: edge.source,
+        target: edge.target,
+        probability: edgeData.probability ?? null,
+        data: edgeData,
+      };
+    });
 
   return { resources: processData.resources || [], nodes: cleanNodes, edges: cleanEdges };
 }

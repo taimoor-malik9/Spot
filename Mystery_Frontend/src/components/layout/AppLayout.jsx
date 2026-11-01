@@ -1,9 +1,12 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useLocation, Link, useNavigate } from 'react-router-dom';
-import { Shuffle, Play, BarChart2, Grid2X2, Lock } from 'lucide-react';
+import { Shuffle, Play, BarChart2, Grid2X2, Lock, LayoutDashboard, User, LogOut, ChevronDown, Sliders } from 'lucide-react';
 import { SpotLogo } from '../SpotLogo';
 import { useAuth } from '@/context/AuthContext';
 import { GuestLockModal } from '../auth/GuestLockModal';
+import { useAnalystView } from '@/lib/labels';
+import '../../styles/account-pages.css';
 
 /**
  * App layout component with navigation
@@ -11,6 +14,7 @@ import { GuestLockModal } from '../auth/GuestLockModal';
  * @param {React.ReactNode} props.children - Child components
  */
 const navItems = [
+  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/model', label: 'Model', icon: Grid2X2 },
   { href: '/scenarios', label: 'Scenarios', icon: Shuffle },
   { href: '/simulate', label: 'Simulate', icon: Play },
@@ -22,14 +26,67 @@ export function AppLayout({ children }) {
   const navigate = useNavigate();
   const pathname = location.pathname;
   const { user, isGuest, logout } = useAuth();
+  const [isAnalystView, toggleAnalystView] = useAnalystView(user?.id || user?._id);
 
   const [lockModalOpen, setLockModalOpen] = useState(false);
   const [lockMessage, setLockMessage] = useState(undefined);
+  const [avatarMenuOpen, setAvatarMenuOpen] = useState(false);
+  const avatarButtonRef = useRef(null);
+  const menuDropdownRef = useRef(null);
+  const [menuCoords, setMenuCoords] = useState({ top: 0, right: 0 });
+
+  const updateMenuPosition = useCallback(() => {
+    if (avatarButtonRef.current) {
+      const rect = avatarButtonRef.current.getBoundingClientRect();
+      const top = rect.bottom + 8;
+      const right = Math.max(8, window.innerWidth - rect.right);
+      setMenuCoords({ top, right });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!avatarMenuOpen) return;
+
+    updateMenuPosition();
+
+    function handleClickOutside(event) {
+      if (
+        avatarButtonRef.current &&
+        !avatarButtonRef.current.contains(event.target) &&
+        menuDropdownRef.current &&
+        !menuDropdownRef.current.contains(event.target)
+      ) {
+        setAvatarMenuOpen(false);
+      }
+    }
+
+    function handleKeyDown(event) {
+      if (event.key === 'Escape') {
+        setAvatarMenuOpen(false);
+      }
+    }
+
+    function handleResizeOrScroll() {
+      updateMenuPosition();
+    }
+
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('resize', handleResizeOrScroll);
+    window.addEventListener('scroll', handleResizeOrScroll, true);
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('resize', handleResizeOrScroll);
+      window.removeEventListener('scroll', handleResizeOrScroll, true);
+    };
+  }, [avatarMenuOpen, updateMenuPosition]);
 
   return (
     <div className="flex h-screen flex-col bg-slate-50 overflow-hidden w-full">
       {/* Top Header - Unified branding and navigation shell */}
-      <header className="bg-white px-6 py-0 flex items-center justify-between border-b border-slate-200 z-10 flex-shrink-0 h-[56px]">
+      <header style={{ padding: '0 24px' }} className="bg-white flex items-center justify-between border-b border-slate-200 z-10 flex-shrink-0 h-[56px]">
         <Link to="/model" className="flex items-center hover:opacity-90 transition-opacity min-w-[200px]">
           <SpotLogo size="md" />
         </Link>
@@ -72,27 +129,140 @@ export function AppLayout({ children }) {
           })}
         </nav>
 
-        {/* Right: User area */}
-        <div className="flex items-center justify-end min-w-[200px] gap-3">
+        {/* Right: User area & Analyst View Switch */}
+        <div className="flex items-center justify-end min-w-[200px] gap-4">
+          {/* Analyst View Switch (stored per user in localStorage, default off) */}
+          <div className="flex items-center gap-2" title="Toggle technical simulation analyst terms versus plain business language">
+            <span className="text-xs font-semibold text-slate-500 hidden sm:inline select-none">
+              Analyst view
+            </span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={isAnalystView}
+              aria-label="Toggle Analyst view"
+              onClick={() => toggleAnalystView()}
+              style={{
+                width: 36,
+                height: 20,
+                borderRadius: 10,
+                background: isAnalystView ? '#5E43F3' : '#cbd5e1',
+                position: 'relative',
+                transition: 'background 0.2s',
+                border: 'none',
+                cursor: 'pointer',
+                padding: 2,
+                display: 'inline-flex',
+                alignItems: 'center',
+              }}
+            >
+              <div
+                style={{
+                  width: 16,
+                  height: 16,
+                  borderRadius: '50%',
+                  background: '#ffffff',
+                  transform: isAnalystView ? 'translateX(16px)' : 'translateX(0)',
+                  transition: 'transform 0.2s',
+                  boxShadow: '0 1px 2px rgba(0,0,0,0.2)',
+                }}
+              />
+            </button>
+          </div>
+
           {user ? (
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-full bg-violet-100 text-[#5E43F3] font-bold text-sm flex items-center justify-center border border-violet-200">
+            <div className="relative">
+              <button
+                ref={avatarButtonRef}
+                type="button"
+                onClick={() => setAvatarMenuOpen((prev) => !prev)}
+                className="flex items-center gap-2 p-1 pl-1.5 pr-2.5 rounded-full hover:bg-slate-100 transition-colors border border-transparent hover:border-slate-200 cursor-pointer"
+                title="Account menu"
+              >
+                <div className="w-8 h-8 rounded-full bg-violet-100 text-[#5E43F3] font-bold text-sm flex items-center justify-center border border-violet-200 flex-shrink-0">
                   {user.name ? user.name.charAt(0).toUpperCase() : 'U'}
                 </div>
-                <span className="text-sm font-semibold text-slate-700 max-w-[120px] truncate" title={user.name}>
+                <span className="text-sm font-semibold text-slate-700 max-w-[120px] truncate">
                   {user.name}
                 </span>
-              </div>
-              <button
-                onClick={() => {
-                  logout();
-                  navigate('/');
-                }}
-                className="text-xs font-semibold text-slate-500 hover:text-red-600 transition-colors ml-1 cursor-pointer"
-              >
-                Log out
+                <ChevronDown size={14} className="text-slate-400" />
               </button>
+
+              {/* Avatar Dropdown Menu - rendered via Portal */}
+              {avatarMenuOpen &&
+                createPortal(
+                  <div
+                    ref={menuDropdownRef}
+                    style={{
+                      position: 'fixed',
+                      top: `${menuCoords.top}px`,
+                      right: `${menuCoords.right}px`,
+                      zIndex: 99999,
+                    }}
+                    className="spot-menu bg-white rounded-2xl shadow-xl border border-slate-200/90 animate-in fade-in zoom-in-95 duration-100"
+                  >
+                    <div className="spot-menu-header">
+                      <p className="text-xs font-semibold text-slate-900 truncate">{user.name}</p>
+                      <p className="text-[11px] text-slate-400 truncate">{user.email}</p>
+                    </div>
+
+                    <div className="py-1 flex flex-col gap-0.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAvatarMenuOpen(false);
+                          navigate('/profile');
+                        }}
+                        className="spot-menu-item text-slate-700 hover:bg-violet-50 hover:text-[#5E43F3] transition-colors"
+                      >
+                        <User size={15} />
+                        <span>Profile Settings</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAvatarMenuOpen(false);
+                          navigate('/dashboard');
+                        }}
+                        className="spot-menu-item text-slate-700 hover:bg-violet-50 hover:text-[#5E43F3] transition-colors"
+                      >
+                        <LayoutDashboard size={15} />
+                        <span>Dashboard</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => toggleAnalystView()}
+                        className="spot-menu-item text-slate-700 hover:bg-violet-50 hover:text-[#5E43F3] transition-colors flex items-center justify-between"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Sliders size={15} />
+                          <span>Analyst View</span>
+                        </div>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${isAnalystView ? 'bg-violet-100 text-[#5E43F3]' : 'bg-slate-100 text-slate-500'}`}>
+                          {isAnalystView ? 'ON' : 'OFF'}
+                        </span>
+                      </button>
+                    </div>
+
+                    <div className="spot-menu-footer">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAvatarMenuOpen(false);
+                          logout();
+                          navigate('/');
+                        }}
+                        className="spot-menu-item text-slate-600 hover:bg-red-50 hover:text-red-600 transition-colors"
+                      >
+                        <LogOut size={15} />
+                        <span>Log out</span>
+                      </button>
+                    </div>
+                  </div>,
+                  document.body
+                )}
             </div>
           ) : isGuest ? (
             <div className="flex items-center gap-2.5">

@@ -3,13 +3,16 @@ import { NW, NH } from './bpmnGeometry';
 /**
  * Shared BPMN glyph used by both the Model editor and the Simulate canvas.
  */
-export function Shape({ type, sel, w, h, stroke, fill, strokeWidth, glow: glowProp }) {
-  const str = stroke ?? (sel ? '#0284c7' : '#4b5563');
+export function Shape({ type, sel, w, h, stroke, fill, strokeWidth, glow: glowProp, hasError = false }) {
+  const isErr = Boolean(hasError);
+  const str = stroke ?? (isErr ? '#ef4444' : (sel ? '#0284c7' : '#4b5563'));
   const fil = fill ?? (sel ? '#e0f2fe' : '#ffffff');
-  const sw = strokeWidth ?? (sel ? 2.5 : 1.8);
-  const glow = glowProp ?? (sel
-    ? 'drop-shadow(0 0 7px rgba(2,132,199,.5))'
-    : 'drop-shadow(0 1px 3px rgba(0,0,0,.13))');
+  const sw = strokeWidth ?? (isErr ? 2.5 : (sel ? 2.5 : 1.8));
+  const glow = glowProp ?? (isErr
+    ? 'drop-shadow(0 0 7px rgba(239,68,68,.6))'
+    : (sel
+      ? 'drop-shadow(0 0 7px rgba(2,132,199,.5))'
+      : 'drop-shadow(0 1px 3px rgba(0,0,0,.13))'));
 
   const bW = 120, bH = 120;
 

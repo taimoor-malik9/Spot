@@ -32,7 +32,8 @@ def _run_single(process_json: dict, config: dict) -> dict:
     financial_summary = generate_financial_report(
         resources=resources_list,
         resource_busy_times=all_resource_busy,
-        total_sim_minutes=total_sim_time
+        total_sim_minutes=total_sim_time,
+        customers=len(all_times) if all_times else 0
     )
 
     return {

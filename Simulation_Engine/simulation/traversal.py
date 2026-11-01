@@ -107,7 +107,15 @@ def _walk(env, node_id, graph, all_times, all_task_durations, resources,
             all_task_wait_times.setdefault(current_node_id, []).append(0.0)
             all_task_queue_depths.setdefault(current_node_id, []).append(0)
             last_task_end_time = env.now
-            current_node_id = neighbors[0]["target"] if neighbors else None
+            if len(neighbors) > 1:
+                non_end = [n for n in neighbors if graph["nodes"].get(n["target"], {}).get("type") not in ("end", "end-event", "terminate-end")]
+                if non_end:
+                    cross_pool = [n for n in non_end if graph["nodes"].get(n["target"], {}).get("pool") and graph["nodes"].get(n["target"], {}).get("pool") != node.get("pool")]
+                    current_node_id = cross_pool[0]["target"] if cross_pool else non_end[0]["target"]
+                else:
+                    current_node_id = neighbors[0]["target"]
+            else:
+                current_node_id = neighbors[0]["target"] if neighbors else None
 
      
         elif node_type == "timer-catch":
@@ -145,7 +153,15 @@ def _walk(env, node_id, graph, all_times, all_task_durations, resources,
             all_task_wait_times.setdefault(current_node_id, []).append(0.0)
             all_task_queue_depths.setdefault(current_node_id, []).append(0)
             last_task_end_time = env.now
-            current_node_id = neighbors[0]["target"] if neighbors else None
+            if len(neighbors) > 1:
+                non_end = [n for n in neighbors if graph["nodes"].get(n["target"], {}).get("type") not in ("end", "end-event", "terminate-end")]
+                if non_end:
+                    cross_pool = [n for n in non_end if graph["nodes"].get(n["target"], {}).get("pool") and graph["nodes"].get(n["target"], {}).get("pool") != node.get("pool")]
+                    current_node_id = cross_pool[0]["target"] if cross_pool else non_end[0]["target"]
+                else:
+                    current_node_id = neighbors[0]["target"]
+            else:
+                current_node_id = neighbors[0]["target"] if neighbors else None
 
         # ── Tasks / Activities (all variants) ────────────────────────────
         elif node_type in ("task", "subprocess"):
@@ -253,7 +269,15 @@ def _walk(env, node_id, graph, all_times, all_task_durations, resources,
                 all_task_queue_depths.setdefault(current_node_id, []).append(0)
 
             last_task_end_time = env.now
-            current_node_id = neighbors[0]["target"] if neighbors else None
+            if len(neighbors) > 1:
+                non_end = [n for n in neighbors if graph["nodes"].get(n["target"], {}).get("type") not in ("end", "end-event", "terminate-end")]
+                if non_end:
+                    cross_pool = [n for n in non_end if graph["nodes"].get(n["target"], {}).get("pool") and graph["nodes"].get(n["target"], {}).get("pool") != node.get("pool")]
+                    current_node_id = cross_pool[0]["target"] if cross_pool else non_end[0]["target"]
+                else:
+                    current_node_id = neighbors[0]["target"]
+            else:
+                current_node_id = neighbors[0]["target"] if neighbors else None
 
         # ── Exclusive Gateway (XOR) ──────────────────────────────────────
         elif node_type in ("exclusive-gateway", "gateway"):

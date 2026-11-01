@@ -42,6 +42,13 @@ function toFriendlyError(err) {
     };
   }
 
+  if (/missing probabilities|How often does each path happen/i.test(msg)) {
+    return {
+      userMessage: "How often does each path happen? Please specify the probability or percentage for each branch of your decision.",
+      detail: msg,
+    };
+  }
+
   if (/Simulation engine error: 4\d\d/i.test(msg)) {
     return {
       userMessage: "The simulation engine rejected this process — something in the model or simulation settings isn't valid. Double-check durations, resources, and gateway probabilities.",

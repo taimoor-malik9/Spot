@@ -2,6 +2,8 @@
  * apiService.js - Clean version with proxy support
  */
 
+import { getDefaultProcessTitle } from './labels';
+
 const configuredBaseUrl = (import.meta.env?.VITE_API_URL || '/api').trim().replace(/\/+$/, '');
 const BASE_URL = configuredBaseUrl === '' || configuredBaseUrl === '/api'
   ? '/api'
@@ -30,6 +32,8 @@ export async function request(path, options = {}) {
       },
       ...options,
     });
+
+    console.log(`[API] ${options.method || 'GET'} ${path} -> HTTP ${res.status}`);
 
     const contentType = res.headers.get('content-type');
     let data = {};
@@ -132,9 +136,18 @@ export function shapeFrontendToBackend(elements, connections, title, globalResou
   const resNameMap = {};
   resourcesList.forEach(r => {
     const resName = r.displayName || r.name || r.id;
-    if (r.id) resNameMap[r.id] = resName;
-    if (r.name) resNameMap[r.name] = resName;
-    if (r.displayName) resNameMap[r.displayName] = resName;
+    if (r.id) {
+      resNameMap[r.id] = resName;
+      resNameMap[String(r.id).trim().toLowerCase()] = resName;
+    }
+    if (r.name) {
+      resNameMap[r.name] = resName;
+      resNameMap[String(r.name).trim().toLowerCase()] = resName;
+    }
+    if (r.displayName) {
+      resNameMap[r.displayName] = resName;
+      resNameMap[String(r.displayName).trim().toLowerCase()] = resName;
+    }
   });
 
   const nodes = elements
@@ -143,12 +156,26 @@ export function shapeFrontendToBackend(elements, connections, title, globalResou
       const cleanTaskRes = {};
       if (el.data?.resources && typeof el.data.resources === 'object') {
         Object.entries(el.data.resources).forEach(([k, q]) => {
-          const mapped = resNameMap[k] || (k && !k.startsWith('res_') ? k : null);
-          if (mapped) cleanTaskRes[mapped] = q;
+          if (!k) return;
+          const trimmed = String(k).trim();
+          const mapped = resNameMap[trimmed] || resNameMap[trimmed.toLowerCase()] || (trimmed && !trimmed.startsWith('res_') ? trimmed : null);
+          if (mapped) {
+            cleanTaskRes[mapped] = q;
+          } else if (trimmed) {
+            // Do not silently drop unknown resources - preserve them so pre-run validation can flag them
+            cleanTaskRes[trimmed] = q;
+          }
         });
       }
 
-      let primaryRes = el.data?.resource ? (resNameMap[el.data.resource] || (el.data.resource.startsWith('res_') ? null : el.data.resource)) : null;
+      let primaryRes = null;
+      if (el.data?.resource) {
+        const trimmed = String(el.data.resource).trim();
+        primaryRes = resNameMap[trimmed] || resNameMap[trimmed.toLowerCase()] || (trimmed.startsWith('res_') ? null : trimmed);
+        if (!primaryRes && trimmed) {
+          primaryRes = trimmed;
+        }
+      }
       if (!primaryRes && Object.keys(cleanTaskRes).length > 0) {
         primaryRes = Object.keys(cleanTaskRes)[0];
       }
@@ -156,12 +183,18 @@ export function shapeFrontendToBackend(elements, connections, title, globalResou
         cleanTaskRes[primaryRes] = 1;
       }
 
+      const nodeOrigin = el.data?.origin || el.origin || 'user';
+      const isKept = el.data?.kept !== undefined ? Boolean(el.data.kept) : (el.kept !== undefined ? Boolean(el.kept) : false);
+      const isEstimated = Boolean(el.data?.estimated ?? el.estimated);
+
       return {
         id: el.id,
         type: normaliseBpmnType(el.type),
         pool: nodePoolMap[el.id] || null,
         lane: el.lane || null,
         parent: el.parent || null,
+        origin: nodeOrigin,
+        kept: isKept,
         // FIX: preserve canvas layout across save/reload — without these,
         // every node comes back from the backend defaulted to the same
         // (100, 100) position and visually collapses onto itself.
@@ -176,6 +209,9 @@ export function shapeFrontendToBackend(elements, connections, title, globalResou
           duration_min: el.data?.duration_min != null ? Number(el.data.duration_min) : null,
           duration_max: el.data?.duration_max != null ? Number(el.data.duration_max) : null,
           duration_unit: el.data?.duration_unit || 'minutes',
+          origin: nodeOrigin,
+          kept: isKept,
+          estimated: isEstimated,
           resource: primaryRes,
           resources: cleanTaskRes,
           gateway_type: el.data?.gateway_type || null,
@@ -227,7 +263,7 @@ export function shapeFrontendToBackend(elements, connections, title, globalResou
       data: el.data || {},
     }));
 
-  return { title: title || 'Untitled Process', resources: resourcesList, nodes, edges, layoutElements };
+  return { title: title || getDefaultProcessTitle(), resources: resourcesList, nodes, edges, layoutElements };
 }
 
 export function shapeBackendToFrontend(process) {
@@ -243,26 +279,37 @@ export function shapeBackendToFrontend(process) {
     data: layout.data || {},
   }));
 
-  const nodeElements = (process.nodes || []).map(node => ({
-    id: node.id,
-    type: node.data?.customType || backendTypeToFrontend(node.type),
-    label: node.data?.label || node.id,
-    pool: node.pool || null,
-    lane: node.lane || null,
-    parent: node.parent || null,
-    position: node.position || { x: 100, y: 100 },
-    width: node.width,
-    height: node.height,
-    data: {
-      label: node.data?.label || '',
-      duration: node.data?.duration,
-      duration_min: node.data?.duration_min,
-      duration_max: node.data?.duration_max,
-      resources: node.data?.resources || {},
-      gateway_type: node.data?.gateway_type || null,
-      customType: node.data?.customType || null,
-    },
-  }));
+  const nodeElements = (process.nodes || []).map(node => {
+    const origin = node.data?.origin || node.origin || 'user';
+    const kept = node.data?.kept !== undefined ? Boolean(node.data.kept) : (node.kept !== undefined ? Boolean(node.kept) : false);
+    const estimated = Boolean(node.data?.estimated ?? node.estimated);
+    return {
+      id: node.id,
+      type: node.data?.customType || backendTypeToFrontend(node.type),
+      label: node.data?.label || node.id,
+      pool: node.pool || null,
+      lane: node.lane || null,
+      parent: node.parent || null,
+      position: node.position || { x: 100, y: 100 },
+      width: node.width,
+      height: node.height,
+      origin,
+      kept,
+      data: {
+        label: node.data?.label || '',
+        duration: node.data?.duration,
+        duration_min: node.data?.duration_min,
+        duration_max: node.data?.duration_max,
+        duration_unit: node.data?.duration_unit || 'minutes',
+        origin,
+        kept,
+        estimated,
+        resources: node.data?.resources || {},
+        gateway_type: node.data?.gateway_type || null,
+        customType: node.data?.customType || null,
+      },
+    };
+  });
 
   const elements = [...layoutElements, ...nodeElements];
 
@@ -330,6 +377,14 @@ export async function getProcess(id) {
   return request(`/api/process/${id}`);
 }
 
+export async function deleteProcess(id) {
+  return request(`/api/process/${id}`, { method: 'DELETE' });
+}
+
+export async function duplicateProcess(id) {
+  return request(`/api/process/${id}/duplicate`, { method: 'POST' });
+}
+
 // FIX (Problem 1): Accept simulationConfig and forward it to the backend.
 // The backend route is POST /api/process/:id — no URL change needed.
 export async function runSimulation(processId, simulationConfig = {}) {
@@ -378,6 +433,19 @@ export async function getScenarios(baseProcessId) {
   return request(`/api/scenario/${baseProcessId}`);
 }
 
+export async function getRecentScenarios(limit = 10) {
+  return request(`/api/scenario?limit=${limit}`);
+}
+
+export async function getAllScenarios(baseProcessId = null) {
+  const query = baseProcessId ? `?baseProcessId=${baseProcessId}&all=true` : '?all=true';
+  return request(`/api/scenario${query}`);
+}
+
+export async function duplicateScenario(scenarioId) {
+  return request(`/api/scenario/${scenarioId}/duplicate`, { method: 'POST' });
+}
+
 export async function runScenarioSimulation(scenarioId, simulationConfig = {}) {
   return request(`/api/scenario/simulate/${scenarioId}`, {
     method: 'POST',
@@ -408,5 +476,47 @@ export async function parseTypedAnswer(screenId, text, currentAnswers = {}, rawD
   return request('/api/intake/parse-answer', {
     method: 'POST',
     body: JSON.stringify({ screenId, text, currentAnswers, rawDiagram }),
+  });
+}
+
+// ─── Simulation Runs API (Module H1) ──────────────────────────────────────
+
+export async function listRuns({ processId, scenarioId, limit = 20, cursor } = {}) {
+  const params = new URLSearchParams();
+  if (processId) params.append('processId', processId);
+  if (scenarioId !== undefined && scenarioId !== null) params.append('scenarioId', scenarioId);
+  if (limit) params.append('limit', limit);
+  if (cursor) params.append('cursor', cursor);
+  const qs = params.toString();
+  return request(`/api/runs${qs ? `?${qs}` : ''}`);
+}
+
+export async function getRun(runId) {
+  return request(`/api/runs/${runId}`);
+}
+
+export async function deleteRun(runId) {
+  return request(`/api/runs/${runId}`, {
+    method: 'DELETE',
+  });
+}
+
+// ─── Profile / Auth API (Module U1) ──────────────────────────────────────
+
+export async function getProfile() {
+  return request('/api/auth/me');
+}
+
+export async function updateProfile(profileData) {
+  return request('/api/auth/me', {
+    method: 'PUT',
+    body: JSON.stringify(profileData),
+  });
+}
+
+export async function changePassword({ currentPassword, newPassword }) {
+  return request('/api/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify({ currentPassword, newPassword }),
   });
 }

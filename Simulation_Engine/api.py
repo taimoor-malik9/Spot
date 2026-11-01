@@ -52,6 +52,7 @@ class ExperimentInput(BaseModel):
     process_json: dict
     config: dict = None
     goal: str = "waiting"
+    target: dict = None
 
 VISUAL_ONLY = {
     "pool", "lane", "data-object", "data-store", "document",
@@ -98,15 +99,42 @@ def validate_process(process_json: dict):
         if n["type"] not in _TASK_TYPES:
             continue
         data = n.get("data") or n
-        has_fixed = data.get("duration") is not None
-        has_range = data.get("duration_min") is not None and data.get("duration_max") is not None
+        origin = data.get("origin") or n.get("origin") or "user"
+        kept = bool(data.get("kept") if "kept" in data else n.get("kept", False))
+
+        # Rule: origin structural is always exempt
+        if origin == "structural":
+            continue
+
+        # Rule: origin inferred and not kept is zero-time and exempt from duration error
+        if origin == "inferred" and not kept:
+            continue
+
+        # Auto-normalize ranges: swap min/max if reversed, clamp to fixed duration if present
+        d = data.get("duration")
+        d_min = data.get("duration_min")
+        d_max = data.get("duration_max")
+
+        if d_min is not None and d_max is not None:
+            try:
+                min_v = float(d_min)
+                max_v = float(d_max)
+                if min_v > max_v:
+                    min_v, max_v = max_v, min_v
+                if d is not None:
+                    d_v = float(d)
+                    min_v = min(min_v, d_v)
+                    max_v = max(max_v, d_v)
+                data["duration_min"] = min_v
+                data["duration_max"] = max_v
+            except (ValueError, TypeError):
+                pass
+
+        has_fixed = d is not None and float(d) > 0
+        has_range = data.get("duration_max") is not None and float(data["duration_max"]) > 0
 
         if not has_fixed and not has_range:
-            missing_duration.append(data.get("label") or n["id"])
-            continue  # no point range-checking a node with no duration at all
-
-        if has_range and float(data.get("duration_min")) >= float(data.get("duration_max")):
-            invalid_range.append(data.get("label") or n["id"])
+            missing_duration.append(data.get("label") or n.get("label") or n["id"])
 
     if missing_duration:
         names = ", ".join(f'"{x}"' for x in missing_duration[:5])
@@ -115,12 +143,44 @@ def validate_process(process_json: dict):
             detail=f"These tasks are missing durations: {names}. Set a duration for each task before simulating."
         )
 
-    if invalid_range:
-        names = ", ".join(f'"{x}"' for x in invalid_range[:5])
-        raise HTTPException(
-            status_code=400,
-            detail=f"These tasks have duration_min >= duration_max: {names}. Minimum must be less than maximum."
-        )
+    # Check that any resource referenced by a task is set up in process_json['resources']
+    resources = process_json.get("resources", [])
+    known_resources = set()
+    for r in resources:
+        if isinstance(r, dict):
+            for key in ("name", "id", "displayName"):
+                val = r.get(key)
+                if val:
+                    known_resources.add(str(val).strip().lower())
+        elif isinstance(r, str) and r.strip():
+            known_resources.add(r.strip().lower())
+
+    for n in sim_nodes:
+        if n.get("type") not in _TASK_TYPES:
+            continue
+        data = n.get("data") or n
+        task_label = data.get("label") or n.get("label") or n.get("id")
+
+        res_candidates = []
+        multi = data.get("resources")
+        if isinstance(multi, dict):
+            for k, qty in multi.items():
+                if k and not str(k).startswith("$") and not str(k).startswith("_"):
+                    try:
+                        if int(qty) > 0:
+                            res_candidates.append(str(k))
+                    except (ValueError, TypeError):
+                        res_candidates.append(str(k))
+        single = data.get("resource") or data.get("resource_id")
+        if single and isinstance(single, str) and single.strip():
+            res_candidates.append(single.strip())
+
+        for r_name in res_candidates:
+            if r_name.strip().lower() not in known_resources:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Task '{task_label}' uses '{r_name}', which isn't set up. Add it in Setup before simulating."
+                )
     
 def find_start_node(process_json: dict) -> str:
     for n in process_json["nodes"]:
@@ -192,7 +252,8 @@ def _results_from_run(all_times, all_task_durations, all_task_wait_times,
     results["financial_summary"] = generate_financial_report(
         resources=resources_list,
         resource_busy_times=all_resource_busy,
-        total_sim_minutes=total_sim_time
+        total_sim_minutes=total_sim_time,
+        customers=len(all_times) if all_times else 0
     )
     return results
 
@@ -288,7 +349,8 @@ def _run_process(process_json: dict, config: dict) -> dict:
         fin = generate_financial_report(
             resources=resources_list,
             resource_busy_times=all_resource_busy,
-            total_sim_minutes=total_sim_time
+            total_sim_minutes=total_sim_time,
+            customers=len(all_times) if all_times else 0
         )
         total_costs.append(fin.get("total_cost", 0.0))
         _extend_dict_lists(pooled_durations, all_task_durations)
@@ -322,6 +384,7 @@ def experiment(input: ExperimentInput):
             input.config or {},
             input.goal,
             _run_process,
+            target=input.target,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))

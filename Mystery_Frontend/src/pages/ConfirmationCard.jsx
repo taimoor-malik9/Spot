@@ -17,7 +17,9 @@ import {
   Building,
 } from 'lucide-react';
 import { validateBpmn } from '../lib/intake/validateBpmn';
+import { validateDurationRules } from '../lib/durationRules';
 import { SPEED_MAPPINGS, BUSYNESS_MAPPINGS } from '../lib/intake/schema';
+import { useAnalystView } from '../lib/labels';
 
 const COST_FIELD_LABELS = {
   hours_per_day: 'Hours/day',
@@ -63,6 +65,7 @@ export default function ConfirmationCard({
   onWhatShouldChange = null,
   onBackToQuestions = null,
 }) {
+  const [isAnalystView] = useAnalystView();
   const [open, setOpen] = useState(true);
   const [removedResources, setRemovedResources] = useState(() => new Set());
   const [expandedResources, setExpandedResources] = useState(() => new Set());
@@ -327,10 +330,16 @@ export default function ConfirmationCard({
   const handleConfirm = () => {
     const patched = buildPatchedDiagram();
     const validation = validateBpmn(patched);
+    const durationValidation = validateDurationRules(patched.nodes);
 
-    // BLOCK APPLY IF VALIDATE BPMN RETURNS ERRORS
-    if (validation.errors && validation.errors.length > 0) {
-      setValidationErrors(validation.errors);
+    const allErrors = [
+      ...(validation.errors || []),
+      ...durationValidation.errors.map(e => e.message),
+    ];
+
+    // BLOCK APPLY IF VALIDATE BPMN OR DURATION RULES RETURN ERRORS
+    if (allErrors.length > 0) {
+      setValidationErrors(allErrors);
       return;
     }
 
@@ -439,7 +448,7 @@ export default function ConfirmationCard({
           }}
         >
           {hasErrors
-            ? `${validationErrors.length} BPMN issue${validationErrors.length !== 1 ? 's' : ''} to resolve`
+            ? `${validationErrors.length} ${isAnalystView ? 'BPMN issue' : 'process issue'}${validationErrors.length !== 1 ? 's' : ''} to resolve`
             : `${totalFields} thing${totalFields !== 1 ? 's' : ''} to review`}
         </span>
         {open ? (
@@ -904,7 +913,7 @@ export default function ConfirmationCard({
                   marginBottom: 4,
                 }}
               >
-                <AlertCircle size={14} color="#dc2626" /> Apply Blocked — BPMN Validation Errors:
+                <AlertCircle size={14} color="#dc2626" /> Apply Blocked — {isAnalystView ? 'BPMN Validation Errors:' : 'Process Diagram Issues:'}
               </div>
               <ul style={{ margin: 0, paddingLeft: 16 }}>
                 {validationErrors.map((err, i) => (
@@ -966,7 +975,7 @@ export default function ConfirmationCard({
             >
               <div style={{ fontSize: 11.5, fontWeight: 700, color: '#b91c1c', display: 'flex', alignItems: 'center', gap: 5 }}>
                 <AlertCircle size={13} />
-                Action required to resolve BPMN validation:
+                Action required to resolve {isAnalystView ? 'BPMN validation:' : 'process checks:'}
               </div>
 
               {/* Action 1: Auto-repair button if repairable */}
@@ -1107,7 +1116,7 @@ export default function ConfirmationCard({
                 fontWeight: 600,
                 boxShadow: hasErrors ? 'none' : '0 2px 6px rgba(79,70,229,0.25)',
               }}
-              title={hasErrors ? 'BPMN validation errors must be resolved to apply' : 'Apply to canvas'}
+              title={hasErrors ? (isAnalystView ? 'BPMN validation errors must be resolved to apply' : 'Process checks must be resolved to apply') : 'Apply to canvas'}
             >
               <CheckCircle size={13} />
               {hasErrors ? `Apply Blocked (${validationErrors.length} Errors)` : 'Confirm & Apply'}

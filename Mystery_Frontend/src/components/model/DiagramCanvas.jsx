@@ -26,6 +26,7 @@ export function DiagramCanvas({
   renderNodeOverlay = null,
   renderCanvasOverlay = null,
   activeEdgeSet = null,
+  errorNodeIds = null,
 
   // Edit-mode specific props (used when !readOnly)
   onNodeDown = null,
@@ -569,7 +570,13 @@ export function DiagramCanvas({
                     )}
                   </g>
                 ) : (
-                  <Shape type={el.type} sel={isSel} w={nodeW} h={nodeH} />
+                  <Shape
+                    type={el.type}
+                    sel={isSel}
+                    w={nodeW}
+                    h={nodeH}
+                    hasError={Boolean(errorNodeIds && (errorNodeIds.has ? errorNodeIds.has(el.id) : (Array.isArray(errorNodeIds) && errorNodeIds.includes(el.id))))}
+                  />
                 )}
 
                 {/* Resize handles in Model page */}

@@ -88,9 +88,79 @@ function isParallelGateway(node) {
   );
 }
 
-export function validateBpmn(rawDiagram) {
+function isGateway(node) {
+  if (!node) return false;
+  const t = node.type || '';
+  return (
+    t.includes('gateway') ||
+    isExclusiveGateway(node) ||
+    isParallelGateway(node) ||
+    node.data?.gateway_type != null
+  );
+}
+
+function normalizeString(str) {
+  return String(str || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getTokens(str) {
+  return new Set(normalizeString(str).split(' ').filter(Boolean));
+}
+
+function getBigrams(str) {
+  const norm = normalizeString(str).replace(/\s/g, '');
+  const bigrams = new Set();
+  for (let i = 0; i < norm.length - 1; i++) {
+    bigrams.add(norm.slice(i, i + 2));
+  }
+  return bigrams;
+}
+
+export function computeSimilarity(s1, s2) {
+  const norm1 = normalizeString(s1);
+  const norm2 = normalizeString(s2);
+  if (!norm1 || !norm2) return 0;
+  if (norm1 === norm2) return 1.0;
+
+  // Token Jaccard
+  const t1 = getTokens(norm1);
+  const t2 = getTokens(norm2);
+  let tokenIntersection = 0;
+  t1.forEach((t) => {
+    if (t2.has(t)) tokenIntersection++;
+  });
+  const tokenUnion = new Set([...t1, ...t2]).size;
+  const jaccard = tokenUnion > 0 ? tokenIntersection / tokenUnion : 0;
+
+  // Character bigram Dice coefficient
+  const b1 = getBigrams(norm1);
+  const b2 = getBigrams(norm2);
+  let bigramIntersection = 0;
+  b1.forEach((b) => {
+    if (b2.has(b)) bigramIntersection++;
+  });
+  const dice = (b1.size + b2.size) > 0 ? (2 * bigramIntersection) / (b1.size + b2.size) : 0;
+
+  // Substring overlap
+  let subScore = 0;
+  if (norm1.includes(norm2) || norm2.includes(norm1)) {
+    const minLen = Math.min(norm1.length, norm2.length);
+    const maxLen = Math.max(norm1.length, norm2.length);
+    subScore = minLen / maxLen;
+  }
+
+  return Math.max(jaccard, dice, subScore);
+}
+
+export function validateBpmn(rawDiagram, options = {}) {
   const errors = [];
   const repairs = [];
+  const unresolvedGateways = [];
+  const duplicateWarnings = [];
 
   // 1. Pure: Deep copy input
   const repaired = JSON.parse(JSON.stringify(rawDiagram || { nodes: [], edges: [], resources: [] }));
@@ -183,6 +253,88 @@ export function validateBpmn(rawDiagram) {
   const nodePoolMap = {};
   repaired.nodes.forEach((n) => {
     nodePoolMap[n.id] = n.pool || n.data?.pool || null;
+  });
+
+  // Auto-repair same-pool message events and message flows (Rule 3.ii)
+  repaired.edges.forEach((e) => {
+    const isMsg = isMessageFlow(e);
+    const sp = nodePoolMap[e.source];
+    const tp = nodePoolMap[e.target];
+
+    const srcNode = repaired.nodes.find((n) => n.id === e.source);
+    const tgtNode = repaired.nodes.find((n) => n.id === e.target);
+    const isSrcMsgEvent =
+      srcNode &&
+      (isMessageStartEvent(srcNode.type) ||
+        isMessageEndEvent(srcNode.type) ||
+        isMessageIntermediateCatchEvent(srcNode.type) ||
+        isMessageIntermediateThrowEvent(srcNode.type) ||
+        srcNode.type === 'message-event' ||
+        (typeof srcNode.type === 'string' && srcNode.type.includes('message')));
+    const isTgtMsgEvent =
+      tgtNode &&
+      (isMessageStartEvent(tgtNode.type) ||
+        isMessageEndEvent(tgtNode.type) ||
+        isMessageIntermediateCatchEvent(tgtNode.type) ||
+        isMessageIntermediateThrowEvent(tgtNode.type) ||
+        tgtNode.type === 'message-event' ||
+        (typeof tgtNode.type === 'string' && tgtNode.type.includes('message')));
+
+    if (isMsg && sp && tp && sp === tp && (isSrcMsgEvent || isTgtMsgEvent)) {
+      // Message flow connected to message event inside one pool! Convert edge to sequence flow
+      e.flowType = 'sequence';
+      e.type = 'sequence-flow';
+      if (e.data) {
+        e.data.flowType = 'sequence';
+        e.data.type = 'sequence-flow';
+      }
+
+      // Convert any endpoint that is a message event to a task
+      [srcNode, tgtNode].forEach((node) => {
+        if (
+          node &&
+          (isMessageStartEvent(node.type) ||
+            isMessageEndEvent(node.type) ||
+            isMessageIntermediateCatchEvent(node.type) ||
+            isMessageIntermediateThrowEvent(node.type) ||
+            node.type === 'message-event' ||
+            (typeof node.type === 'string' && node.type.includes('message')))
+        ) {
+          node.type = 'task';
+          if (node.data) node.data.type = 'task';
+          const nodeLabel = node.data?.label || node.label || node.id;
+          repairs.push({
+            rule: 'same-pool-message',
+            description: `Converted same-pool message event "${nodeLabel}" to task. What role performs "${nodeLabel}"?`,
+            nodeId: node.id,
+            question: `What role performs "${nodeLabel}"?`,
+          });
+        }
+      });
+    }
+  });
+
+  // Also convert any intermediate message events inside a pool that have no cross-pool message flows
+  modelNodes.forEach((n) => {
+    if (isMessageIntermediateCatchEvent(n.type) || isMessageIntermediateThrowEvent(n.type)) {
+      const incidentEdges = repaired.edges.filter((e) => e.source === n.id || e.target === n.id);
+      const hasCrossPoolMessage = incidentEdges.some((e) => {
+        if (!isMessageFlow(e)) return false;
+        const otherId = e.source === n.id ? e.target : e.source;
+        return nodePoolMap[n.id] && nodePoolMap[otherId] && nodePoolMap[n.id] !== nodePoolMap[otherId];
+      });
+      if (!hasCrossPoolMessage) {
+        n.type = 'task';
+        if (n.data) n.data.type = 'task';
+        const nodeLabel = n.data?.label || n.label || n.id;
+        repairs.push({
+          rule: 'same-pool-message',
+          description: `Converted same-pool message event "${nodeLabel}" to task. What role performs "${nodeLabel}"?`,
+          nodeId: n.id,
+          question: `What role performs "${nodeLabel}"?`,
+        });
+      }
+    }
   });
 
   repaired.edges.forEach((e) => {
@@ -307,7 +459,138 @@ export function validateBpmn(rawDiagram) {
     }
   });
 
-  // 8. Auto-repair missing parallel join gateways (Rule 6)
+  // 8. Auto-repair redundant gateways (Rule: gateways with exactly 1 in and 1 out sequence flow)
+  let redundantFound = true;
+  while (redundantFound) {
+    redundantFound = false;
+    const currentSeq = repaired.edges.filter((e) => !isMessageFlow(e));
+    const gateways = repaired.nodes.filter(isGateway);
+
+    for (const g of gateways) {
+      const inSeq = currentSeq.filter((e) => e.target === g.id);
+      const outSeq = currentSeq.filter((e) => e.source === g.id);
+
+      if (inSeq.length === 1 && outSeq.length === 1) {
+        const inEdge = inSeq[0];
+        const outEdge = outSeq[0];
+
+        // Connect incoming flow to outgoing target
+        inEdge.target = outEdge.target;
+        // Drop outgoing edge label, set probability to 1
+        if (inEdge.data) {
+          delete inEdge.data.label;
+          inEdge.data.probability = 1;
+        } else {
+          inEdge.data = { probability: 1 };
+        }
+        delete inEdge.label;
+        delete inEdge.probability;
+
+        // Remove outEdge
+        repaired.edges = repaired.edges.filter((e) => e.id !== outEdge.id);
+
+        // Mark node origin as structural before removal and record repair
+        g.origin = 'structural';
+        if (g.data) g.data.origin = 'structural';
+
+        // Remove gateway node from diagram
+        repaired.nodes = repaired.nodes.filter((n) => n.id !== g.id);
+        const mIdx = modelNodes.findIndex((n) => n.id === g.id);
+        if (mIdx !== -1) modelNodes.splice(mIdx, 1);
+
+        repairs.push({
+          rule: 'redundant-gateway',
+          description: 'Removed an unnecessary decision point',
+          nodeId: g.id,
+        });
+
+        redundantFound = true;
+        break;
+      }
+    }
+  }
+
+  // Auto-repair: Remove placeholder task on empty branch between split and join (Rule 3.i)
+  let placeholderRemoved = true;
+  while (placeholderRemoved) {
+    placeholderRemoved = false;
+    const currentSeq = repaired.edges.filter((e) => !isMessageFlow(e));
+    for (const t of repaired.nodes) {
+      if (!isTask(t.type)) continue;
+      const duration = Number(t.data?.duration != null ? t.data.duration : (t.duration != null ? t.duration : 0));
+      const resObj = t.data?.resources || t.resources || {};
+      const hasResources = Object.keys(resObj).length > 0 || Boolean(t.data?.resource || t.resource);
+      const origin = t.origin || t.data?.origin;
+      const isInferredOrStructural = origin === 'inferred' || origin === 'structural';
+
+      if (duration === 0 && !hasResources && isInferredOrStructural) {
+        const inEdges = currentSeq.filter((e) => e.target === t.id);
+        const outEdges = currentSeq.filter((e) => e.source === t.id);
+        if (inEdges.length === 1 && outEdges.length === 1) {
+          const inEdge = inEdges[0];
+          const outEdge = outEdges[0];
+          const srcNode = repaired.nodes.find((n) => n.id === inEdge.source);
+          const tgtNode = repaired.nodes.find((n) => n.id === outEdge.target);
+
+          const isSrcSplit = srcNode && isGateway(srcNode) && currentSeq.filter((e) => e.source === srcNode.id).length >= 2;
+          const isTgtJoin = tgtNode && isGateway(tgtNode) && currentSeq.filter((e) => e.target === tgtNode.id).length >= 2;
+
+          if (isSrcSplit && isTgtJoin) {
+            // Rewire inEdge directly to tgtNode
+            inEdge.target = tgtNode.id;
+            // Remove outEdge
+            repaired.edges = repaired.edges.filter((e) => e.id !== outEdge.id);
+            // Remove task node
+            repaired.nodes = repaired.nodes.filter((n) => n.id !== t.id);
+            const mIdx = modelNodes.findIndex((n) => n.id === t.id);
+            if (mIdx !== -1) modelNodes.splice(mIdx, 1);
+
+            repairs.push({
+              rule: 'remove-placeholder-step',
+              description: 'Remove this step?',
+              nodeId: t.id,
+              action: 'Replaced placeholder task with direct sequence flow from split to join',
+            });
+
+            placeholderRemoved = true;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  // Drop label on join gateway outgoing sequence flow (Rule 3.iv)
+  const currentSeqForJoins = repaired.edges.filter((e) => !isMessageFlow(e));
+  repaired.nodes.forEach((n) => {
+    if (isGateway(n)) {
+      const inSeq = currentSeqForJoins.filter((e) => e.target === n.id);
+      if (inSeq.length >= 2) {
+        // Join gateway! Check outgoing sequence flows
+        const outSeq = currentSeqForJoins.filter((e) => e.source === n.id);
+        outSeq.forEach((outEdge) => {
+          const label = outEdge.label || outEdge.data?.label;
+          if (label && String(label).trim() !== '') {
+            delete outEdge.label;
+            if (outEdge.data) {
+              delete outEdge.data.label;
+            }
+            repairs.push({
+              rule: 'join-outgoing-label-dropped',
+              description: `Dropped label "${label}" from outgoing flow of join gateway "${n.id}".`,
+              edgeId: outEdge.id,
+            });
+          }
+        });
+      }
+    }
+  });
+
+  // Refresh seqEdges after removals
+  seqEdges.length = 0;
+  seqEdges.push(...repaired.edges.filter((e) => !isMessageFlow(e)));
+
+  // 9. Auto-repair missing parallel join gateways (Rule 6)
   const parallelSplits = modelNodes.filter((n) => {
     if (!isParallelGateway(n)) return false;
     const outBranches = seqEdges.filter((e) => e.source === n.id);
@@ -461,6 +744,10 @@ export function validateBpmn(rawDiagram) {
       if (inSeq.length < 1) {
         errors.push(`End event "${n.data?.label || n.id}" must have at least 1 incoming sequence flow (found ${inSeq.length}).`);
       }
+    } else if (isGateway(n)) {
+      if (outSeq.length < 2 && inSeq.length < 2) {
+        errors.push(`Gateway "${n.data?.label || n.label || n.id}" must be a split (>=2 outgoing sequence flows) or a join (>=2 incoming).`);
+      }
     }
   });
 
@@ -468,15 +755,16 @@ export function validateBpmn(rawDiagram) {
   modelNodes.forEach((n) => {
     if (isExclusiveGateway(n)) {
       const outSeq = currentSeqEdges.filter((e) => e.source === n.id);
-      if (outSeq.length > 1) {
-        // Must have >=2 outgoing flows
-        if (outSeq.length < 2) {
-          errors.push(`Exclusive split "${n.data?.label || n.id}" must have at least 2 outgoing branches.`);
-        }
+      if (outSeq.length >= 2) {
+        let hasUnlabeledBranch = false;
         let missingProb = false;
         let sumProb = 0;
         outSeq.forEach((e) => {
-          const prob = e.data?.probability;
+          const lbl = (e.label || e.data?.label || '').trim();
+          if (!lbl) {
+            hasUnlabeledBranch = true;
+          }
+          const prob = e.data?.probability != null ? e.data.probability : e.probability;
           if (prob == null || isNaN(Number(prob))) {
             missingProb = true;
           } else {
@@ -484,14 +772,59 @@ export function validateBpmn(rawDiagram) {
           }
         });
 
+        if (hasUnlabeledBranch) {
+          errors.push(`Exclusive split "${n.data?.label || n.label || n.id}" has an unlabeled branch. Every outgoing flow must be labeled.`);
+        }
+
         if (missingProb) {
-          errors.push(`Exclusive split "${n.data?.label || n.id}" has branches with missing probabilities.`);
+          const q = `Exclusive split "${n.data?.label || n.label || n.id}": How often does each path happen?`;
+          unresolvedGateways.push({
+            gatewayId: n.id,
+            label: n.data?.label || n.label || n.id,
+            question: q,
+            branches: outSeq.map((e) => ({
+              edgeId: e.id,
+              target: e.target,
+              label: e.label || e.data?.label || '',
+              probability: e.data?.probability != null ? e.data.probability : e.probability,
+            })),
+          });
+
+          if (!options.allowUnresolved) {
+            errors.push(q);
+          }
         } else if (Math.abs(sumProb - 1.0) > 0.001) {
-          errors.push(`Exclusive split "${n.data?.label || n.id}" branch probabilities must sum to 1.0 (found ${sumProb.toFixed(4)}).`);
+          errors.push(`Exclusive split "${n.data?.label || n.label || n.id}" branch probabilities must sum to 1.0 (found ${sumProb.toFixed(4)}).`);
         }
       }
     }
   });
+
+  // 12. Check for duplicate tasks across different lanes (Rule 3.iii)
+  const tasks = modelNodes.filter((n) => isTask(n.type));
+  for (let i = 0; i < tasks.length; i++) {
+    for (let j = i + 1; j < tasks.length; j++) {
+      const t1 = tasks[i];
+      const t2 = tasks[j];
+      const lane1 = t1.lane || t1.data?.lane;
+      const lane2 = t2.lane || t2.data?.lane;
+      if (lane1 && lane2 && lane1 !== lane2) {
+        const l1 = t1.data?.label || t1.label || '';
+        const l2 = t2.data?.label || t2.label || '';
+        const sim = computeSimilarity(l1, l2);
+        if (sim >= 0.70) {
+          duplicateWarnings.push({
+            rule: 'suspected-duplicate-task',
+            similarity: Number(sim.toFixed(2)),
+            taskIds: [t1.id, t2.id],
+            labels: [l1, l2],
+            lanes: [lane1, lane2],
+            question: 'Same step?',
+          });
+        }
+      }
+    }
+  }
 
   // 11. Reachability Check: every node reachable from start and able to reach an end (Rule 2)
   const reachableFromStart = new Set();
@@ -556,5 +889,7 @@ export function validateBpmn(rawDiagram) {
     errors,
     repairs,
     repaired,
+    unresolvedGateways,
+    duplicateWarnings,
   };
 }

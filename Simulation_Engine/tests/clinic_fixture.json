@@ -1,0 +1,755 @@
+{
+  "resources": [
+    {
+      "id": "Receptionist",
+      "name": "Receptionist",
+      "type": "staff",
+      "quantity": 1,
+      "hours_per_day": 8,
+      "working_days_per_month": 22,
+      "monthly_salary": 30000,
+      "purchase_price": null,
+      "lifespan_months": null,
+      "monthly_running_cost": null,
+      "monthly_rent": null
+    },
+    {
+      "id": "Doctor",
+      "name": "Doctor",
+      "type": "staff",
+      "quantity": 1,
+      "hours_per_day": 8,
+      "working_days_per_month": 22,
+      "monthly_salary": 90000,
+      "purchase_price": null,
+      "lifespan_months": null,
+      "monthly_running_cost": null,
+      "monthly_rent": null
+    },
+    {
+      "id": "Lab Technician",
+      "name": "Lab Technician",
+      "type": "staff",
+      "quantity": 1,
+      "hours_per_day": 8,
+      "working_days_per_month": 22,
+      "monthly_salary": 45000,
+      "purchase_price": null,
+      "lifespan_months": null,
+      "monthly_running_cost": null,
+      "monthly_rent": null
+    }
+  ],
+  "nodes": [
+    {
+      "id": "start_patient_0",
+      "type": "start-event",
+      "pool": "pool_patient_0",
+      "data": {
+        "label": "Patient arrives",
+        "duration": 0,
+        "duration_min": null,
+        "duration_max": null,
+        "duration_unit": "minutes",
+        "resource": null,
+        "resources": {}
+      }
+    },
+    {
+      "id": "pat_arrive_register",
+      "type": "message-intermediate-throw",
+      "pool": "pool_patient_0",
+      "data": {
+        "label": "Register at Reception",
+        "duration": 5,
+        "duration_min": 3,
+        "duration_max": 8,
+        "duration_unit": "minutes",
+        "resource": null,
+        "resources": {}
+      }
+    },
+    {
+      "id": "pat_fill_form",
+      "type": "task",
+      "pool": "pool_patient_0",
+      "data": {
+        "label": "Fill Out Registration Form",
+        "duration": 5,
+        "duration_min": 3,
+        "duration_max": 8,
+        "duration_unit": "minutes",
+        "resource": null,
+        "resources": {}
+      }
+    },
+    {
+      "id": "pat_skip_form",
+      "type": "task",
+      "pool": "pool_patient_0",
+      "data": {
+        "label": "Skip Registration Form",
+        "duration": 0,
+        "duration_min": 0,
+        "duration_max": 2,
+        "duration_unit": "seconds",
+        "resource": null,
+        "resources": {}
+      }
+    },
+    {
+      "id": "pat_wait_doctor",
+      "type": "message-intermediate-catch",
+      "pool": "pool_patient_0",
+      "data": {
+        "label": "Wait for Doctor Call",
+        "duration": 5,
+        "duration_min": 3,
+        "duration_max": 8,
+        "duration_unit": "minutes",
+        "resource": null,
+        "resources": {}
+      }
+    },
+    {
+      "id": "pat_undergo_exam",
+      "type": "task",
+      "pool": "pool_patient_0",
+      "data": {
+        "label": "Undergo Doctor Examination",
+        "duration": 15,
+        "duration_min": 10,
+        "duration_max": 25,
+        "duration_unit": "minutes",
+        "resource": null,
+        "resources": {}
+      }
+    },
+    {
+      "id": "pat_visit_lab",
+      "type": "message-intermediate-throw",
+      "pool": "pool_patient_0",
+      "data": {
+        "label": "Visit Lab for Tests",
+        "duration": 5,
+        "duration_min": 3,
+        "duration_max": 8,
+        "duration_unit": "minutes",
+        "resource": null,
+        "resources": {}
+      }
+    },
+    {
+      "id": "pat_receive_results",
+      "type": "message-intermediate-catch",
+      "pool": "pool_patient_0",
+      "data": {
+        "label": "Receive Test Results",
+        "duration": 5,
+        "duration_min": 3,
+        "duration_max": 8,
+        "duration_unit": "minutes",
+        "resource": null,
+        "resources": {}
+      }
+    },
+    {
+      "id": "pat_return_doctor",
+      "type": "message-intermediate-throw",
+      "pool": "pool_patient_0",
+      "data": {
+        "label": "Return to Doctor with Results",
+        "duration": 5,
+        "duration_min": 3,
+        "duration_max": 8,
+        "duration_unit": "minutes",
+        "resource": null,
+        "resources": {}
+      }
+    },
+    {
+      "id": "pat_no_lab",
+      "type": "task",
+      "pool": "pool_patient_0",
+      "data": {
+        "label": "Proceed Without Lab Tests",
+        "duration": 0,
+        "duration_min": 0,
+        "duration_max": 2,
+        "duration_unit": "seconds",
+        "resource": null,
+        "resources": {}
+      }
+    },
+    {
+      "id": "pat_receive_prescription",
+      "type": "message-intermediate-catch",
+      "pool": "pool_patient_0",
+      "data": {
+        "label": "Receive Prescription",
+        "duration": 5,
+        "duration_min": 3,
+        "duration_max": 8,
+        "duration_unit": "minutes",
+        "resource": null,
+        "resources": {}
+      }
+    },
+    {
+      "id": "pat_pay_reception",
+      "type": "message-end-event",
+      "pool": "pool_patient_0",
+      "data": {
+        "label": "Pay at Reception and Leave",
+        "duration": 5,
+        "duration_min": null,
+        "duration_max": null,
+        "duration_unit": "minutes",
+        "resource": null,
+        "resources": {}
+      }
+    },
+    {
+      "id": "gw_split_pat_arrive_register_0",
+      "type": "exclusive-gateway",
+      "pool": "pool_patient_0",
+      "data": {
+        "label": "Is Patient New?",
+        "duration": 0,
+        "duration_min": null,
+        "duration_max": null,
+        "duration_unit": "minutes",
+        "resource": null,
+        "resources": {}
+      }
+    },
+    {
+      "id": "gw_join_pat_arrive_register_0",
+      "type": "exclusive-gateway",
+      "pool": "pool_patient_0",
+      "data": {
+        "label": "Rejoin",
+        "duration": 0,
+        "duration_min": null,
+        "duration_max": null,
+        "duration_unit": "minutes",
+        "resource": null,
+        "resources": {}
+      }
+    },
+    {
+      "id": "gw_split_pat_undergo_exam_2",
+      "type": "exclusive-gateway",
+      "pool": "pool_patient_0",
+      "data": {
+        "label": "Are Tests Needed?",
+        "duration": 0,
+        "duration_min": null,
+        "duration_max": null,
+        "duration_unit": "minutes",
+        "resource": null,
+        "resources": {}
+      }
+    },
+    {
+      "id": "gw_join_pat_undergo_exam_2",
+      "type": "exclusive-gateway",
+      "pool": "pool_patient_0",
+      "data": {
+        "label": "Rejoin",
+        "duration": 0,
+        "duration_min": null,
+        "duration_max": null,
+        "duration_unit": "minutes",
+        "resource": null,
+        "resources": {}
+      }
+    },
+    {
+      "id": "rec_receive_checkin",
+      "type": "message-start-event",
+      "pool": "pool_clinic_1",
+      "data": {
+        "label": "Receive Patient Registration",
+        "duration": 2,
+        "duration_min": null,
+        "duration_max": null,
+        "duration_unit": "minutes",
+        "resource": "receptionist",
+        "resources": {
+          "Receptionist": 1
+        }
+      }
+    },
+    {
+      "id": "rec_create_file",
+      "type": "task",
+      "pool": "pool_clinic_1",
+      "data": {
+        "label": "Create Patient File",
+        "duration": 5,
+        "duration_min": 3,
+        "duration_max": 8,
+        "duration_unit": "minutes",
+        "resource": "receptionist",
+        "resources": {
+          "Receptionist": 1
+        }
+      }
+    },
+    {
+      "id": "doc_call_patient",
+      "type": "message-intermediate-throw",
+      "pool": "pool_clinic_1",
+      "data": {
+        "label": "Call Patient for Examination",
+        "duration": 5,
+        "duration_min": 3,
+        "duration_max": 8,
+        "duration_unit": "minutes",
+        "resource": "doctor",
+        "resources": {
+          "Doctor": 1
+        }
+      }
+    },
+    {
+      "id": "doc_examine_patient",
+      "type": "task",
+      "pool": "pool_clinic_1",
+      "data": {
+        "label": "Examine Patient",
+        "duration": 15,
+        "duration_min": 10,
+        "duration_max": 25,
+        "duration_unit": "minutes",
+        "resource": "doctor",
+        "resources": {
+          "Doctor": 1
+        }
+      }
+    },
+    {
+      "id": "lab_perform_tests",
+      "type": "message-intermediate-catch",
+      "pool": "pool_clinic_1",
+      "data": {
+        "label": "Perform Lab Tests",
+        "duration": 5,
+        "duration_min": 3,
+        "duration_max": 8,
+        "duration_unit": "minutes",
+        "resource": "lab technician",
+        "resources": {
+          "Lab Technician": 1
+        }
+      }
+    },
+    {
+      "id": "lab_send_results",
+      "type": "message-intermediate-throw",
+      "pool": "pool_clinic_1",
+      "data": {
+        "label": "Provide Test Results",
+        "duration": 5,
+        "duration_min": 3,
+        "duration_max": 8,
+        "duration_unit": "minutes",
+        "resource": "lab technician",
+        "resources": {
+          "Lab Technician": 1
+        }
+      }
+    },
+    {
+      "id": "doc_review_results",
+      "type": "message-intermediate-catch",
+      "pool": "pool_clinic_1",
+      "data": {
+        "label": "Review Test Results",
+        "duration": 5,
+        "duration_min": 3,
+        "duration_max": 8,
+        "duration_unit": "minutes",
+        "resource": "doctor",
+        "resources": {
+          "Doctor": 1
+        }
+      }
+    },
+    {
+      "id": "doc_skip_tests",
+      "type": "task",
+      "pool": "pool_clinic_1",
+      "data": {
+        "label": "Conclude Direct Examination",
+        "duration": 0,
+        "duration_min": 0,
+        "duration_max": 2,
+        "duration_unit": "seconds",
+        "resource": null,
+        "resources": {}
+      }
+    },
+    {
+      "id": "doc_write_prescription",
+      "type": "message-intermediate-throw",
+      "pool": "pool_clinic_1",
+      "data": {
+        "label": "Write Prescription",
+        "duration": 5,
+        "duration_min": 3,
+        "duration_max": 8,
+        "duration_unit": "minutes",
+        "resource": "doctor",
+        "resources": {
+          "Doctor": 1
+        }
+      }
+    },
+    {
+      "id": "rec_process_payment",
+      "type": "message-intermediate-catch",
+      "pool": "pool_clinic_1",
+      "data": {
+        "label": "Collect Payment",
+        "duration": 5,
+        "duration_min": 3,
+        "duration_max": 8,
+        "duration_unit": "minutes",
+        "resource": "receptionist",
+        "resources": {
+          "Receptionist": 1
+        }
+      }
+    },
+    {
+      "id": "gw_split_doc_examine_patient_3",
+      "type": "exclusive-gateway",
+      "pool": "pool_clinic_1",
+      "data": {
+        "label": "Tests Required?",
+        "duration": 0,
+        "duration_min": null,
+        "duration_max": null,
+        "duration_unit": "minutes",
+        "resource": null,
+        "resources": {}
+      }
+    },
+    {
+      "id": "gw_join_doc_examine_patient_3",
+      "type": "exclusive-gateway",
+      "pool": "pool_clinic_1",
+      "data": {
+        "label": "Rejoin",
+        "duration": 0,
+        "duration_min": null,
+        "duration_max": null,
+        "duration_unit": "minutes",
+        "resource": null,
+        "resources": {}
+      }
+    },
+    {
+      "id": "end_clinic_1",
+      "type": "end-event",
+      "pool": "pool_clinic_1",
+      "data": {
+        "label": "End",
+        "duration": 0,
+        "duration_min": null,
+        "duration_max": null,
+        "duration_unit": "minutes",
+        "resource": null,
+        "resources": {}
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source": "start_patient_0",
+      "target": "pat_arrive_register",
+      "probability": null,
+      "data": {
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "pat_arrive_register",
+      "target": "gw_split_pat_arrive_register_0",
+      "probability": null,
+      "data": {
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "gw_split_pat_arrive_register_0",
+      "target": "pat_fill_form",
+      "probability": 0.4,
+      "data": {
+        "label": "New Patient",
+        "probability": 0.4,
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "gw_split_pat_arrive_register_0",
+      "target": "pat_skip_form",
+      "probability": 0.6,
+      "data": {
+        "label": "Returning Patient",
+        "probability": 0.6,
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "pat_fill_form",
+      "target": "gw_join_pat_arrive_register_0",
+      "probability": null,
+      "data": {
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "pat_skip_form",
+      "target": "gw_join_pat_arrive_register_0",
+      "probability": null,
+      "data": {
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "gw_join_pat_arrive_register_0",
+      "target": "pat_wait_doctor",
+      "probability": null,
+      "data": {
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "pat_wait_doctor",
+      "target": "pat_undergo_exam",
+      "probability": null,
+      "data": {
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "pat_undergo_exam",
+      "target": "gw_split_pat_undergo_exam_2",
+      "probability": null,
+      "data": {
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "gw_split_pat_undergo_exam_2",
+      "target": "pat_visit_lab",
+      "probability": 0.3,
+      "data": {
+        "label": "Tests Needed",
+        "probability": 0.3,
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "pat_receive_results",
+      "target": "pat_return_doctor",
+      "probability": null,
+      "data": {
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "gw_split_pat_undergo_exam_2",
+      "target": "pat_no_lab",
+      "probability": 0.7,
+      "data": {
+        "label": "No Tests Needed",
+        "probability": 0.7,
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "pat_return_doctor",
+      "target": "gw_join_pat_undergo_exam_2",
+      "probability": null,
+      "data": {
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "pat_no_lab",
+      "target": "gw_join_pat_undergo_exam_2",
+      "probability": null,
+      "data": {
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "gw_join_pat_undergo_exam_2",
+      "target": "pat_receive_prescription",
+      "probability": null,
+      "data": {
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "pat_receive_prescription",
+      "target": "pat_pay_reception",
+      "probability": null,
+      "data": {
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "rec_receive_checkin",
+      "target": "rec_create_file",
+      "probability": null,
+      "data": {
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "rec_create_file",
+      "target": "doc_call_patient",
+      "probability": null,
+      "data": {
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "doc_call_patient",
+      "target": "doc_examine_patient",
+      "probability": null,
+      "data": {
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "doc_examine_patient",
+      "target": "gw_split_doc_examine_patient_3",
+      "probability": null,
+      "data": {
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "gw_split_doc_examine_patient_3",
+      "target": "lab_perform_tests",
+      "probability": 0.3,
+      "data": {
+        "label": "Order Tests",
+        "probability": 0.3,
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "lab_perform_tests",
+      "target": "lab_send_results",
+      "probability": null,
+      "data": {
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "gw_split_doc_examine_patient_3",
+      "target": "doc_skip_tests",
+      "probability": 0.7,
+      "data": {
+        "label": "No Tests",
+        "probability": 0.7,
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "doc_review_results",
+      "target": "gw_join_doc_examine_patient_3",
+      "probability": null,
+      "data": {
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "doc_skip_tests",
+      "target": "gw_join_doc_examine_patient_3",
+      "probability": null,
+      "data": {
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "gw_join_doc_examine_patient_3",
+      "target": "doc_write_prescription",
+      "probability": null,
+      "data": {
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "rec_process_payment",
+      "target": "end_clinic_1",
+      "probability": null,
+      "data": {
+        "type": "sequence-flow"
+      }
+    },
+    {
+      "source": "pat_arrive_register",
+      "target": "rec_receive_checkin",
+      "probability": null,
+      "data": {
+        "type": "message-flow"
+      }
+    },
+    {
+      "source": "doc_call_patient",
+      "target": "pat_wait_doctor",
+      "probability": null,
+      "data": {
+        "type": "message-flow"
+      }
+    },
+    {
+      "source": "pat_visit_lab",
+      "target": "lab_perform_tests",
+      "probability": null,
+      "data": {
+        "type": "message-flow"
+      }
+    },
+    {
+      "source": "lab_send_results",
+      "target": "pat_receive_results",
+      "probability": null,
+      "data": {
+        "type": "message-flow"
+      }
+    },
+    {
+      "source": "pat_return_doctor",
+      "target": "doc_review_results",
+      "probability": null,
+      "data": {
+        "type": "message-flow"
+      }
+    },
+    {
+      "source": "doc_write_prescription",
+      "target": "pat_receive_prescription",
+      "probability": null,
+      "data": {
+        "type": "message-flow"
+      }
+    },
+    {
+      "source": "pat_pay_reception",
+      "target": "rec_process_payment",
+      "probability": null,
+      "data": {
+        "type": "message-flow"
+      }
+    }
+  ]
+}

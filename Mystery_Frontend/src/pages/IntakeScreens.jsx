@@ -39,6 +39,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { parseTypedAnswer } from '../lib/apiService';
+import { useAuth } from '@/context/AuthContext';
 
 /**
  * Filters active task nodes for intake screens.
@@ -292,6 +293,8 @@ export default function IntakeScreens({
   onBack,
   initialAnswers = null,
 }) {
+  const auth = useAuth();
+  const currencySymbol = auth?.user?.currency || 'Rs';
   const activeNodes = useMemo(() => getActiveTaskNodes(rawDiagram), [rawDiagram]);
 
   // Determine active screens that the diagram does not already answer
@@ -1636,7 +1639,7 @@ export default function IntakeScreens({
                             borderRadius: 6,
                           }}
                         >
-                          ${salaryVal.toLocaleString()} / mo
+                          {currencySymbol} {salaryVal.toLocaleString()} / mo
                         </span>
                       </div>
 
