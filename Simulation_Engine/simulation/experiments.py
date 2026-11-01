@@ -519,7 +519,7 @@ def run_experiment(process_json, config, goal, run_process, target=None):
             if X > 0:
                 needed_pct = min(100, int(round((needed_reduction_staff / X) * 100.0)))
                 task_names = " and ".join([f'"{_task_label(process_json, t["id"])}"' for t in eligible_staff_tasks[:2]]) or "staff steps"
-                realism = f"requires steps {task_names} to be {needed_pct}% faster (exceeds the 50% realistic limit)"
+                realism = f"reaching {target_pct}% would need steps {task_names} to be sped up by more than the 50% tested here, which is beyond the realistic limit"
             else:
                 realism = "all steps are customer-paced or fixed and cannot be accelerated by staff"
         else:
