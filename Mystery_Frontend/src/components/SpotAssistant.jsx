@@ -751,7 +751,7 @@ export default function SpotAssistant({ open, onClose, processId, ensureProcessS
     </div>
   );
 
-  if (typeof window === 'undefined' || globalThis.__SSR__ || window?.__SSR__ || process.env.TEST_SSR) {
+  if (typeof window === 'undefined' || globalThis.__SSR__ || window?.__SSR__ || (typeof process !== 'undefined' && process.env?.TEST_SSR)) {
     return panelNode;
   }
   return (typeof document !== 'undefined' && document?.body)
@@ -886,7 +886,12 @@ function EvidenceCard({ evidenceMsg, isExpanded, onApplyVariant, onOpenScenario 
     const metric = target?.metric || (isCycleTimeGoal ? 'cycle_time' : 'waiting');
     if (metric === 'cycle_time') return variant.delta_vs_baseline.cycle_time_pct;
     if (metric === 'throughput') return variant.delta_vs_baseline.throughput_pct ?? variant.delta_vs_baseline.wait_pct;
-    if (metric === 'cost') return variant.delta_vs_baseline.cost_abs;
+    if (metric === 'cost') {
+      const baseCost = Number(evidence?.baseline?.total_cost);
+      const costAbs = Number(variant.delta_vs_baseline.cost_abs);
+      if (!baseCost || Number.isNaN(costAbs)) return null;
+      return Number(((costAbs / baseCost) * 100).toFixed(1));
+    }
     return variant.delta_vs_baseline.wait_pct;
   };
 
