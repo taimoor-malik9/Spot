@@ -264,7 +264,12 @@ router.post('/solve-problem', async (req, res) => {
         target: parsedTarget,
       }),
     });
-    if (!response.ok) throw new Error(`Simulation engine error: ${response.status} - ${await response.text()}`);
+    if (!response.ok) {
+      const detail = await response.text();
+      const error = new Error(`Simulation engine error: ${response.status} - ${detail}`);
+      error.status = response.status;
+      throw error;
+    }
     const experiment = await response.json();
     const [summary, explanation] = await Promise.all([
       withTimeout(summarizeExperiment(experiment), fallbackExperimentSummary(experiment), 15000),
@@ -290,6 +295,12 @@ router.post('/solve-problem', async (req, res) => {
     });
   } catch (err) {
     console.error('Solve problem error:', err.message);
+    if (err.status === 400 && /Simulation engine error: 400/i.test(err.message || '')) {
+      const detail = String(err.message).replace(/^Simulation engine error: 400\s*-\s*/, '');
+      let parsedDetail = detail;
+      try { parsedDetail = JSON.parse(detail).detail || detail; } catch {}
+      return res.status(400).json({ error: parsedDetail });
+    }
     if (err.status) return res.status(err.status).json({ error: err.message });
     return res.status(502).json({ error: 'Unable to test options in the simulator right now.' });
   }

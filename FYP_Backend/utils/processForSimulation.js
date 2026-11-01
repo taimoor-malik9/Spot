@@ -49,6 +49,8 @@ function processForSimulation(processDoc) {
         duration_min: (d.duration_min !== undefined && d.duration_min !== null) ? Number(d.duration_min) : ((node.duration_min !== undefined && node.duration_min !== null) ? Number(node.duration_min) : null),
         duration_max: (d.duration_max !== undefined && d.duration_max !== null) ? Number(d.duration_max) : ((node.duration_max !== undefined && node.duration_max !== null) ? Number(node.duration_max) : null),
         duration_unit: d.duration_unit || node.duration_unit || 'minutes',
+        origin: d.origin ?? node.origin ?? null,
+        kept: d.kept ?? node.kept ?? false,
         resource: resourceName,
         resources: taskResources,
       },

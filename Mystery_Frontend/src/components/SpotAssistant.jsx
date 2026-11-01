@@ -112,9 +112,10 @@ export default function SpotAssistant({ open, onClose, processId, ensureProcessS
   }, [messages, loading, scrollToBottomIfNear]);
 
   async function currentProcessId() {
-    if (processId) return processId;
     const saved = await ensureProcessSaved();
-    return typeof saved === 'string' ? saved : localStorage.getItem('spot:processId');
+    return typeof saved === 'string'
+      ? saved
+      : processId || (typeof window !== 'undefined' ? localStorage.getItem('spot:processId') : null);
   }
 
   // Send a problem to the backend

@@ -1177,11 +1177,27 @@ export default function ModelPage() {
     setBackendSaving(true);
     try {
       const existingId = localStorage.getItem('spot:processId');
+      let globalResources = [];
+      try {
+        const storedResources = JSON.parse(localStorage.getItem('spot:globalResources') || '[]');
+        if (Array.isArray(storedResources)) globalResources = storedResources;
+      } catch {}
+
       let res;
       if (existingId) {
-        res = await updateProcess(existingId, elsToSave, connsToSave, titleToSave);
+        try {
+          res = await updateProcess(existingId, elsToSave, connsToSave, titleToSave, globalResources);
+        } catch (err) {
+          const missingProcess = err?.status === 404 || /Process not found/i.test(err?.message || '');
+          if (!missingProcess) throw err;
+          // The browser had an ID for a process that was deleted or belongs
+          // to another account. Save the current diagram as a new process.
+          localStorage.removeItem('spot:processId');
+          setSavedProcessId(null);
+          res = await saveProcess(elsToSave, connsToSave, titleToSave, globalResources);
+        }
       } else {
-        res = await saveProcess(elsToSave, connsToSave, titleToSave);
+        res = await saveProcess(elsToSave, connsToSave, titleToSave, globalResources);
       }
       const id = res.process?._id || res.process?.id || existingId;
       if (id) {
@@ -2805,10 +2821,7 @@ export default function ModelPage() {
           open={spotAssistantOpen}
           onClose={() => setSpotAssistantOpen(false)}
           processId={savedProcessId}
-          ensureProcessSaved={async () => {
-            const existing = localStorage.getItem('spot:processId');
-            return existing || saveToBackend();
-          }}
+          ensureProcessSaved={async () => saveToBackend()}
         />
       </div>
 
