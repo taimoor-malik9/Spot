@@ -158,6 +158,32 @@ async function summarizeExperiment(experiment) {
   return fallbackExperimentSummary(experiment);
 }
 
+async function explainTargetGap(experiment) {
+  const fallback = experiment.reason;
+  if (experiment.target_met !== false || !fallback) return fallback;
+  const systemPrompt = [
+    "You explain, in two or three short sentences, why a simulation could not reach the user's target.",
+    PLAIN_LANGUAGE_RULES,
+    'Use only numbers that appear in the data you are given.',
+    'Say how much of the total cycle time is staff work (staff_work_time out of total_cycle_time) and that the rest is queueing, customer time or fixed time.',
+    'Name the best tested option and the reduction it achieved (best.label and achieved_pct), and say it falls short of the target.',
+    'Never say how many percent faster any step would need to be.',
+    'End with one concrete next step, such as choosing a lower target or trying a combined option.',
+  ].join('\n');
+  try {
+    const text = await callGemini({
+      systemPrompt,
+      contents: [{ role: 'user', parts: [{ text: JSON.stringify(experiment) }] }],
+      expectJson: false,
+    });
+    if (isValidSummary(text, experiment)) return text.trim();
+    console.warn('Gemini target explanation failed validation; using engine reason.');
+  } catch (err) {
+    console.warn('Gemini target explanation failed; using engine reason.', err.message);
+  }
+  return fallback;
+}
+
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -240,11 +266,10 @@ router.post('/solve-problem', async (req, res) => {
     });
     if (!response.ok) throw new Error(`Simulation engine error: ${response.status} - ${await response.text()}`);
     const experiment = await response.json();
-    const summary = await withTimeout(
-      summarizeExperiment(experiment),
-      fallbackExperimentSummary(experiment),
-      4000,
-    );
+    const [summary, explanation] = await Promise.all([
+      withTimeout(summarizeExperiment(experiment), fallbackExperimentSummary(experiment), 4000),
+      withTimeout(explainTargetGap(experiment), experiment.reason, 4000),
+    ]);
     return res.json({
       type: 'evidence',
       summary,
@@ -255,7 +280,7 @@ router.post('/solve-problem', async (req, res) => {
       target: experiment.target || parsedTarget,
       target_met: experiment.target_met,
       achieved_pct: experiment.achieved_pct,
-      reason: experiment.reason,
+      reason: explanation,
       realism: experiment.realism,
       zero_wait_note: experiment.zero_wait_note,
       ceiling_pct: experiment.ceiling_pct,
