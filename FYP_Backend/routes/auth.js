@@ -593,4 +593,62 @@ router.get('/me', requireAuth, async (req, res) => {
   return res.json({ user: sanitizeUser(req.user) });
 });
 
+// PUT /api/auth/me (edit profile: name, email, business preferences)
+const updateProfileHandler = async (req, res) => {
+  try {
+    const { name, email, businessName, businessType, currency, workingHoursPerDay } = req.body || {};
+    const user = req.user;
+
+    if (name !== undefined) {
+      if (!name || typeof name !== 'string' || !name.trim()) {
+        return res.status(400).json({ error: 'Name cannot be empty' });
+      }
+      user.name = name.trim();
+    }
+
+    if (email !== undefined) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!email || typeof email !== 'string' || !emailRegex.test(email)) {
+        return res.status(400).json({ error: 'Valid email is required' });
+      }
+      const normalizedEmail = email.trim().toLowerCase();
+      if (normalizedEmail !== user.email) {
+        const existing = await User.findOne({ email: normalizedEmail, _id: { $ne: user._id } });
+        if (existing) {
+          return res.status(409).json({ error: 'Email already in use' });
+        }
+        user.email = normalizedEmail;
+      }
+    }
+
+    if (businessName !== undefined) {
+      user.businessName = String(businessName || '').trim();
+    }
+
+    if (businessType !== undefined) {
+      user.businessType = String(businessType || '').trim();
+    }
+
+    if (currency !== undefined) {
+      user.currency = String(currency || 'Rs').trim();
+    }
+
+    if (workingHoursPerDay !== undefined) {
+      const hrs = Number(workingHoursPerDay);
+      if (Number.isFinite(hrs) && hrs > 0 && hrs <= 24) {
+        user.workingHoursPerDay = hrs;
+      }
+    }
+
+    await user.save();
+    return res.json({ message: 'Profile updated successfully', user: sanitizeUser(user) });
+  } catch (err) {
+    console.error('Update profile error:', err);
+    return res.status(500).json({ error: 'Failed to update profile' });
+  }
+};
+
+router.put('/me', requireAuth, updateProfileHandler);
+router.put('/profile', requireAuth, updateProfileHandler);
+
 module.exports = router;

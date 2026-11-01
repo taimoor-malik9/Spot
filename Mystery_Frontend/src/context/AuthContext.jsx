@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { request } from '@/lib/apiService';
 
-const AuthContext = createContext(null);
+export const AuthContext = createContext(null);
 
 export const getStoredToken = () => {
   return localStorage.getItem('spot_token') || sessionStorage.getItem('spot_token') || null;
@@ -132,6 +132,10 @@ export function AuthProvider({ children }) {
     setIsGuest(true);
   };
 
+  const updateUser = useCallback((updatedUserData) => {
+    setUser((prev) => (prev ? { ...prev, ...updatedUserData } : updatedUserData));
+  }, []);
+
   const value = {
     user,
     token,
@@ -141,7 +145,8 @@ export function AuthProvider({ children }) {
     signup,
     googleLogin,
     continueAsGuest,
-    logout
+    logout,
+    updateUser
   };
 
   return (

@@ -656,12 +656,18 @@ export function layoutAiDiagram(aiDiagram) {
     const isCrossPool = sp && tp && sp !== '__default' && tp !== '__default' && sp !== tp;
     const isMessage = e.flowType === 'message' || isCrossPool;
 
+    const edgeLabel = e.data?.label || e.label || undefined;
     return {
       id: e.id || makeId('conn'),
       fromId: e.source,
       toId: e.target,
       type: isMessage ? 'message-flow' : 'sequence-flow',
+      label: edgeLabel,
       probability: e.data?.probability ?? undefined,
+      data: {
+        ...(e.data || {}),
+        label: edgeLabel,
+      },
     };
   });
 

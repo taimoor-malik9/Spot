@@ -5,9 +5,15 @@ const express = require('express');
 const router = require('./ai');
 const Process = require('../models/Process');
 
-function createTestApp() {
+const mongoose = require('mongoose');
+
+function createTestApp(testUserId) {
   const app = express();
   app.use(express.json());
+  app.use((req, res, next) => {
+    req.user = { _id: testUserId, id: testUserId.toString() };
+    next();
+  });
   app.use('/api/ai', router);
   return app;
 }
@@ -29,18 +35,21 @@ async function testRequest(app, method, path, body) {
 }
 
 describe('Module I5: POST /api/ai/solve-problem simulationConfig & goal integration', () => {
-  const app = createTestApp();
+  const testUserId = new mongoose.Types.ObjectId();
+  const testProcId = new mongoose.Types.ObjectId();
+  const app = createTestApp(testUserId);
 
   it('Reads arrival_rate and goal from processDoc.simulationConfig when config is omitted', async () => {
     const origFindById = Process.findById;
+    const origFindOne = Process.findOne;
     const origFetch = global.fetch;
 
     let capturedEngineBody = null;
 
     try {
-      // Mock Process.findById to return a process with saved simulationConfig & goal
-      Process.findById = async (id) => ({
-        _id: id,
+      const mockDoc = {
+        _id: testProcId,
+        userId: testUserId,
         title: 'Coffee Process',
         nodes: [{ id: 't1', type: 'task', data: { duration: 5 } }],
         edges: [],
@@ -51,7 +60,10 @@ describe('Module I5: POST /api/ai/solve-problem simulationConfig & goal integrat
           goal: 'throughput',
         },
         goal: 'throughput',
-      });
+      };
+      // Mock Process.findById and Process.findOne to return a process with saved simulationConfig & goal
+      Process.findById = async (id) => mockDoc;
+      Process.findOne = async () => mockDoc;
 
       // Mock engine fetch call
       global.fetch = async (url, options) => {
@@ -72,7 +84,7 @@ describe('Module I5: POST /api/ai/solve-problem simulationConfig & goal integrat
       };
 
       const res = await testRequest(app, 'POST', '/api/ai/solve-problem', {
-        processId: 'proc_123',
+        processId: testProcId.toString(),
         message: 'How can we improve throughput?',
         // Note: config is omitted!
       });
@@ -83,25 +95,30 @@ describe('Module I5: POST /api/ai/solve-problem simulationConfig & goal integrat
       assert.equal(capturedEngineBody.goal, 'throughput', 'goal read from processDoc.simulationConfig');
     } finally {
       Process.findById = origFindById;
+      Process.findOne = origFindOne;
       global.fetch = origFetch;
     }
   });
 
   it('Reads goal from config when passed explicitly ("cost")', async () => {
     const origFindById = Process.findById;
+    const origFindOne = Process.findOne;
     const origFetch = global.fetch;
 
     let capturedEngineBody = null;
 
     try {
-      Process.findById = async (id) => ({
-        _id: id,
+      const mockDoc = {
+        _id: testProcId,
+        userId: testUserId,
         title: 'Retail Process',
         nodes: [{ id: 't1', type: 'task', data: { duration: 5 } }],
         edges: [],
         resources: [],
         simulationConfig: { arrival_rate: 0.33, goal: 'waiting' },
-      });
+      };
+      Process.findById = async (id) => mockDoc;
+      Process.findOne = async () => mockDoc;
 
       global.fetch = async (url, options) => {
         if (url.includes('/experiment')) {
@@ -121,7 +138,7 @@ describe('Module I5: POST /api/ai/solve-problem simulationConfig & goal integrat
       };
 
       const res = await testRequest(app, 'POST', '/api/ai/solve-problem', {
-        processId: 'proc_123',
+        processId: testProcId.toString(),
         message: 'Optimize our process',
         config: { arrival_rate: 0.33, goal: 'cost' },
       });
@@ -130,6 +147,7 @@ describe('Module I5: POST /api/ai/solve-problem simulationConfig & goal integrat
       assert.equal(capturedEngineBody.goal, 'cost', 'explicit config.goal "cost" passed to engine');
     } finally {
       Process.findById = origFindById;
+      Process.findOne = origFindOne;
       global.fetch = origFetch;
     }
   });

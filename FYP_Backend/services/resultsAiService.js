@@ -51,6 +51,7 @@ Where to look in the JSON:
 CRITICAL RULES FOR SUGGESTIONS:
 - ONLY suggest changes to steps that have resources assigned (workers, staff, equipment).
 - NEVER suggest speeding up, simplifying, or automating a customer-paced step with no resources assigned (e.g. customer browsing items, picking items, choosing or deciding). Customer-paced steps cannot be sped up by the business.
+- Never say "costs are wasted" or "100% idle" unless busy time > 0 was recorded in the simulation. If active work or busy time is 0 across all resources, advise the user to assign staff to steps in Task Details rather than claiming costs were wasted.
 - Every suggestion must be a real action, not just a fact.
 - If nothing stands out for a category, skip it. No filler, no greetings, no headers.
 
@@ -68,6 +69,7 @@ How to answer:
 - If asked "how do I improve / speed up / cut costs", first point at the step that holds everything up (primary_bottleneck). Adding workers to a step that is already fast will not help.
 - If longest_wait_step differs from primary_bottleneck, explain in one sentence why (people wait longest at one step, but the holdup starts at the other).
 - If the user asks about something that is not in the JSON, say so plainly instead of guessing.
+- Never claim costs are wasted or 100% idle unless busy work was recorded; when active work is zero, guide the user to assign staff to steps in Task Details.
 - Plain conversational text, 60-150 words, short paragraphs. Bold (**like this**) key numbers, step names and worker names. No formulas.`;
 
 async function callGemini({ systemPrompt, contents, expectJson }) {

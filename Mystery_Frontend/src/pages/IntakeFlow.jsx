@@ -8,6 +8,7 @@ import { compileBpmn } from '../lib/intake/compileBpmn';
 import IntakeScreens from './IntakeScreens';
 import { applyIntakeToRawDiagram } from '../lib/intake/applyIntake';
 import ConfirmationCard from './ConfirmationCard';
+import { useAuth } from '@/context/AuthContext';
 import {
   Sparkles,
   Wand2,
@@ -64,7 +65,10 @@ export default function IntakeFlow({
   onSwitchToChat,
   onApplyDiagram,
   onConfirmApply,
+  isExpanded = false,
 }) {
+  const auth = useAuth();
+  const user = auth?.user;
   const [localStep, setLocalStep] = useState(1);
   const [localDescription, setLocalDescription] = useState('');
   const [localRawDiagram, setLocalRawDiagram] = useState(null);
@@ -549,7 +553,7 @@ export default function IntakeFlow({
             {/* Step 1 Introduction */}
             <div>
               <h3 style={{ fontSize: 13.5, fontWeight: 700, color: '#111827', margin: '0 0 4px' }}>
-                Describe your business process
+                Describe your {user?.businessType ? `${user.businessType} ` : ''}business process
               </h3>
               <p style={{ fontSize: 12, color: '#6b7280', margin: 0, lineHeight: 1.5 }}>
                 In plain words, tell us what steps take place from the moment a customer arrives until they leave.
@@ -578,7 +582,11 @@ export default function IntakeFlow({
                 <textarea
                   value={description}
                   onChange={(e) => updateGuided({ flowText: e.target.value })}
-                  placeholder="Describe what happens from the moment a customer arrives until they leave…"
+                  placeholder={
+                    user?.businessType
+                      ? `Describe what happens in your ${user.businessType} business from customer arrival to exit…`
+                      : 'Describe what happens from the moment a customer arrives until they leave…'
+                  }
                   rows={4}
                   disabled={loading}
                   style={{
@@ -879,13 +887,56 @@ export default function IntakeFlow({
                     <span>You described {statedCount} steps. AI added {inferredCount}.</span>
                   </div>
 
-                  {/* Readable Process Steps List (Module I2e) */}
-                  <ProcessStepList
-                    rawDiagram={rawDiagram}
-                    version={version}
-                    onKeepInferred={handleKeepInferred}
-                    onRemoveInferred={handleRemoveInferred}
-                  />
+                  {/* Readable Process Steps List (Module I2e) — side-by-side with preview when expanded */}
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexDirection: isExpanded ? 'row' : 'column',
+                      gap: isExpanded ? 16 : 0,
+                      alignItems: isExpanded ? 'flex-start' : 'stretch',
+                      padding: isExpanded ? 12 : 0,
+                    }}
+                  >
+                    <div style={{ flex: isExpanded ? '1 1 50%' : '1 1 auto', minWidth: 0, width: '100%' }}>
+                      <ProcessStepList
+                        rawDiagram={rawDiagram}
+                        version={version}
+                        onKeepInferred={handleKeepInferred}
+                        onRemoveInferred={handleRemoveInferred}
+                      />
+                    </div>
+                    {isExpanded && layout && (
+                      <div
+                        style={{
+                          flex: '1 1 50%',
+                          minWidth: 0,
+                          width: '100%',
+                          border: '1px solid #e0e7ff',
+                          borderRadius: 12,
+                          overflow: 'hidden',
+                          background: '#fff',
+                        }}
+                      >
+                        <div
+                          style={{
+                            padding: '8px 12px',
+                            background: '#ede9fe',
+                            borderBottom: '1px solid #ddd6fe',
+                            fontSize: 12,
+                            fontWeight: 600,
+                            color: '#5b21b6',
+                          }}
+                        >
+                          Process Diagram Preview
+                        </div>
+                        <DiagramPreview
+                          nodes={layout.elements}
+                          connections={layout.connections}
+                          version={version}
+                        />
+                      </div>
+                    )}
+                  </div>
 
                   {/* AI Summary note if present */}
                   {rawDiagram.summary && (

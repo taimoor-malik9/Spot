@@ -9,6 +9,8 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { runSimulation, saveProcess, updateProcess } from '../lib/apiService';
 import { NW, NH, elCenter } from '../components/model/bpmnGeometry';
 import DiagramCanvas from '../components/model/DiagramCanvas';
+import { validateDurationRules, normalizeRanges } from '../lib/durationRules';
+import { useAnalystView, Hint, formatPlainLanguage, FriendlyErrorView, getLabel } from '../lib/labels';
 
 /* ═══════════════════════════════════════════════════════════════
    CONSTANTS & DEFAULTS
@@ -215,22 +217,63 @@ function validateModel(elements, connections, resources, mode, arrivalRate) {
     errors.push({ title: 'No Resources', message: 'Add at least one resource in the left sidebar.' });
   }
 
-  const missingDuration = simNodes
-    .filter(n => n.type === 'task' || n.type === 'subprocess')
-    .filter(n => {
-      const d = n.data || n;
-      if (mode === 'quick') {
-        return !(d.duration != null && Number(d.duration) > 0);
-      } else {
-        return !(d.duration_min != null && d.duration_max != null
-                 && Number(d.duration_max) >= Number(d.duration_min)
-                 && Number(d.duration_max) > 0);
+  // Pre-run check: task references a resource that is not set up
+  const knownResourceNames = new Set(
+    (resources || []).flatMap(r => [
+      r.id,
+      r.name,
+      r.displayName,
+      r.payloadKey,
+      r.id ? String(r.id).trim().toLowerCase() : null,
+      r.name ? String(r.name).trim().toLowerCase() : null,
+      r.displayName ? String(r.displayName).trim().toLowerCase() : null,
+      r.payloadKey ? String(r.payloadKey).trim().toLowerCase() : null,
+    ].filter(Boolean))
+  );
+
+  simNodes.forEach(n => {
+    if (n.type !== 'task' && n.type !== 'subprocess') return;
+    const taskLabel = n.label || n.data?.label || n.id;
+    const candidates = [];
+    if (n.data?.resource && typeof n.data.resource === 'string') {
+      const trimmed = n.data.resource.trim();
+      if (trimmed && !trimmed.startsWith('res_')) {
+        candidates.push(trimmed);
       }
-    })
-    .map(n => n.label || n.id);
-  if (missingDuration.length) {
-    const names = missingDuration.slice(0, 3).map(l => `"${l}"`).join(', ');
-    errors.push({ title: 'Missing Task Duration', message: `Set duration for: ${names}${missingDuration.length > 3 ? '...' : ''}` });
+    }
+    if (n.data?.resources && typeof n.data.resources === 'object') {
+      Object.keys(n.data.resources).forEach(k => {
+        const trimmed = String(k).trim();
+        if (trimmed && !trimmed.startsWith('$') && !trimmed.startsWith('_') && !trimmed.startsWith('res_')) {
+          candidates.push(trimmed);
+        }
+      });
+    }
+    candidates.forEach(resName => {
+      if (!knownResourceNames.has(resName) && !knownResourceNames.has(resName.toLowerCase())) {
+        errors.push({
+          title: 'Missing Resource Setup',
+          isResourceError: true,
+          nodeId: n.id,
+          taskLabel,
+          resourceName: resName,
+          message: `Task "${taskLabel}" uses "${resName}", which isn't set up.`,
+        });
+      }
+    });
+  });
+
+  // Module D1b Duration Rules
+  const durationValidation = validateDurationRules(simNodes);
+  if (durationValidation.errors.length) {
+    errors.push({
+      title: 'Missing Task Duration',
+      isDurationError: true,
+      summary: durationValidation.summary,
+      items: durationValidation.errors,
+      errorNodeIds: durationValidation.errorNodeIds,
+      message: durationValidation.summary,
+    });
   }
 
   const allEdgeSrc = new Set(connections.map(c => c.from ?? c.fromId));
@@ -255,7 +298,7 @@ function validateModel(elements, connections, resources, mode, arrivalRate) {
         const sp = getPoolForNode(src, elements);
         const tp = getPoolForNode(tgt, elements);
         if (sp && tp && sp.id !== tp.id) {
-          errors.push({ title: 'Invalid Connection', message: `Cannot connect "${src.label}" across pools.` });
+          errors.push({ title: 'Invalid Connection', message: `Cannot connect "${src.label}" across organizations.` });
           break;
         }
       }
@@ -534,8 +577,18 @@ export default function SimulatePage() {
   const [durationUnit,     setDurationUnit]     = useState('minutes');
   const [durationMin,      setDurationMin]      = useState(30);
   const [durationMax,      setDurationMax]      = useState(90);
-  const [modelElements,    setModelElements]    = useState([]);
-  const [connections,      setConnections]      = useState([]);
+  const [modelElements,    setModelElements]    = useState(() => {
+    if (typeof window !== 'undefined') {
+      try { return readModelFromStorage().nodes || []; } catch {}
+    }
+    return [];
+  });
+  const [connections,      setConnections]      = useState(() => {
+    if (typeof window !== 'undefined') {
+      try { return readModelFromStorage().connections || []; } catch {}
+    }
+    return [];
+  });
   const [globalResources,  setGlobalResources]  = useState(() => {
     try {
       const stored = localStorage.getItem('spot:globalResources');
@@ -600,6 +653,11 @@ export default function SimulatePage() {
     setEditingResource(null);
   };
   const [validationErrors, setValidationErrors] = useState([]);
+  const missingDurationNodeIds = useMemo(() => {
+    const durationErr = validationErrors.find(e => e.isDurationError);
+    if (!durationErr) return new Set();
+    return durationErr.errorNodeIds || new Set((durationErr.items || []).map(i => i.nodeId));
+  }, [validationErrors]);
   const [backendRunning,   setBackendRunning]   = useState(false);
   const [backendError,     setBackendError]     = useState(null);
   const [backendDone,      setBackendDone]      = useState(false);
@@ -640,6 +698,30 @@ export default function SimulatePage() {
   });
   const [arrivalUnit,      setArrivalUnit]      = useState('minutes'); // 'seconds', 'minutes', 'hours', 'days'
 
+  const [isAnalystView] = useAnalystView();
+  const [seed, setSeed] = useState(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = localStorage.getItem('spot:simSeed');
+        if (stored && !isNaN(Number(stored))) return Number(stored);
+        const cfg = JSON.parse(localStorage.getItem('spot:simulationConfig') || '{}');
+        if (cfg.seed != null) return Number(cfg.seed);
+      } catch {}
+    }
+    return 42;
+  });
+  const [replications, setReplications] = useState(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = localStorage.getItem('spot:simReplications');
+        if (stored && !isNaN(Number(stored))) return Number(stored);
+        const cfg = JSON.parse(localStorage.getItem('spot:simulationConfig') || '{}');
+        if (cfg.replications != null) return Number(cfg.replications);
+      } catch {}
+    }
+    return 1;
+  });
+
   useEffect(() => {
     const val = parseFloat(arrivalValue);
     if (isNaN(val) || val <= 0) {
@@ -671,7 +753,7 @@ export default function SimulatePage() {
   const [zoomScale, setZoomScale] = useState(1);
   const [manualZoom, setManualZoom] = useState(null);
   const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [setupOpen, setSetupOpen] = useState(false);
+  const [setupOpen, setSetupOpen] = useState(() => (typeof window !== 'undefined' ? localStorage.getItem('spot:simSetupOpen') === 'true' : false));
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const panStartRef = useRef({ x: 0, y: 0 });
@@ -713,10 +795,22 @@ export default function SimulatePage() {
         next[task.id] = {};
         globalResources.forEach(r => {
           const fromPrev = p[r.id];
-          // If the node's data.resources already has this key enabled, respect that
-          const fromNode = taskResMap[r.payloadKey] != null || taskResMap[r.id] != null;
-          const qty = fromPrev?.quantity ?? taskResMap[r.payloadKey] ?? taskResMap[r.id] ?? 1;
-          const enabled = fromPrev?.enabled ?? fromNode;
+          const rKeys = [r.payloadKey, r.id, r.name, r.displayName].filter(Boolean);
+          const rKeysLower = rKeys.map(k => String(k).trim().toLowerCase());
+
+          let matchedKey = null;
+          for (const k of Object.keys(taskResMap)) {
+            if (rKeys.includes(k) || rKeysLower.includes(String(k).trim().toLowerCase())) {
+              matchedKey = k;
+              break;
+            }
+          }
+          const singleRes = task.data?.resource;
+          const matchSingle = singleRes && (rKeys.includes(singleRes) || rKeysLower.includes(String(singleRes).trim().toLowerCase()));
+
+          const fromNode = matchedKey != null || matchSingle;
+          const qty = fromPrev?.quantity ?? (matchedKey != null ? taskResMap[matchedKey] : 1);
+          const enabled = fromPrev?.enabled ?? Boolean(fromNode);
           next[task.id][r.id] = { enabled, quantity: qty };
         });
       });
@@ -759,7 +853,12 @@ export default function SimulatePage() {
           const resourcesDict = {};
           Object.entries(assignments).forEach(([resId, asgn]) => {
             if (asgn.enabled) {
-              const globalRes = globalResources.find(r => r.id === resId || r.displayName === resId || r.name === resId);
+              const globalRes = globalResources.find(r => 
+                r.id === resId || r.displayName === resId || r.name === resId ||
+                (r.id && r.id.toLowerCase() === String(resId).toLowerCase()) ||
+                (r.name && r.name.toLowerCase() === String(resId).toLowerCase()) ||
+                (r.displayName && r.displayName.toLowerCase() === String(resId).toLowerCase())
+              );
               const nameKey = globalRes?.displayName || globalRes?.name || globalRes?.payloadKey || resId;
               resourcesDict[nameKey] = asgn.quantity;
             }
@@ -769,7 +868,12 @@ export default function SimulatePage() {
           if (Object.keys(resourcesDict).length === 0) {
             if (el.data?.resources && typeof el.data.resources === 'object') {
               Object.entries(el.data.resources).forEach(([k, qty]) => {
-                const globalRes = globalResources.find(r => r.id === k || r.displayName === k || r.name === k);
+                const globalRes = globalResources.find(r => 
+                  r.id === k || r.displayName === k || r.name === k ||
+                  (r.id && r.id.toLowerCase() === String(k).toLowerCase()) ||
+                  (r.name && r.name.toLowerCase() === String(k).toLowerCase()) ||
+                  (r.displayName && r.displayName.toLowerCase() === String(k).toLowerCase())
+                );
                 const nameKey = globalRes?.displayName || globalRes?.name || globalRes?.payloadKey || (k && !k.startsWith('res_') ? k : null);
                 if (nameKey) {
                   resourcesDict[nameKey] = qty || 1;
@@ -778,7 +882,12 @@ export default function SimulatePage() {
             }
             if (Object.keys(resourcesDict).length === 0 && el.data?.resource) {
               const rawRes = el.data.resource;
-              const globalRes = globalResources.find(r => r.id === rawRes || r.displayName === rawRes || r.name === rawRes);
+              const globalRes = globalResources.find(r => 
+                r.id === rawRes || r.displayName === rawRes || r.name === rawRes ||
+                (r.id && r.id.toLowerCase() === String(rawRes).toLowerCase()) ||
+                (r.name && r.name.toLowerCase() === String(rawRes).toLowerCase()) ||
+                (r.displayName && r.displayName.toLowerCase() === String(rawRes).toLowerCase())
+              );
               const nameKey = globalRes?.displayName || globalRes?.name || globalRes?.payloadKey || (rawRes && !rawRes.startsWith('res_') ? rawRes : null);
               if (nameKey) {
                 resourcesDict[nameKey] = 1;
@@ -788,13 +897,15 @@ export default function SimulatePage() {
 
           const primaryResource = Object.keys(resourcesDict)[0] || null;
 
+          const normalized = normalizeRanges(el.data || {});
           return {
             ...el,
             data: {
               ...(el.data || {}),
-              duration:      el.data?.duration ?? null,
-              duration_min:  el.data?.duration_min ?? null,
-              duration_max:  el.data?.duration_max ?? null,
+              ...normalized,
+              duration:      normalized.duration ?? null,
+              duration_min:  normalized.duration_min ?? null,
+              duration_max:  normalized.duration_max ?? null,
               duration_unit: el.data?.duration_unit ?? durationUnit,
               resource:      primaryResource,
               resources:     resourcesDict,
@@ -833,8 +944,8 @@ export default function SimulatePage() {
       localStorage.setItem('spot:processId', processId);
 
       const simConfig = simulationMode === 'quick'
-        ? { mode: 'quick', duration, duration_unit: durationUnit, total_instances: totalInstances, arrival_rate: arrivalRate }
-        : { mode: 'deep', duration_min: durationMin, duration_max: durationMax, duration_unit: durationUnit, total_instances: totalInstances, arrival_rate: arrivalRate };
+        ? { mode: 'quick', duration, duration_unit: durationUnit, total_instances: totalInstances, arrival_rate: arrivalRate, seed, replications }
+        : { mode: 'deep', duration_min: durationMin, duration_max: durationMax, duration_unit: durationUnit, total_instances: totalInstances, arrival_rate: arrivalRate, seed, replications };
 
       const res     = await runSimulation(processId, simConfig);
       const results = res.results || res;
@@ -861,7 +972,7 @@ export default function SimulatePage() {
     } finally {
       setBackendRunning(false);
     }
-  }, [simulationMode, duration, durationUnit, durationMin, durationMax, totalInstances, arrivalRate,
+  }, [simulationMode, duration, durationUnit, durationMin, durationMax, totalInstances, arrivalRate, seed, replications,
       globalResources, modelElements, connections, taskAssignments, engine, startProgressTicker, navigate]);
 
   const handlePause = () => {
@@ -965,15 +1076,38 @@ export default function SimulatePage() {
   };
 
   const updateTaskProperty = (taskId, key, value) => {
+    let nextOrigin = null;
     setModelElements(prev => {
-      const next = prev.map(el => el.id === taskId ? { ...el, data: { ...(el.data || {}), [key]: value } } : el);
+      const next = prev.map(el => {
+        if (el.id !== taskId) return el;
+        const curOrigin = el.data?.origin || el.origin || 'user';
+        let updatedOrigin = curOrigin;
+        // Module D1b: If the user sets a duration on a structural TASK, change its origin to "user".
+        if ((key === 'duration' || key === 'duration_min' || key === 'duration_max') && curOrigin === 'structural') {
+          if (value !== '' && Number(value) > 0) {
+            updatedOrigin = 'user';
+          }
+        }
+        nextOrigin = updatedOrigin;
+        return {
+          ...el,
+          origin: updatedOrigin,
+          data: { ...(el.data || {}), origin: updatedOrigin, [key]: value },
+        };
+      });
       // Persist back to localStorage so data survives page reload and is
       // present when elementsToSave is built on Run Simulation
       const existing = (() => { try { return JSON.parse(localStorage.getItem('spot:model:nodes') || '{}'); } catch { return {}; } })();
       localStorage.setItem('spot:model:nodes', JSON.stringify({ ...existing, nodes: next, connections: existing.connections || [] }));
       return next;
     });
-    if (selectedTask?.id === taskId) setSelectedTask(prev => ({ ...prev, data: { ...(prev.data || {}), [key]: value } }));
+    if (selectedTask?.id === taskId) {
+      setSelectedTask(prev => ({
+        ...prev,
+        origin: nextOrigin || prev.origin || 'user',
+        data: { ...(prev.data || {}), origin: nextOrigin || prev.data?.origin || 'user', [key]: value },
+      }));
+    }
   };
 
   const updateConnectionProbability = (fromId, toId, probability) => {
@@ -1189,7 +1323,7 @@ export default function SimulatePage() {
 
   const getArrivalExplanation = () => {
     const val = parseFloat(arrivalValue);
-    if (isNaN(val) || val <= 0) return "Please enter a positive arrival frequency.";
+    if (isNaN(val) || val <= 0) return isAnalystView ? "Please enter a positive arrival frequency." : "Please enter how often customers arrive.";
 
     const unitMultipliers = {
       seconds: 1 / 60,
@@ -1203,16 +1337,18 @@ export default function SimulatePage() {
     const casesPerHour = 60 / minsBetween;
     const casesPerDay = 1440 / minsBetween;
 
+    const unitWord = isAnalystView ? 'cases' : 'customers';
     let eqText = "";
     if (minsBetween < 1) {
-      eqText = `~${(1 / minsBetween).toFixed(1)} cases/min`;
+      eqText = `~${(1 / minsBetween).toFixed(1)} ${unitWord}/min`;
     } else if (minsBetween >= 1440) {
-      eqText = `~${casesPerDay.toFixed(1)} cases/day`;
+      eqText = `~${casesPerDay.toFixed(1)} ${unitWord}/day`;
     } else {
-      eqText = `~${casesPerHour.toFixed(1)} cases/hr`;
+      eqText = `~${casesPerHour.toFixed(1)} ${unitWord}/hr`;
     }
     const unitSingular = val === 1 ? arrivalUnit.slice(0, -1) : (arrivalUnit === 'seconds' ? 'seconds' : arrivalUnit);
-    return `On average, 1 case enters every ${val} ${unitSingular} (${eqText}).`;
+    const entityWord = isAnalystView ? 'case' : 'customer';
+    return `On average, 1 ${entityWord} enters every ${val} ${unitSingular} (${eqText}).`;
   };
 
   return (
@@ -1239,14 +1375,18 @@ export default function SimulatePage() {
                 <div style={{ background: '#fef3c7', padding: 8, borderRadius: '50%', display: 'flex' }}>
                   <AlertCircle size={20} style={{ color: '#d97706' }} />
                 </div>
-                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#111827' }}>Simulation Issues</h3>
+                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#111827' }}>
+                  {isAnalystView ? 'Simulation Issues' : 'Process Checks'}
+                </h3>
               </div>
               <button onClick={() => setValidationErrors([])} style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 4 }}>
                 <X size={18} style={{ color: '#9ca3af' }}/>
               </button>
             </div>
             
-            <p style={{ margin: '0 0 16px', fontSize: 13, color: '#4b5563' }}>Please fix the following issues before running the simulation:</p>
+            <p style={{ margin: '0 0 16px', fontSize: 13, color: '#4b5563' }}>
+              {isAnalystView ? 'Please fix the following issues before running the simulation:' : 'Please check the following before running the test:'}
+            </p>
             
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '300px', overflowY: 'auto' }}>
               {validationErrors.map((err, i) => (
@@ -1258,9 +1398,79 @@ export default function SimulatePage() {
                   }}>
                     {i + 1}
                   </div>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 2 }}>{err.title}</div>
-                    <div style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.4 }}>{err.message}</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 2 }}>
+                      {formatPlainLanguage(err.isDurationError ? err.summary : err.title, { isAnalystView })}
+                    </div>
+                    {err.isResourceError ? (
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 4 }}>
+                        <span style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.4 }}>
+                          {formatPlainLanguage(err.message, { isAnalystView })}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSetupOpen(true);
+                            if (err.nodeId) {
+                              const taskNode = modelElements.find(el => el.id === err.nodeId);
+                              if (taskNode) {
+                                setSelectedTask(taskNode);
+                                setDetailsOpen(true);
+                              }
+                            }
+                            setValidationErrors([]);
+                          }}
+                          style={{
+                            background: '#e0f2fe',
+                            border: '1px solid #bae6fd',
+                            color: '#0369a1',
+                            borderRadius: 6,
+                            padding: '3px 8px',
+                            fontSize: 11,
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          Go to Setup
+                        </button>
+                      </div>
+                    ) : err.isDurationError && err.items ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
+                        {err.items.map((item, idx) => (
+                          <div key={idx} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 12, color: '#6b7280' }}>
+                            <span>{formatPlainLanguage(item.message, { isAnalystView })}</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const taskNode = modelElements.find(el => el.id === item.nodeId);
+                                if (taskNode) {
+                                  setSelectedTask(taskNode);
+                                  setDetailsOpen(true);
+                                }
+                              }}
+                              style={{
+                                background: '#e0f2fe',
+                                border: '1px solid #bae6fd',
+                                color: '#0369a1',
+                                borderRadius: 6,
+                                padding: '3px 8px',
+                                fontSize: 11,
+                                fontWeight: 600,
+                                cursor: 'pointer',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              Set time
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.4 }}>
+                        {formatPlainLanguage(err.message, { isAnalystView })}
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
@@ -1281,13 +1491,16 @@ export default function SimulatePage() {
       {hasToast && !validationErrors.length && (
         <div style={{ width: '100%', padding: '8px 12px 0', display: 'flex', flexDirection: 'column', gap: 6 }}>
           {backendError && (
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, borderRadius: 8, border: '1px solid #fca5a5', background: '#fef2f2', padding: '10px 14px' }}>
-              <AlertCircle size={14} style={{ color: '#ef4444', flexShrink: 0, marginTop: 2 }}/>
-              <div style={{ flex: 1 }}>
-                <p style={{ margin: '0 0 2px', fontSize: 12, fontWeight: 700, color: '#991b1b' }}>Simulation failed</p>
-                <p style={{ margin: 0, fontSize: 11, color: '#b91c1c' }}>{backendError}</p>
-              </div>
-              <button onClick={() => setBackendError(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2 }}>
+            <div style={{ position: 'relative' }}>
+              <FriendlyErrorView
+                error={backendError}
+                onRetry={handleRun}
+              />
+              <button
+                onClick={() => setBackendError(null)}
+                style={{ position: 'absolute', top: 10, right: 10, background: 'none', border: 'none', cursor: 'pointer', padding: 2 }}
+                aria-label="Dismiss error"
+              >
                 <X size={13} style={{ color: '#ef4444' }}/>
               </button>
             </div>
@@ -1295,7 +1508,9 @@ export default function SimulatePage() {
           {backendDone && !backendError && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, borderRadius: 8, border: '1px solid #6ee7b7', background: '#ecfdf5', padding: '10px 14px' }}>
               <CheckCircle2 size={14} style={{ color: '#10b981', flexShrink: 0 }}/>
-              <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: '#065f46' }}>Simulation complete — starting animation…</p>
+              <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: '#065f46' }}>
+                {isAnalystView ? 'Simulation complete — starting animation…' : 'Test run complete — starting playback…'}
+              </p>
             </div>
           )}
         </div>
@@ -1317,7 +1532,9 @@ export default function SimulatePage() {
             padding: '14px 16px'
           }}>
             <div>
-              <h2 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: '#111827' }}>Simulation Setup</h2>
+              <h2 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: '#111827' }}>
+                {isAnalystView ? 'Simulation Setup' : 'Test Setup'}
+              </h2>
               <p style={{ margin: '3px 0 0', fontSize: 11, color: '#6b7280' }}>{totalResources} resource{totalResources !== 1 ? 's' : ''} configured</p>
             </div>
             <button
@@ -1331,7 +1548,7 @@ export default function SimulatePage() {
           <div style={{ flex: 1, overflowY: 'auto' }}>
             {/* Mode */}
             <div style={{ padding: '14px 16px', borderBottom: '1px solid #f3f4f6' }}>
-              <label style={labelStyle}>Detail Level</label>
+              <label style={labelStyle}>{isAnalystView ? 'Detail Level' : 'Test Detail'}</label>
               <div style={{ display: 'flex', gap: 8 }}>
                 {[{ id: 'quick', label: 'Quick' }, { id: 'deep', label: 'Detailed' }].map(m => (
                   <button key={m.id} type="button" onClick={() => setSimulationMode(m.id)} style={{
@@ -1349,14 +1566,18 @@ export default function SimulatePage() {
             <div style={{ padding: '14px 16px', borderBottom: '1px solid #f3f4f6', background: '#fafbff' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
                 <Zap size={11} style={{ color: '#6366f1' }}/>
-                <label style={{ ...labelStyle, color: '#6366f1', margin: 0 }}>Traffic</label>
+                <label style={{ ...labelStyle, color: '#6366f1', margin: 0 }}>
+                  {isAnalystView ? 'Traffic' : 'Customer Traffic'}
+                </label>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
 
                 {/* Max Cases slider */}
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
-                    <label style={{ fontSize: 11, fontWeight: 600, color: '#374151' }}>Total Cases</label>
+                    <label style={{ fontSize: 11, fontWeight: 600, color: '#374151' }}>
+                      {isAnalystView ? 'Total Cases' : 'How many customers to test'}
+                    </label>
                     <span style={{ fontSize: 11, fontWeight: 700, color: '#4f46e5' }}>{totalInstances}</span>
                   </div>
                   <input type="range" min={50} max={2000} step={50}
@@ -1373,7 +1594,7 @@ export default function SimulatePage() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                     <label style={{ fontSize: 11, fontWeight: 600, color: '#374151', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                      Arrival Frequency
+                      {isAnalystView ? 'Arrival Frequency' : 'Customers per hour'}
                     </label>
                   </div>
                   
@@ -1445,7 +1666,7 @@ export default function SimulatePage() {
                         fontWeight: 500,
                       }}
                     >
-                      Quiet (1 case/hr)
+                      {isAnalystView ? 'Quiet (1 case/hr)' : 'Quiet (1 customer/hr)'}
                     </button>
                     <button
                       type="button"
@@ -1482,12 +1703,96 @@ export default function SimulatePage() {
                   </div>
                 </div>
 
+                {/* Advanced Settings Fold */}
+                <details style={{ marginTop: 6, border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 10px', background: '#f8fafc' }}>
+                  <summary style={{ cursor: 'pointer', fontSize: 11, fontWeight: 600, color: '#475569', userSelect: 'none' }}>
+                    {isAnalystView ? 'Advanced Settings' : 'Advanced settings'}
+                  </summary>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
+                    {/* Seed */}
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+                        <label style={{ fontSize: 11, fontWeight: 600, color: '#374151' }}>
+                          {isAnalystView ? 'Random Seed' : 'Random variation key'}
+                        </label>
+                        <span style={{ fontSize: 11, color: '#64748b' }}>{seed}</span>
+                      </div>
+                      <p style={{ margin: '0 0 6px', fontSize: 10, color: '#6b7280', lineHeight: 1.3 }}>
+                        {isAnalystView
+                          ? 'Controls pseudo-random number generator for reproducible runs.'
+                          : 'Keep this number the same to get identical test conditions every time, or change it for a different day.'}
+                      </p>
+                      <input
+                        type="number"
+                        value={seed}
+                        onChange={e => {
+                          const val = parseInt(e.target.value, 10) || 0;
+                          setSeed(val);
+                          try { localStorage.setItem('spot:simSeed', String(val)); } catch {}
+                        }}
+                        style={{ ...inputStyle, width: '100%', padding: '4px 8px', fontSize: 11, boxSizing: 'border-box' }}
+                      />
+                    </div>
+
+                    {/* Replications */}
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+                        <label style={{ fontSize: 11, fontWeight: 600, color: '#374151' }}>
+                          {isAnalystView ? 'Replications' : 'Repeated test runs'}
+                        </label>
+                        <span style={{ fontSize: 11, color: '#64748b' }}>{replications}</span>
+                      </div>
+                      <p style={{ margin: '0 0 6px', fontSize: 10, color: '#6b7280', lineHeight: 1.3 }}>
+                        {isAnalystView
+                          ? 'Number of simulation replications to average results across independent seeds.'
+                          : 'Number of test runs to average so unusual spikes do not distort your results.'}
+                      </p>
+                      <input
+                        type="number"
+                        min="1"
+                        max="50"
+                        value={replications}
+                        onChange={e => {
+                          const val = Math.max(1, parseInt(e.target.value, 10) || 1);
+                          setReplications(val);
+                          try { localStorage.setItem('spot:simReplications', String(val)); } catch {}
+                        }}
+                        style={{ ...inputStyle, width: '100%', padding: '4px 8px', fontSize: 11, boxSizing: 'border-box' }}
+                      />
+                    </div>
+
+                    {/* Total Instances (fine-tuned) */}
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+                        <label style={{ fontSize: 11, fontWeight: 600, color: '#374151' }}>
+                          {isAnalystView ? 'Total Instances' : 'Detailed case count'}
+                        </label>
+                        <span style={{ fontSize: 11, color: '#64748b' }}>{totalInstances}</span>
+                      </div>
+                      <p style={{ margin: '0 0 6px', fontSize: 10, color: '#6b7280', lineHeight: 1.3 }}>
+                        {isAnalystView
+                          ? 'Exact upper limit of simulated process instances.'
+                          : 'Total number of customer visits simulated in the background.'}
+                      </p>
+                      <input
+                        type="number"
+                        min="10"
+                        max="10000"
+                        step="10"
+                        value={totalInstances}
+                        onChange={e => setTotalInstances(Math.max(10, parseInt(e.target.value, 10) || 50))}
+                        style={{ ...inputStyle, width: '100%', padding: '4px 8px', fontSize: 11, boxSizing: 'border-box' }}
+                      />
+                    </div>
+                  </div>
+                </details>
+
               </div>
             </div>
 
             {/* Resources Pool */}
             <div style={{ padding: '14px 16px' }}>
-              <label style={labelStyle}>Global Resources</label>
+              <label style={labelStyle}>{isAnalystView ? 'Global Resources' : 'Staff & Equipment'}</label>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
                 {globalResources.map(resource => {
                   const Icon = resource.icon || Box;
@@ -1562,7 +1867,7 @@ export default function SimulatePage() {
                 }}>
                   {backendRunning
                     ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }}/> Running…</>
-                    : <><Play size={13} style={{ fill: 'currentColor' }}/> Run Simulation</>
+                    : <><Play size={13} style={{ fill: 'currentColor' }}/> {isAnalystView ? 'Run Simulation' : 'Start Test Run'}</>
                   }
                 </button>
               ) : (
@@ -1632,7 +1937,7 @@ export default function SimulatePage() {
                 <span style={{ fontSize: 36 }}>🗺️</span>
                 <p style={{ fontSize: 14, fontWeight: 600, color: '#374151', margin: 0 }}>No process found</p>
                 <p style={{ fontSize: 12, color: '#9ca3af', margin: 0, textAlign: 'center', maxWidth: 260 }}>
-                  Go to the <strong>Model</strong> page first to draw your process, then come back here to run the simulation.
+                  Go to the <strong>Model</strong> page first to draw your process, then come back here to {isAnalystView ? 'run the simulation' : 'run the test'}.
                 </p>
               </div>
             ) : (
@@ -1660,6 +1965,7 @@ export default function SimulatePage() {
                   pan={pan}
                   selectedId={selectedTask?.id}
                   activeEdgeSet={activeEdgeSet}
+                  errorNodeIds={missingDurationNodeIds}
                   onNodeClick={(el) => {
                     const isTask = el.type === 'task' || el.type === 'subprocess';
                     const isGateway = el.type.includes('gateway');
@@ -1774,8 +2080,12 @@ export default function SimulatePage() {
                     pointerEvents: 'none', zIndex: 10,
                   }}>
                     <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#10b981', animation: 'pulse 1.5s infinite' }}/>
-                    <span style={{ fontSize: 13, fontWeight: 500, color: '#374151' }}>Simulation running</span>
-                    <span style={{ fontSize: 12, color: '#9ca3af' }}>{tokens.length} case{tokens.length !== 1 ? 's' : ''} in progress</span>
+                    <span style={{ fontSize: 13, fontWeight: 500, color: '#374151' }}>
+                      {isAnalystView ? 'Simulation running' : 'Test run in progress'}
+                    </span>
+                    <span style={{ fontSize: 12, color: '#9ca3af' }}>
+                      {tokens.length} {tokens.length !== 1 ? (isAnalystView ? 'cases' : 'customers') : (isAnalystView ? 'case' : 'customer')} in progress
+                    </span>
                     {tokens.filter(t => t.state === STATE.WAITING).length > 0 && (
                       <span style={{ fontSize: 11, color: '#7c3aed', fontWeight: 600 }}>
                         ⏳ {tokens.filter(t => t.state === STATE.WAITING).length} waiting
@@ -1799,7 +2109,7 @@ export default function SimulatePage() {
                       boxShadow: '0 4px 12px rgba(5,150,105,0.4)',
                       cursor: 'pointer', zIndex: 10, whiteSpace: 'nowrap',
                     }}>
-                    ✓ Simulation Complete — View Results →
+                    ✓ {isAnalystView ? 'Simulation Complete — View Results →' : 'Test Run Complete — View Results →'}
                   </div>
                 )}
 
@@ -1866,7 +2176,7 @@ export default function SimulatePage() {
                     >
                       {backendRunning
                         ? <><Loader2 size={15} style={{ animation: 'spin 1s linear infinite' }} /> Running…</>
-                        : <><Play size={15} style={{ fill: 'currentColor' }} /> Run Simulation</>
+                        : <><Play size={15} style={{ fill: 'currentColor' }} /> {isAnalystView ? 'Run Simulation' : 'Start Test Run'}</>
                       }
                     </button>
                   </div>
@@ -1997,7 +2307,7 @@ export default function SimulatePage() {
                     onMouseLeave={e => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.opacity = '1'; }}
                   >
                     <Target size={15} className={detailsOpen ? "animate-pulse" : ""} />
-                    {detailsOpen ? 'Close Details' : 'Task Details'}
+                    {detailsOpen ? 'Close Details' : (isAnalystView ? 'Task Details' : 'Step Details')}
                   </button>
                 </div>
               </>
@@ -2025,10 +2335,12 @@ export default function SimulatePage() {
             }}>
               <div>
                 <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: '#111827' }}>
-                  {selectedTask.type.includes('gateway') ? 'Gateway Routing' : 'Task Setup'}
+                  {selectedTask.type.includes('gateway')
+                    ? (isAnalystView ? 'Gateway Routing' : 'Decision Routing')
+                    : (isAnalystView ? 'Task Setup' : 'Step Setup')}
                 </h3>
                 <p style={{ margin: '3px 0 0', fontSize: 11, color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 180 }}>
-                  {selectedTask.label || selectedTask.id}
+                  {formatPlainLanguage(selectedTask.label || selectedTask.id, { isAnalystView })}
                 </p>
               </div>
               <button onClick={() => { setSelectedTask(null); setDetailsOpen(false); }} style={{ padding: 6, background: 'transparent', border: 'none', cursor: 'pointer', borderRadius: 8 }}>
@@ -2041,17 +2353,23 @@ export default function SimulatePage() {
                 <div>
                   {selectedTask.type === 'parallel-gateway' ? (
                     <p style={{ fontSize: 12, color: '#4b5563', marginBottom: 16 }}>
-                      Parallel Gateways (AND) route tokens to ALL outgoing paths simultaneously. No routing probabilities are needed.
+                      {isAnalystView
+                        ? 'Parallel Gateways (AND) route tokens to ALL outgoing paths simultaneously. No routing probabilities are needed.'
+                        : 'This parallel split starts all outgoing paths at the same time. No path percentages are needed.'}
                     </p>
                   ) : (
                     <>
-                      <p style={{ fontSize: 12, color: '#4b5563', marginBottom: 16 }}>Set routing probabilities for outgoing paths. Values should be between 0 and 1 (e.g., 0.5 for 50%).</p>
+                      <p style={{ fontSize: 12, color: '#4b5563', marginBottom: 16 }}>
+                        {isAnalystView
+                          ? 'Set routing probabilities for outgoing paths. Values should be between 0 and 1 (e.g., 0.5 for 50%).'
+                          : 'Set the share of customers for each path. Use numbers between 0 and 1 (e.g. 0.5 for 50%).'}
+                      </p>
                       {connections.filter(c => (c.from ?? c.fromId) === selectedTask.id).length === 0 ? (
                         <p style={{ fontSize: 12, color: '#9ca3af' }}>No outgoing paths found.</p>
                       ) : (
                         connections.filter(c => (c.from ?? c.fromId) === selectedTask.id).map(conn => {
                           const targetNode = modelElements.find(n => n.id === (conn.to ?? conn.toId));
-                          const targetName = targetNode?.label || targetNode?.id || 'Unknown';
+                          const targetName = formatPlainLanguage(targetNode?.label || targetNode?.id || 'Unknown', { isAnalystView });
                           return (
                             <div key={conn.id || `${conn.from ?? conn.fromId}-${conn.to ?? conn.toId}`} style={{ marginBottom: 12 }}>
                               <label style={{ fontSize: 11, fontWeight: 600, color: '#4b5563', marginBottom: 6, display: 'flex', justifyContent: 'space-between' }}>
@@ -2187,9 +2505,13 @@ export default function SimulatePage() {
               <div style={{ width: 56, height: 56, background: '#e2e8f0', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
                 <Target size={28} color="#64748b" />
               </div>
-              <h3 style={{ margin: '0 0 8px 0', fontSize: 15, fontWeight: 700, color: '#334155' }}>No Task Selected</h3>
+              <h3 style={{ margin: '0 0 8px 0', fontSize: 15, fontWeight: 700, color: '#334155' }}>
+                {isAnalystView ? 'No Task Selected' : 'No Step Selected'}
+              </h3>
               <p style={{ margin: 0, fontSize: 13, color: '#64748b', lineHeight: 1.5 }}>
-                Click on any task in the process model to configure its resources and duration.
+                {isAnalystView
+                  ? 'Click on any task in the process model to configure its resources and duration.'
+                  : 'Click on any step in the process diagram to set up staff and time.'}
               </p>
             </aside>
           </div>

@@ -1,15 +1,18 @@
 'use client';
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { generateAIProcess } from '../lib/apiService';
 import { layoutAiDiagram } from '../lib/aiDiagramLayout';
 import ConfirmationCard from './ConfirmationCard';
 import IntakeFlow from './IntakeFlow';
 import { validateBpmn } from '../lib/intake/validateBpmn';
 import { compileBpmn } from '../lib/intake/compileBpmn';
+import { useExpandablePanel } from '../hooks/useExpandablePanel';
+import { useAnalystView } from '../lib/labels';
 import {
   Sparkles, X, ExternalLink, Send, RotateCcw, ChevronDown,
   ChevronUp, CheckCircle, AlertCircle, Loader2, Copy, Check,
-  Wand2, Zap, RefreshCw, MessageSquare, Plus,
+  Wand2, Zap, RefreshCw, MessageSquare, Plus, Maximize2, Minimize2,
 } from 'lucide-react';
 
 function makeId(type) {
@@ -220,6 +223,7 @@ import { GUIDED_STORAGE_KEY, getInitialGuidedState } from '../lib/intake/guidedS
 export { GUIDED_STORAGE_KEY, getInitialGuidedState };
 
 export default function AiPanel({ open, onClose, elements = [], connections = [], onApplyDiagram }) {
+  const [isAnalystView] = useAnalystView();
   const [mode,        setMode]       = useState('guided'); // 'guided' | 'chat'
   const [messages,   setMessages]   = useState([]);
   const [input,      setInput]      = useState('');
@@ -230,6 +234,15 @@ export default function AiPanel({ open, onClose, elements = [], connections = []
   const [lastDiagram, setLastDiagram] = useState(null); // most recent generated diagram, applied or not
   const bottomRef    = useRef(null);
   const textareaRef  = useRef(null);
+
+  const {
+    isExpanded,
+    toggleExpand,
+    isMobile,
+  } = useExpandablePanel({
+    panelId: 'ask-ai',
+    inputRef: textareaRef,
+  });
 
   // Lifted guided state (MODULE I2e Single Source of Truth)
   const [guidedState, setGuidedState] = useState(getInitialGuidedState);
@@ -537,16 +550,64 @@ export default function AiPanel({ open, onClose, elements = [], connections = []
 
   if (!open) return null;
 
+  const panelContainerStyle = isExpanded
+    ? {
+        position: 'fixed',
+        top: isMobile ? 0 : 56,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        zIndex: 60,
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+        background: '#fff',
+        fontSize: 15,
+        borderRadius: 0,
+        border: 'none',
+        boxShadow: 'none',
+      }
+    : {
+        position: 'fixed',
+        top: 56,
+        right: 0,
+        bottom: 0,
+        width: 380,
+        zIndex: 40,
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+        borderLeft: '1px solid #e5e7eb',
+        background: '#fff',
+        boxShadow: '0 4px 24px rgba(99,102,241,0.1)',
+        fontSize: 13,
+      };
+
+  const innerContentStyle = isExpanded
+    ? {
+        maxWidth: 900,
+        margin: '0 auto',
+        width: '100%',
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 0,
+        overflow: 'hidden',
+      }
+    : {
+        width: '100%',
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 0,
+        overflow: 'hidden',
+      };
+
   return (
-    <aside style={{
-      width: 380, flexShrink: 0,
-      display: 'flex', flexDirection: 'column',
-      borderRadius: 16, overflow: 'hidden',
-      border: '1px solid #e5e7eb',
-      background: '#fff',
-      boxShadow: '0 4px 24px rgba(99,102,241,0.1)',
-      position: 'relative',
-    }}>
+    <>
+      {!isExpanded && <aside style={{ width: 380, flexShrink: 0 }} aria-hidden="true" />}
+      {createPortal(
+        <aside style={panelContainerStyle}>
 
       <div style={{
         flexShrink: 0,
@@ -569,7 +630,7 @@ export default function AiPanel({ open, onClose, elements = [], connections = []
             <div>
               <div style={{ fontSize: 13, fontWeight: 700, color: '#fff', lineHeight: 1.2 }}>AI Assistant</div>
               <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.7)', marginTop: 1 }}>
-                {mode === 'guided' ? 'Guided intake · step-by-step' : (loading ? 'Generating…' : 'SPOT AI · BPMN + resources')}
+                {mode === 'guided' ? 'Guided intake · step-by-step' : (loading ? 'Generating…' : (isAnalystView ? 'SPOT AI · BPMN + resources' : 'SPOT AI · Process diagram + resources'))}
               </div>
             </div>
           </div>
@@ -600,6 +661,19 @@ export default function AiPanel({ open, onClose, elements = [], connections = []
                 )}
               </>
             )}
+                <button
+                  type="button"
+                  onClick={toggleExpand}
+                  title={isExpanded ? 'Collapse panel (Esc)' : 'Expand panel (Ctrl+Shift+F)'}
+                  aria-label={isExpanded ? 'Collapse panel' : 'Expand panel'}
+                  style={{
+                    padding: 5, borderRadius: 6, border: 'none', cursor: 'pointer',
+                    background: 'rgba(255,255,255,0.15)', color: 'rgba(255,255,255,0.85)',
+                    display: 'flex', alignItems: 'center',
+                  }}
+                >
+                  {isExpanded ? <Minimize2 size={14}/> : <Maximize2 size={14}/>}
+                </button>
             <button onClick={onClose} title="Close"
               style={{
                 padding: 5, borderRadius: 6, border: 'none', cursor: 'pointer',
@@ -698,25 +772,28 @@ export default function AiPanel({ open, onClose, elements = [], connections = []
         </div>
       </div>
 
-      {/* Guided mode container - always mounted */}
-      <div
-        style={{
-          display: mode === 'guided' ? 'flex' : 'none',
-          flexDirection: 'column',
-          flex: 1,
-          minHeight: 0,
-          overflow: 'hidden',
-        }}
-      >
-        <IntakeFlow
-          state={guidedState}
-          updateState={updateGuidedState}
-          onStartOver={handleRequestReset}
-          onSwitchToChat={handleSwitchToChat}
-          onApplyDiagram={onApplyDiagram}
-          onConfirmApply={handleConfirmApply}
-        />
-      </div>
+      {/* Main Content with centered column when expanded */}
+      <div style={innerContentStyle}>
+        {/* Guided mode container - always mounted */}
+        <div
+          style={{
+            display: mode === 'guided' ? 'flex' : 'none',
+            flexDirection: 'column',
+            flex: 1,
+            minHeight: 0,
+            overflow: 'hidden',
+          }}
+        >
+          <IntakeFlow
+            state={guidedState}
+            updateState={updateGuidedState}
+            onStartOver={handleRequestReset}
+            onSwitchToChat={handleSwitchToChat}
+            onApplyDiagram={onApplyDiagram}
+            onConfirmApply={handleConfirmApply}
+            isExpanded={isExpanded}
+          />
+        </div>
 
       {/* Chat mode container - always mounted */}
       <div
@@ -751,7 +828,7 @@ export default function AiPanel({ open, onClose, elements = [], connections = []
                 Hi! I'm your SPOT AI assistant.
               </p>
               <p style={{ fontSize: 13, color: '#6b7280', lineHeight: 1.55, marginBottom: 12 }}>
-                Describe a business process and I'll generate a BPMN diagram instantly.
+                Describe a business process and I'll generate a {isAnalystView ? 'BPMN' : 'process'} diagram instantly.
                 I can also modify your current diagram — just ask.
               </p>
               {elements.length > 0 && (
@@ -888,6 +965,7 @@ export default function AiPanel({ open, onClose, elements = [], connections = []
         </p>
       </div>
       </div>
+      </div>
 
       {/* Discard Draft Confirmation Dialog */}
       {showDiscardConfirm && (
@@ -1007,6 +1085,9 @@ export default function AiPanel({ open, onClose, elements = [], connections = []
       <style>{`
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
       `}</style>
-    </aside>
+    </aside>,
+    document.body
+  )}
+  </>
   );
 }

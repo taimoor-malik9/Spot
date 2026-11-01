@@ -32,6 +32,25 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: null,
   },
+  businessName: {
+    type: String,
+    default: '',
+    trim: true,
+  },
+  businessType: {
+    type: String,
+    default: 'retail',
+    trim: true,
+  },
+  currency: {
+    type: String,
+    default: 'Rs',
+    trim: true,
+  },
+  workingHoursPerDay: {
+    type: Number,
+    default: 8,
+  },
   securityQuestions: [
     {
       questionId: {
