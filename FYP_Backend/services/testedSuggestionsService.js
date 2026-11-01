@@ -422,7 +422,7 @@ async function summarizeCandidateWithGemini(candidate, passingData) {
  */
 async function generateTestedSuggestions({ processDoc, goal = 'waiting', config = {} }) {
   const startTime = Date.now();
-  const timeoutDeadline = startTime + 30000;
+  const timeoutDeadline = startTime + Number(process.env.SOLVE_TIMEOUT_MS || 30000);
 
   const validGoal = ['waiting', 'cost', 'throughput'].includes(goal)
     ? goal
