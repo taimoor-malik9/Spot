@@ -11,6 +11,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { GuestLockModal } from '@/components/auth/GuestLockModal';
 import { saveProcess, updateProcess, getAllProcesses, shapeBackendToFrontend } from '../lib/apiService';
+import { PALETTE_TOOLTIPS, getDefaultProcessTitle, useAnalystView } from '../lib/labels';
 import AiPanel from './AiPanel';
 import SpotAssistant from '../components/SpotAssistant';
 import { NW, NH, elCenter, bestPorts, isXorGateway, outlineAnchor } from '../components/model/bpmnGeometry';
@@ -1014,6 +1015,7 @@ function Palette({ onAdd, onStartFlow, activeFlowMode }) {
                   return (
                     <div key={item.id}
                       draggable={!item.flowMode}
+                      title={PALETTE_TOOLTIPS[item.id] || item.label}
                       onDragStart={e => {
                         if (item.flowMode) { e.preventDefault(); return; }
                         e.dataTransfer.effectAllowed = 'copy';
@@ -1116,7 +1118,8 @@ export default function ModelPage() {
     localStorage.removeItem('spot:processId');
     localStorage.removeItem('spot:processTitle');
     setSavedProcessId(null);
-    setProcessTitle('Untitled Process');
+    const defTitle = getDefaultProcessTitle();
+    setProcessTitle(defTitle);
     setElements([]);
     setConnections([]);
     setSelId(null);
@@ -1127,7 +1130,7 @@ export default function ModelPage() {
   const [connections, setConnections] = useState([]);
 
   // ── Backend integration state ────────────────────────────────────────────────
-  const [processTitle, setProcessTitle] = useState('Untitled Process');
+  const [processTitle, setProcessTitle] = useState(() => localStorage.getItem('spot:processTitle') || getDefaultProcessTitle());
   const [savedProcessId, setSavedProcessId] = useState(() => localStorage.getItem('spot:processId') || null);
   const [backendSaving, setBackendSaving] = useState(false);
   const [backendLoading, setBackendLoading] = useState(false);
@@ -1225,14 +1228,15 @@ export default function ModelPage() {
 
   const loadProcessFromBackend = useCallback((process) => {
     const { elements: els, connections: conns } = shapeBackendToFrontend(process);
+    const pTitle = process.title || getDefaultProcessTitle();
     localStorage.setItem('spot:processId', process._id || process.id);
-    localStorage.setItem('spot:processTitle', process.title || 'Untitled Process');
+    localStorage.setItem('spot:processTitle', pTitle);
     localStorage.setItem('spot:model:nodes', JSON.stringify({ nodes: els, connections: conns }));
     if (process.resources && Array.isArray(process.resources)) {
       localStorage.setItem('spot:globalResources', JSON.stringify(process.resources));
     }
     setSavedProcessId(process._id || process.id);
-    setProcessTitle(process.title || 'Untitled Process');
+    setProcessTitle(pTitle);
     setElements(els);
     setConnections(conns);
     setShowLoadModal(false);

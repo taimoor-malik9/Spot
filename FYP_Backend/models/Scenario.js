@@ -22,7 +22,10 @@ const ScenarioSchema = new mongoose.Schema({
         ref: 'Process'
     },
     title: String,
-    nodes: Array,
+    nodes: {
+        type: mongoose.Schema.Types.Mixed,
+        default: []
+    },
     edges: Array,
     // Same container-box data Process.js now carries — without this,
     // scenarios forked from baseline lose their swimlanes the moment
@@ -48,6 +51,12 @@ const ScenarioSchema = new mongoose.Schema({
         type: String,
         default: null
     },
+    userId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        index: true,
+        default: null
+    },
     createdAt: {
         type: Date,
         default: Date.now
@@ -68,7 +77,32 @@ function normalizeEdgeData(data) {
   return {};
 }
 
+function normalizeNodeOrigin(nodes) {
+  if (!Array.isArray(nodes)) return [];
+  return nodes.map(n => {
+    if (!n || typeof n !== 'object') return n;
+    const d = n.data && typeof n.data === 'object' ? { ...n.data } : {};
+    const origin = d.origin || n.origin || 'user';
+    const kept = d.kept !== undefined ? Boolean(d.kept) : (n.kept !== undefined ? Boolean(n.kept) : false);
+    const estimated = Boolean(d.estimated ?? n.estimated);
+    return {
+      ...n,
+      origin,
+      kept,
+      data: {
+        ...d,
+        origin,
+        kept,
+        estimated,
+      }
+    };
+  });
+}
+
 ScenarioSchema.pre('save', function (next) {
+  if (Array.isArray(this.nodes)) {
+    this.nodes = normalizeNodeOrigin(this.nodes);
+  }
   if (Array.isArray(this.edges)) {
     this.edges = this.edges.map(e => ({
       ...e,
@@ -79,6 +113,9 @@ ScenarioSchema.pre('save', function (next) {
 });
 
 ScenarioSchema.post('init', function () {
+  if (Array.isArray(this.nodes)) {
+    this.nodes = normalizeNodeOrigin(this.nodes);
+  }
   if (Array.isArray(this.edges)) {
     this.edges = this.edges.map(e => ({
       ...e,

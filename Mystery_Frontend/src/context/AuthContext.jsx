@@ -1,7 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { request } from '@/lib/apiService';
 
-const AuthContext = createContext(null);
+export const AuthContext = createContext(null);
 
 export const getStoredToken = () => {
   return localStorage.getItem('spot_token') || sessionStorage.getItem('spot_token') || null;
@@ -34,16 +33,28 @@ export function AuthProvider({ children }) {
       }
 
       try {
-        const data = await request('/api/auth/me', {
+        const res = await fetch('/api/auth/me', {
           headers: {
-            Authorization: `Bearer ${currentToken}`
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${currentToken}`
           }
         });
 
-        if (isMounted) {
-          setUser(data.user);
-          setToken(currentToken);
-          setIsGuest(false);
+        if (res.ok) {
+          const data = await res.json();
+          if (isMounted) {
+            setUser(data.user);
+            setToken(currentToken);
+            setIsGuest(false);
+          }
+        } else {
+          // Token is invalid/expired
+          localStorage.removeItem('spot_token');
+          sessionStorage.removeItem('spot_token');
+          if (isMounted) {
+            setUser(null);
+            setToken(null);
+          }
         }
       } catch (err) {
         console.error('Failed to verify session:', err);
@@ -86,20 +97,38 @@ export function AuthProvider({ children }) {
   };
 
   const login = async (email, password, rememberMe = true) => {
-    const data = await request('/api/auth/login', {
+    const res = await fetch('/api/auth/login', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password })
     });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(data.error || 'Invalid email or password');
+      err.status = res.status;
+      err.code = data.code;
+      throw err;
+    }
 
     saveAuthSuccess(data.token, data.user, rememberMe);
     return data.user;
   };
 
   const signup = async (name, email, password, securityQuestions) => {
-    const data = await request('/api/auth/signup', {
+    const res = await fetch('/api/auth/signup', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, email, password, securityQuestions })
     });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(data.error || 'Failed to create account');
+      err.status = res.status;
+      err.code = data.code;
+      throw err;
+    }
 
     // Auto-login on signup
     saveAuthSuccess(data.token, data.user, true);
@@ -110,10 +139,18 @@ export function AuthProvider({ children }) {
     const body = typeof codeOrPayload === 'string'
       ? { code: codeOrPayload }
       : codeOrPayload;
-    const data = await request('/api/auth/google', {
+    const res = await fetch('/api/auth/google', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(data.error || 'Google login failed');
+      err.status = res.status;
+      throw err;
+    }
 
     if (data.requireSecurityQuestions) {
       return data;
@@ -132,6 +169,10 @@ export function AuthProvider({ children }) {
     setIsGuest(true);
   };
 
+  const updateUser = useCallback((updatedUserData) => {
+    setUser((prev) => (prev ? { ...prev, ...updatedUserData } : updatedUserData));
+  }, []);
+
   const value = {
     user,
     token,
@@ -141,7 +182,8 @@ export function AuthProvider({ children }) {
     signup,
     googleLogin,
     continueAsGuest,
-    logout
+    logout,
+    updateUser
   };
 
   return (

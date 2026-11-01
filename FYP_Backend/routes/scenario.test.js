@@ -69,6 +69,7 @@ function buildBaseProcessFromSpec(spec, tools, title) {
     flowType: c.flowType || (c.type === 'message-flow' ? 'message' : 'sequence'),
     data: {
       type: c.type || (c.flowType === 'message' ? 'message-flow' : 'sequence-flow'),
+      label: c.label || c.data?.label,
       probability: c.probability,
     },
   }));

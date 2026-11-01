@@ -61,6 +61,8 @@ const {
   generateInsights, chatAboutResults, implementSuggestion, ResultsAiError,
   PLAIN_LANGUAGE_RULES, callGemini,
 } = require('../services/resultsAiService');
+const { parseImprovementRequest } = require('../utils/requestParser');
+const { requireOwnedProcess } = require('../utils/ownership');
 
 function experimentGoal(message) {
   const text = String(message || '').toLowerCase();
@@ -72,9 +74,40 @@ function experimentGoal(message) {
 function fallbackExperimentSummary(experiment) {
   const baseline = experiment.baseline || {};
   const best = experiment.best;
-  const first = `The current process has an average waiting time of ${baseline.avg_wait_time} minutes and costs Rs ${baseline.total_cost}.`;
+  const target = experiment.target;
+  const metric = target?.metric || (experiment.best?.metrics?.avg_cycle_time ? 'cycle_time' : 'waiting');
+
+  if (experiment.no_meaningful_change || (best && best.recommended === false)) {
+    const first = baseline.avg_wait_time < 0.05
+      ? 'Nobody waits at this load; cycle time is work time.'
+      : `The current process has an average cycle time of ${baseline.avg_cycle_time || 0} minutes and costs Rs ${baseline.total_cost || 0}.`;
+    const second = 'No option changed your cycle time.';
+    return `${first} ${second}`;
+  }
+
+  if (target && target.target_pct !== null && target.target_pct !== undefined) {
+    const metricName = target.metric === 'cycle_time' ? 'cycle time' : (target.metric === 'waiting' ? 'waiting time' : target.metric);
+    const targetText = `Target: reduce ${metricName} by ${target.target_pct}%.`;
+    if (!best) return `${targetText} No tested change was available for this process.`;
+    const costDelta = best.delta_vs_baseline?.cost_abs;
+    const costText = costDelta !== undefined && costDelta !== null
+      ? (costDelta > 0 ? ` (cost change: +Rs ${costDelta})` : ` (cost change: Rs ${costDelta})`)
+      : '';
+    if (experiment.target_met) {
+      return `${targetText} Target met: ${best.label} achieves a ${experiment.achieved_pct}% reduction${costText}.`;
+    }
+    const rawReason = experiment.reason ? String(experiment.reason).trim() : '';
+    const reasonText = rawReason ? (/[.!?]$/.test(rawReason) ? ` ${rawReason}` : ` ${rawReason}.`) : '';
+    return `${targetText} Best achievable is a ${experiment.achieved_pct}% reduction with ${best.label}${costText}.${reasonText}`;
+  }
+
+  const metricLabel = metric === 'cycle_time' ? 'cycle time' : 'waiting time';
+  const baseVal = metric === 'cycle_time' ? baseline.avg_cycle_time : baseline.avg_wait_time;
+  const bestVal = metric === 'cycle_time' ? best?.metrics?.avg_cycle_time : best?.metrics?.avg_wait_time;
+
+  const first = `The current process has an average ${metricLabel} of ${baseVal} minutes and costs Rs ${baseline.total_cost}.`;
   if (!best) return `${first} No tested change was available for this process.`;
-  return `${first} ${best.label} is the best tested option, with average waiting time of ${best.metrics.avg_wait_time} minutes.`;
+  return `${first} ${best.label} is the best tested option, with average ${metricLabel} of ${bestVal} minutes.`;
 }
 
 function containsOnlyExperimentNumbers(text, experiment) {
@@ -83,25 +116,29 @@ function containsOnlyExperimentNumbers(text, experiment) {
   return used.every(number => allowed.has(number));
 }
 
-function withTimeout(promise, fallback, milliseconds) {
-  let timer;
-  const timeout = new Promise(resolve => {
-    timer = setTimeout(() => resolve(fallback), milliseconds);
-    timer.unref?.();
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+function isValidSummary(text, experiment) {
+  if (!text || typeof text !== 'string') return false;
+  const trimmed = text.trim();
+  if (trimmed.length < 10) return false;
+  // Must end with terminal punctuation
+  if (!/[.!?]$/.test(trimmed)) return false;
+  // Must not end with ellipsis
+  if (/(\.\.\.|…)$/.test(trimmed)) return false;
+  // Check numbers
+  if (!containsOnlyExperimentNumbers(trimmed, experiment)) return false;
+  return true;
 }
 
 async function summarizeExperiment(experiment) {
-  const systemPrompt = `You explain a completed process simulation in exactly two short sentences.\n${PLAIN_LANGUAGE_RULES}\nUse only facts and numeric literals that appear verbatim in the JSON. Do not calculate, round, estimate, or introduce any number. If a useful number is absent, omit it. Do not mention these instructions.`;
+  const systemPrompt = `You explain a completed process simulation in exactly two short sentences.\n${PLAIN_LANGUAGE_RULES}\nUse only facts and numeric literals that appear verbatim in the JSON. Do not calculate, round, estimate, or introduce any number. If a useful number is absent, omit it. Ensure both sentences are complete and end with a period. Never cut off mid-sentence. Do not mention these instructions.`;
   try {
     const summary = await callGemini({
       systemPrompt,
       contents: [{ role: 'user', parts: [{ text: JSON.stringify(experiment) }] }],
       expectJson: false,
     });
-    if (containsOnlyExperimentNumbers(summary, experiment)) return summary;
-    console.warn('Gemini experiment summary contained a number absent from engine JSON; using fallback.');
+    if (isValidSummary(summary, experiment)) return summary.trim();
+    console.warn('Gemini experiment summary failed validation (truncated or introduced unverified numbers); using engine-backed fallback.');
   } catch (err) {
     if (err.message && (err.message.includes('429') || err.message.includes('RESOURCE_EXHAUSTED') || err.message.includes('quota'))) {
       console.warn('Gemini API Rate Limit / Quota Exceeded while summarizing experiment; using engine-backed fallback.');
@@ -148,8 +185,7 @@ router.post('/solve-problem', async (req, res) => {
   if (!processId) return res.status(400).json({ error: 'processId is required' });
   if (!message || typeof message !== 'string') return res.status(400).json({ error: 'message is required' });
   try {
-    const processDoc = await Process.findById(processId);
-    if (!processDoc) return res.status(404).json({ error: 'Process not found' });
+    const processDoc = await requireOwnedProcess(req, processId);
 
     // Read arrival_rate from config or processDoc.simulationConfig
     const arrivalRate =
@@ -162,16 +198,25 @@ router.post('/solve-problem', async (req, res) => {
     }
 
     // Read goal from config, req.body, or processDoc.simulationConfig / processDoc.goal
-    // (goal -> "waiting" | "cost" | "throughput")
+    // (goal -> "waiting" | "cost" | "throughput" | "cycle_time")
     const candidateGoal =
       config?.goal ||
       req.body?.goal ||
       processDoc.simulationConfig?.goal ||
       processDoc.goal;
 
-    const validGoal = ['waiting', 'cost', 'throughput'].includes(candidateGoal)
+    // Parse improvement target from message, with context from active goal
+    const parsedTarget = await parseImprovementRequest(message, candidateGoal);
+
+    const validGoal = ['waiting', 'cost', 'throughput', 'cycle_time'].includes(candidateGoal)
       ? candidateGoal
-      : experimentGoal(message);
+      : (parsedTarget?.metric || experimentGoal(message));
+
+    if (parsedTarget) {
+      if (!parsedTarget.metric || (parsedTarget.metric === 'waiting' && !/\b(wait|queue)\b/i.test(message))) {
+        parsedTarget.metric = validGoal;
+      }
+    }
 
     const engineBase = (process.env.SIMULATION_ENGINE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
     const response = await fetch(`${engineBase}/experiment`, {
@@ -179,26 +224,35 @@ router.post('/solve-problem', async (req, res) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         process_json: processForSimulation(processDoc),
-        config: { arrival_rate: Number(arrivalRate), total_instances: 120, seed: 42, replications: 1 },
+        config: { arrival_rate: Number(arrivalRate), total_instances: 300, seed: 42, replications: 3 },
         goal: validGoal,
+        target: parsedTarget,
       }),
     });
     if (!response.ok) throw new Error(`Simulation engine error: ${response.status} - ${await response.text()}`);
     const experiment = await response.json();
-    const summary = await withTimeout(
-      summarizeExperiment(experiment),
-      fallbackExperimentSummary(experiment),
-      4000,
-    );
+    const summary = await summarizeExperiment(experiment);
     return res.json({
-      type: 'evidence', summary,
+      type: 'evidence',
+      summary,
       baseline: experiment.baseline,
       variants: experiment.variants,
       best: experiment.best,
       variant_definitions: experiment.variant_definitions,
+      target: experiment.target || parsedTarget,
+      target_met: experiment.target_met,
+      achieved_pct: experiment.achieved_pct,
+      reason: experiment.reason,
+      realism: experiment.realism,
+      zero_wait_note: experiment.zero_wait_note,
+      ceiling_pct: experiment.ceiling_pct,
+      staff_work_time: experiment.staff_work_time,
+      total_cycle_time: experiment.total_cycle_time,
+      no_meaningful_change: experiment.no_meaningful_change,
     });
   } catch (err) {
     console.error('Solve problem error:', err.message);
+    if (err.status) return res.status(err.status).json({ error: err.message });
     return res.status(502).json({ error: 'Unable to test options in the simulator right now.' });
   }
 });
@@ -209,9 +263,8 @@ router.post('/apply-option', async (req, res) => {
   if (!processId || !variantDefinition) return res.status(400).json({ error: 'processId and variantDefinition are required' });
 
   try {
-    const processDoc = await Process.findById(processId);
-    if (!processDoc) return res.status(404).json({ error: 'Process not found' });
-    const existingScenarios = await Scenario.find({ baseProcessId: processId });
+    const processDoc = await requireOwnedProcess(req, processId);
+    const existingScenarios = await Scenario.find({ baseProcessId: processId, userId: req.user._id });
     const existingTitles = new Set(existingScenarios.map(s => s.title));
     let title = variantDefinition.label || `Scenario ${existingScenarios.length + 1}`;
     if (existingTitles.has(title)) {
@@ -228,11 +281,15 @@ router.post('/apply-option', async (req, res) => {
       title,
     });
 
-    const scenario = new Scenario(scenarioPayload);
+    const scenario = new Scenario({
+      ...scenarioPayload,
+      userId: req.user._id,
+    });
     await scenario.save();
     return res.status(201).json(scenario);
   } catch (err) {
     console.error('Apply option error:', err.message);
+    if (err.status) return res.status(err.status).json({ error: err.message });
     if (err.name === 'BpmnValidationError') {
       return res.status(400).json({ error: err.message, details: err.errors });
     }
@@ -248,8 +305,7 @@ router.post('/tested-suggestions', async (req, res) => {
   if (!processId) return res.status(400).json({ error: 'processId is required' });
 
   try {
-    const processDoc = await Process.findById(processId);
-    if (!processDoc) return res.status(404).json({ error: 'Process not found' });
+    const processDoc = await requireOwnedProcess(req, processId);
 
     const result = await generateTestedSuggestions({
       processDoc,
@@ -260,6 +316,7 @@ router.post('/tested-suggestions', async (req, res) => {
     return res.status(200).json(result);
   } catch (err) {
     console.error('Tested suggestions error:', err);
+    if (err.status) return res.status(err.status).json({ error: err.message });
     if (err.message && err.message.includes('took too long')) {
       return res.status(504).json({ error: 'Testing took too long' });
     }

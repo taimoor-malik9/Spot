@@ -1,20 +1,22 @@
 'use client';
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import {
   ArrowLeft, RefreshCw, Target, CheckCircle, AlertTriangle, 
   LayoutDashboard, Clock, Zap, ShieldAlert,
-  GitCompare, TrendingUp, TrendingDown, History, ChevronDown, Layers
+  GitCompare, TrendingUp, TrendingDown, History, ChevronDown, Layers, Loader2, Trash2
 } from 'lucide-react';
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend, LabelList
 } from 'recharts';
-import { getScenarios } from '../lib/apiService';
+import { useAuth } from '@/context/AuthContext';
+import { getScenarios, listRuns, getRun, deleteRun, runSimulation, runScenarioSimulation } from '../lib/apiService';
 import AIInsightsPanel from './AIInsightsPanel';
 import AIChatWidget from './AIChatWidget';
 import { computeComparisonMetrics } from '../lib/whatIfComparison';
+import { useAnalystView, Hint, LABELS, formatPlainLanguage } from '../lib/labels';
 
 /* ═══════════════════════════════════════════════════════════════
    UTILITIES
@@ -244,7 +246,7 @@ function InfoTip({ title, children, whole = true, corner = 'tr' }) {
   );
 }
 
-function verdict(results, idToLabel, simMode) {
+function verdict(results, idToLabel, simMode, currency = 'Rs', isAnalystView = false) {
   const tis = results?.time_in_system || {};
   const avg = tis.avg ?? 0;
   const min = tis.min ?? 0;
@@ -258,7 +260,12 @@ function verdict(results, idToLabel, simMode) {
   const lines = [];
   if (simMode === 'quick') {
     lines.push({ type: 'info', text: `Theoretical best-case duration is **${fmt(avg)}** per unit.` });
-    lines.push({ type: 'success', text: `Optimal path baseline established. Run Deep Analysis for accurate constraints and throughput.` });
+    lines.push({
+      type: 'success',
+      text: isAnalystView
+        ? 'Optimal path baseline established. Run Deep Analysis for accurate constraints and throughput.'
+        : 'Optimal path benchmark established. Run Deep Analysis for accurate constraints and customer capacity.'
+    });
   } else {
     const ov = buildPlainSummary(results);
     if (ov.overloaded && ov.tight) {
@@ -274,7 +281,12 @@ function verdict(results, idToLabel, simMode) {
     if (simMode === 'quick') {
       lines.push({ type: 'alert', text: `**"${bnLabel}"** is the slowest step in your process.` });
     } else {
-      lines.push({ type: 'alert', text: `**"${bnLabel}"** is your primary bottleneck constraint.` });
+      lines.push({
+        type: 'alert',
+        text: isAnalystView
+          ? `**"${bnLabel}"** is your primary bottleneck constraint.`
+          : `**"${bnLabel}"** is where customers wait the longest.`
+      });
     }
   }
   if (criticalResource && simMode !== 'quick') lines.push({ type: 'alert', text: `**${criticalResource[0]}** is overloaded (${criticalResource[1].utilization_pct}% capacity).` });
@@ -283,15 +295,20 @@ function verdict(results, idToLabel, simMode) {
     const fin = results?.financial_summary;
     if (fin && fin.total_cost > 0) {
       const totalFmt = fin.total_cost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-      lines.push({ type: 'info', text: `Total operational cost for this simulation run was **Rs ${totalFmt}**.` });
+      lines.push({ type: 'info', text: `Total operational cost for this ${isAnalystView ? 'simulation run' : 'test run'} was **${currency} ${totalFmt}**.` });
       
-      if (fin.total_idle_cost > 0) {
+      if (fin.total_active_cost === 0) {
+        lines.push({
+          type: 'warn',
+          text: `No staff time was recorded, so all cost shows as idle. Assign staff to steps in Task Details.`
+        });
+      } else if (fin.total_idle_cost > 0) {
         const wastePct = (fin.total_idle_cost / fin.total_cost) * 100;
         const idleFmt = fin.total_idle_cost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         if (wastePct >= 20) {
-          lines.push({ type: 'warn', text: `**High Financial Waste:** **Rs ${idleFmt}** (${wastePct.toFixed(1)}% of total cost) was lost to idle resource wait times.` });
+          lines.push({ type: 'warn', text: `**High Financial Waste:** **${currency} ${idleFmt}** (${wastePct.toFixed(1)}% of total cost) was lost to idle resource wait times.` });
         } else {
-          lines.push({ type: 'info', text: `**Rs ${idleFmt}** (${wastePct.toFixed(1)}% of total cost) was spent on idle resources.` });
+          lines.push({ type: 'info', text: `**${currency} ${idleFmt}** (${wastePct.toFixed(1)}% of total cost) was spent on idle resources.` });
         }
       }
     }
@@ -300,7 +317,7 @@ function verdict(results, idToLabel, simMode) {
   return lines;
 }
 
-function PlainSummaryCard({ plain, simMode, idToLabel = {} }) {
+function PlainSummaryCard({ plain, simMode, idToLabel = {}, isAnalystView = false }) {
   if (!plain) return null;
   const { total, work, wait, min, max, perHour, perDay, dayHours, tight, arrivalPerHr, status, runs, steps } = plain;
   const isQuick = simMode === 'quick';
@@ -397,7 +414,7 @@ function PlainSummaryCard({ plain, simMode, idToLabel = {} }) {
             <Stat icon={<Layers size={22} color="#0ea5e9" />} bg="#f0f9ff" title="Customers per day" tip="Customers per hour multiplied by the working hours in a day. The hours come from your resource settings, or 8 hours if none are set." val={Math.round(perDay).toLocaleString()} text={`in a ${dayHours}-hour day`} />
           </>
         )}
-        <Stat icon={<Target size={22} color="#f59e0b" />} bg="#fffbeb" title="Average cycle time" muted={overloaded} badge={overloaded ? { t: 'Inflated by the line', c: '#b91c1c', bg: '#fee2e2' } : null} tip="The average time from start to finish, waiting in line included. Customers keep arriving without a break, so if staff cannot keep up the line grows and this number climbs. A big gap from Time per customer means customers mostly wait." val={fmt(total)}
+        <Stat icon={<Target size={22} color="#f59e0b" />} bg="#fffbeb" title={isAnalystView ? "Average cycle time" : <Hint term="cycle_time">Average completion time</Hint>} muted={overloaded} badge={overloaded ? { t: 'Inflated by the line', c: '#b91c1c', bg: '#fee2e2' } : null} tip="The average time from start to finish, waiting in line included. Customers keep arriving without a break, so if staff cannot keep up the line grows and this number climbs. A big gap from Time per customer means customers mostly wait." val={fmt(total)}
           text={isQuick ? 'start to finish' : overloaded ? 'pushed up by the growing line, not one real customer\'s time' : `fastest ${fmt(min)}, slowest ${fmt(max)}`} />
       </div>
 
@@ -456,7 +473,7 @@ function PlainSummaryCard({ plain, simMode, idToLabel = {} }) {
 
       {!isQuick && (
         <p style={{ fontSize: 12, color: '#94a3b8', margin: '16px 0 0', lineHeight: 1.5 }}>
-          Cycle time is an average over all {runs} customers, so a growing queue pushes it up. "Time per customer" shows the work itself.
+          {isAnalystView ? 'Cycle time' : 'Time from arrival to leaving'} is an average over all {runs} customers, so a growing queue pushes it up. "Time per customer" shows the work itself.
         </p>
       )}
     </div>
@@ -483,14 +500,23 @@ function SectionHeader({ icon, bg, title, subtitle }) {
   );
 }
 
-function ResourceUtilizationSection({ results }) {
+function ResourceUtilizationSection({ results, isAnalystView = false }) {
   const entries = Object.entries(results?.resource_utilization || {});
   if (entries.length === 0) return null;
   const R = 22, CIRC = 2 * Math.PI * R;
   return (
     <div style={{ position: 'relative', background: '#fff', borderRadius: 16, border: '1px solid #e2e8f0', padding: '24px' }}>
-<InfoTip title="Resource utilization">How much of the time each resource was busy. Above 85% (Overloaded) it cannot keep up and queues form. Below 30% (Underused) it is mostly idle. In between is healthy.</InfoTip>
-      <SectionHeader icon={<Zap size={20} color="#10b981" />} bg="#ecfdf5" title="Resource Utilization" subtitle="How busy each resource was during the simulation" />
+      <InfoTip title={isAnalystView ? "Resource utilization" : "Staff activity"}>
+        {isAnalystView
+          ? "How much of the time each resource was busy. Above 85% (Overloaded) it cannot keep up and queues form. Below 30% (Underused) it is mostly idle. In between is healthy."
+          : "How much of the time each team member was busy. Above 85% (Overloaded) they cannot keep up and lines form. Below 30% (Underused) they are mostly idle. In between is healthy."}
+      </InfoTip>
+      <SectionHeader
+        icon={<Zap size={20} color="#10b981" />}
+        bg="#ecfdf5"
+        title={isAnalystView ? "Resource Utilization" : <Hint term="utilization">How Busy Staff Are</Hint>}
+        subtitle={isAnalystView ? "How busy each resource was during the simulation" : "How busy each team member was during the test run"}
+      />
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 16 }}>
         {entries.map(([name, u]) => {
           const pct = Math.max(0, Math.min(100, u?.utilization_pct || 0));
@@ -526,7 +552,7 @@ function ResourceUtilizationSection({ results }) {
   );
 }
 
-function KeyTakeaways({ lines }) {
+function KeyTakeaways({ lines, isAnalystView = false }) {
   if (!lines || lines.length === 0) return null;
   const look = {
     info:    { bg: '#f5f3ff', border: '#e9e5ff', color: '#334155', icon: <InfoIcon color="#6b4de6" /> },
@@ -536,15 +562,26 @@ function KeyTakeaways({ lines }) {
   };
   return (
     <div style={{ position: 'relative', background: '#fff', borderRadius: 16, border: '1px solid #e2e8f0', padding: '24px' }}>
-<InfoTip title="Key takeaways">The most important findings from this simulation, written in plain sentences. Red points need attention, yellow are warnings, blue are information.</InfoTip>
-      <SectionHeader icon={<CheckCircle size={20} color="#6b4de6" />} bg="#f5f3ff" title="Key Takeaways" subtitle="The main points from this simulation" />
+      <InfoTip title="Key takeaways">
+        {isAnalystView
+          ? "The most important findings from this simulation, written in plain sentences. Red points need attention, yellow are warnings, blue are information."
+          : "The most important findings from this test, written in plain sentences. Red points need attention, yellow are warnings, blue are information."}
+      </InfoTip>
+      <SectionHeader
+        icon={<CheckCircle size={20} color="#6b4de6" />}
+        bg="#f5f3ff"
+        title="Key Takeaways"
+        subtitle={isAnalystView ? "The main points from this simulation" : "The main points from this test run"}
+      />
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {lines.map((l, i) => {
           const s = look[l.type] || look.info;
           return (
             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 14, background: s.bg, border: `1px solid ${s.border}`, borderRadius: 10, padding: '14px 18px' }}>
               {s.icon}
-              <p style={{ margin: 0, fontSize: 14, color: s.color, lineHeight: 1.5 }}><RichText text={l.text} /></p>
+              <p style={{ margin: 0, fontSize: 14, color: s.color, lineHeight: 1.5 }}>
+                <RichText text={formatPlainLanguage(l.text, { isAnalystView })} />
+              </p>
             </div>
           );
         })}
@@ -584,10 +621,26 @@ function SpotButton({ onClick, children, size = 'md', variant = 'primary' }) {
 
 export default function ResultsPage() {
   const navigate = useNavigate();
-  const [results, setResults] = useState(null);
+  const { user } = useAuth() || {};
+  const [isAnalystView] = useAnalystView(user?.id || user?._id);
+  const currency = user?.currency || localStorage.getItem('spot:profile:currency') || 'Rs';
+  const [results, setResults] = useState(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = localStorage.getItem('spot:simulationResults');
+        if (stored) return JSON.parse(stored);
+      } catch {}
+    }
+    return null;
+  });
   const [idToLabel, setIdToLabel] = useState({});
   const [idToResource, setIdToResource] = useState({});
-  const [ready, setReady] = useState(false);
+  const [ready, setReady] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return Boolean(localStorage.getItem('spot:simulationResults'));
+    }
+    return false;
+  });
   const [activeTab, setActiveTab] = useState('overview');
   const [simMode, setSimMode] = useState('quick');
   const [hasNodes, setHasNodes] = useState(true);
@@ -603,6 +656,130 @@ export default function ResultsPage() {
   const [activeScenarioKey, setActiveScenarioKey] = useState('baseline');
   const [scenarioPickerOpen, setScenarioPickerOpen] = useState(false);
   const [loadingScenarios, setLoadingScenarios] = useState(false);
+
+  // Run history states (Module H1)
+  const [runsList, setRunsList] = useState([]);
+  const [runsCursor, setRunsCursor] = useState(null);
+  const [hasMoreRuns, setHasMoreRuns] = useState(false);
+  const [loadingRuns, setLoadingRuns] = useState(false);
+  const [loadingMoreRuns, setLoadingMoreRuns] = useState(false);
+  const [runsError, setRunsError] = useState(null);
+  const [selectedRun, setSelectedRun] = useState(null);
+  const [reRunning, setReRunning] = useState(false);
+
+  const fetchRuns = useCallback(async (cursor = null) => {
+    const processId = localStorage.getItem('spot:processId');
+    if (!processId) return;
+    if (cursor) {
+      setLoadingMoreRuns(true);
+    } else {
+      setLoadingRuns(true);
+      setRunsError(null);
+    }
+    try {
+      const res = await listRuns({ processId, limit: 10, cursor });
+      const newRuns = res?.runs || [];
+      if (cursor) {
+        setRunsList(prev => [...prev, ...newRuns]);
+      } else {
+        setRunsList(newRuns);
+      }
+      setRunsCursor(res?.nextCursor || null);
+      setHasMoreRuns(Boolean(res?.nextCursor));
+    } catch (err) {
+      console.warn('Failed to load runs history:', err.message);
+      if (err.message && err.message.includes('404')) {
+        setRunsError('Process or runs not found.');
+      } else {
+        setRunsError(err.message || 'Failed to load run history');
+      }
+    } finally {
+      setLoadingRuns(false);
+      setLoadingMoreRuns(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchRuns();
+  }, [fetchRuns]);
+
+  async function handleSelectRun(runItem) {
+    setRunsError(null);
+    try {
+      const fullRun = await getRun(runItem._id);
+      if (fullRun && fullRun.results) {
+        setSelectedRun(fullRun);
+        setResults(fullRun.results);
+        setActiveTab('overview');
+        setScenarioPickerOpen(false);
+      }
+    } catch (err) {
+      console.error('Failed to load full run:', err);
+      if (err.message && err.message.includes('404')) {
+        alert('This simulation run was not found or has been deleted.');
+      } else {
+        alert(err.message || 'Unable to open saved run');
+      }
+    }
+  }
+
+  async function handleDeleteRun(e, runId) {
+    e.stopPropagation();
+    if (!window.confirm('Delete this saved simulation run?')) return;
+    try {
+      await deleteRun(runId);
+      setRunsList(prev => prev.filter(r => r._id !== runId));
+      if (selectedRun?._id === runId) {
+        setSelectedRun(null);
+        const raw = localStorage.getItem('spot:simulationResults');
+        if (raw) setResults(JSON.parse(raw));
+      }
+    } catch (err) {
+      alert(err.message || 'Failed to delete run');
+    }
+  }
+
+  async function handleReRun() {
+    if (!selectedRun) return;
+    setReRunning(true);
+    try {
+      const processId = selectedRun.processId;
+      const scenarioId = selectedRun.scenarioId;
+      const config = {
+        mode: 'deep',
+        arrival_rate: selectedRun.config?.arrival ?? 1.0,
+        total_instances: selectedRun.config?.instances ?? 1000,
+        seed: selectedRun.config?.seed ?? 42,
+        replications: selectedRun.config?.replications ?? 1,
+      };
+
+      let res;
+      if (scenarioId) {
+        res = await runScenarioSimulation(scenarioId, config);
+      } else {
+        res = await runSimulation(processId, config);
+      }
+
+      const freshResults = res?.results || res;
+      if (freshResults) {
+        setResults(freshResults);
+        setSelectedRun(null);
+        if (!scenarioId) {
+          localStorage.setItem('spot:simulationResults', JSON.stringify(freshResults));
+          localStorage.setItem('spot:hasWhatIfResults', 'false');
+        } else {
+          localStorage.setItem('spot:whatifResults', JSON.stringify(freshResults));
+          localStorage.setItem('spot:hasWhatIfResults', 'true');
+        }
+        fetchRuns();
+      }
+    } catch (err) {
+      console.error('Re-run failed:', err);
+      alert(err.message || 'Failed to re-run simulation');
+    } finally {
+      setReRunning(false);
+    }
+  }
 
   const anySalaryEstimated = useMemo(() => {
     if (results?.anySalaryEstimated) return true;
@@ -769,7 +946,7 @@ export default function ResultsPage() {
   }, [queuesObj, results, idToLabel]);
 
   const maxWait = useMemo(() => Math.max(...queueRows.map(q => q.avgWait), 1), [queueRows]);
-  const summaryLines = useMemo(() => results ? verdict(results, idToLabel, simMode) : [], [results, idToLabel, simMode]);
+  const summaryLines = useMemo(() => results ? verdict(results, idToLabel, simMode, currency, isAnalystView) : [], [results, idToLabel, simMode, currency, isAnalystView]);
   const plain = useMemo(() => results ? buildPlainSummary(results) : null, [results]);
   const fade = (i) => ({ opacity: ready ? 1 : 0, transform: ready ? 'translateY(0)' : 'translateY(15px)', transition: `all 0.5s ease ${i * 0.07}s` });
 
@@ -785,11 +962,11 @@ export default function ResultsPage() {
           <h2 style={{ fontSize: 24, fontWeight: 700, color: '#0f172a', marginBottom: 12 }}>No Results to Display</h2>
           <p style={{ fontSize: 15, color: '#64748b', lineHeight: 1.6, marginBottom: 32 }}>
             {!hasNodes 
-              ? "You haven't built a process model yet. Create a model and run a simulation to see your analytics here."
-              : "You need to run a simulation first to view the analytics dashboard."}
+              ? "You haven't built a process model yet. Create a model and run a test to see your analytics here."
+              : "You need to run a test first to view the analytics dashboard."}
           </p>
           <SpotButton onClick={() => navigate(!hasNodes ? '/model' : '/simulate')} size="md">
-            {!hasNodes ? "Build a Model" : "Run Simulation"}
+            {!hasNodes ? "Build a Model" : (isAnalystView ? "Run Simulation" : "Run Test")}
           </SpotButton>
         </div>
       </div>
@@ -798,10 +975,10 @@ export default function ResultsPage() {
 
   const tabs = [
     { id: 'overview', label: 'Overview', icon: <LayoutDashboard size={15} /> },
-    { id: 'bottlenecks', label: 'Bottlenecks & Queues', icon: <Target size={15} /> },
-    ...(simMode !== 'quick' && Object.keys(results?.resource_utilization || {}).length > 0 ? [{ id: 'resources', label: 'Resources', icon: <Zap size={15} /> }] : []),
-    ...(simMode !== 'quick' ? [{ id: 'financial', label: 'Financial', icon: <span style={{ fontSize: 14, fontWeight: 700, lineHeight: 1 }}>₨</span> }] : []),
-    ...(hasWhatIf && comparisonMetrics ? [{ id: 'whatif', label: 'What-If Comparison', icon: <GitCompare size={15} /> }] : []),
+    { id: 'bottlenecks', label: isAnalystView ? 'Bottlenecks & Queues' : 'Where Customers Wait', icon: <Target size={15} /> },
+    ...(simMode !== 'quick' && Object.keys(results?.resource_utilization || {}).length > 0 ? [{ id: 'resources', label: isAnalystView ? 'Resources' : 'Staff Activity', icon: <Zap size={15} /> }] : []),
+    ...(simMode !== 'quick' ? [{ id: 'financial', label: 'Financial', icon: <span style={{ fontSize: 13, fontWeight: 700, lineHeight: 1 }}>{currency}</span> }] : []),
+    ...(hasWhatIf && comparisonMetrics ? [{ id: 'whatif', label: isAnalystView ? 'What-If Comparison' : 'Idea Comparison', icon: <GitCompare size={15} /> }] : []),
     { id: 'takeaways', label: 'Key Takeaways', icon: <CheckCircle size={15} /> },
   ];
   const tab = tabs.some(t => t.id === activeTab) ? activeTab : 'overview';
@@ -817,65 +994,171 @@ export default function ResultsPage() {
           <button onClick={() => navigate('/simulate')} style={{ width: 36, height: 36, borderRadius: 8, border: '1px solid #e2e8f0', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}><ArrowLeft size={18} color="#64748b" /></button>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <h1 style={{ fontSize: 18, fontWeight: 700, color: '#0f172a', margin: 0 }}>Simulation Results</h1>
+              <h1 style={{ fontSize: 18, fontWeight: 700, color: '#0f172a', margin: 0 }}>{isAnalystView ? "Simulation Results" : "Test Results"}</h1>
               <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 12, background: simMode === 'deep' ? '#1e1b4b' : '#f5f3ff', color: simMode === 'deep' ? '#c7d2fe' : '#6b4de6', border: '1px solid #ddd6fe' }}>
                 {simMode === 'deep' ? 'DEEP ANALYSIS' : 'QUICK ANALYSIS'}
               </span>
             </div>
-            <p style={{ fontSize: 13, color: '#64748b', marginTop: 2 }}>Based on {runs} iterations</p>
+            <p style={{ fontSize: 13, color: '#64748b', marginTop: 2 }}>{isAnalystView ? `Based on ${runs} iterations` : `Based on ${runs} test runs`}</p>
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, position: 'relative' }}>
-          {(scenarioList.length > 0 || hasWhatIf) && (
-            <div style={{ position: 'relative' }}>
-              <SpotButton onClick={() => setScenarioPickerOpen(o => !o)} variant="secondary" size="sm">
-                <History size={14} /> {loadingScenarios ? 'Loading…' : 'Previous Scenarios'} <ChevronDown size={14} />
-              </SpotButton>
-              {scenarioPickerOpen && (
-                <div onClick={() => setScenarioPickerOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 15 }} />
-              )}
-              {scenarioPickerOpen && (
-                <div style={{
-                  position: 'absolute', top: '110%', right: 0, background: '#fff', border: '1px solid #e2e8f0',
-                  borderRadius: 10, boxShadow: '0 8px 24px rgba(15,23,42,0.12)', minWidth: 260, zIndex: 20,
-                  padding: 6, maxHeight: 320, overflowY: 'auto'
-                }}>
-                  <div
-                    onClick={() => selectScenario('baseline')}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderRadius: 8, cursor: 'pointer',
-                      background: activeScenarioKey === 'baseline' ? '#f5f3ff' : 'transparent'
-                    }}
-                    onMouseEnter={e => e.currentTarget.style.background = '#f8fafc'}
-                    onMouseLeave={e => e.currentTarget.style.background = activeScenarioKey === 'baseline' ? '#f5f3ff' : 'transparent'}
-                  >
-                    <Layers size={14} color="#6b4de6" />
-                    <span style={{ fontSize: 13, fontWeight: 600, color: '#1e1b4b' }}>Baseline (Original)</span>
-                  </div>
-                  {scenarioList.length === 0 ? (
-                    <p style={{ fontSize: 12, color: '#94a3b8', padding: '10px 12px', margin: 0 }}>No what-if scenarios run yet.</p>
-                  ) : scenarioList.map(s => (
-                    <div
-                      key={s.id}
-                      onClick={() => selectScenario(s.id)}
-                      style={{
-                        display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderRadius: 8, cursor: 'pointer',
-                        background: activeScenarioKey === s.id ? '#f5f3ff' : 'transparent'
-                      }}
-                      onMouseEnter={e => e.currentTarget.style.background = '#f8fafc'}
-                      onMouseLeave={e => e.currentTarget.style.background = activeScenarioKey === s.id ? '#f5f3ff' : 'transparent'}
-                    >
-                      <GitCompare size={14} color="#6b4de6" />
-                      <span style={{ fontSize: 13, fontWeight: 600, color: '#1e1b4b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</span>
-                    </div>
-                  ))}
+          <div style={{ position: 'relative' }}>
+            <SpotButton onClick={() => setScenarioPickerOpen(o => !o)} variant="secondary" size="sm">
+              <History size={14} /> {loadingRuns ? 'Loading…' : (isAnalystView ? 'Run History' : 'Test History')} <ChevronDown size={14} />
+            </SpotButton>
+            {scenarioPickerOpen && (
+              <div onClick={() => setScenarioPickerOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 15 }} />
+            )}
+            {scenarioPickerOpen && (
+              <div style={{
+                position: 'absolute', top: '110%', right: 0, background: '#fff', border: '1px solid #e2e8f0',
+                borderRadius: 10, boxShadow: '0 8px 24px rgba(15,23,42,0.12)', minWidth: 320, zIndex: 20,
+                padding: 8, maxHeight: 380, overflowY: 'auto'
+              }}>
+                <div style={{ padding: '6px 10px', fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  {isAnalystView ? "Saved Simulation Runs" : "Saved Test Runs"}
                 </div>
-              )}
-            </div>
-          )}
-          <SpotButton onClick={() => navigate('/simulate')} size="sm"><RefreshCw size={14} /> Re-run Simulation</SpotButton>
+
+                {loadingRuns && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 10px', color: '#6b4de6', fontSize: 13 }}>
+                    <Loader2 size={16} className="animate-spin" /> Loading runs…
+                  </div>
+                )}
+
+                {runsError && (
+                  <p style={{ fontSize: 12.5, color: '#dc2626', padding: '8px 10px', margin: 0 }}>
+                    {runsError}
+                  </p>
+                )}
+
+                {!loadingRuns && runsList.length === 0 && !runsError && (
+                  <p style={{ fontSize: 12.5, color: '#94a3b8', padding: '12px 10px', margin: 0 }}>
+                    {isAnalystView ? "No saved simulation runs yet." : "No saved test runs yet."}
+                  </p>
+                )}
+
+                {runsList.map(r => {
+                  const isSelected = selectedRun?._id === r._id;
+                  const isBaseline = !r.scenarioId;
+                  const dateStr = new Date(r.createdAt).toLocaleString(undefined, {
+                    month: 'short',
+                    day: 'numeric',
+                    hour: 'numeric',
+                    minute: '2-digit'
+                  });
+                  return (
+                    <div
+                      key={r._id}
+                      onClick={() => handleSelectRun(r)}
+                      style={{
+                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                        padding: '8px 10px', borderRadius: 8, cursor: 'pointer',
+                        background: isSelected ? '#f5f3ff' : 'transparent',
+                        marginBottom: 2
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.background = isSelected ? '#ede9fe' : '#f8fafc'}
+                      onMouseLeave={e => e.currentTarget.style.background = isSelected ? '#f5f3ff' : 'transparent'}
+                    >
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          {isBaseline ? <Layers size={13} color="#6b4de6" /> : <GitCompare size={13} color="#06b6d4" />}
+                          <span style={{ fontSize: 13, fontWeight: 700, color: '#1e1b4b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {r.title || (isBaseline ? (isAnalystView ? 'Baseline' : 'Current setup') : (isAnalystView ? 'Scenario' : 'Idea to try'))}
+                          </span>
+                          <span style={{ fontSize: 11, color: '#64748b' }}>• {dateStr}</span>
+                        </div>
+                        <div style={{ fontSize: 11.5, color: '#475569', paddingLeft: 19 }}>
+                          Wait: {r.summary?.avg_wait_time != null ? `${r.summary.avg_wait_time}m` : '—'} · Cycle: {r.summary?.avg_cycle_time != null ? `${r.summary.avg_cycle_time}m` : '—'}
+                        </div>
+                      </div>
+                      <button
+                        title="Delete run"
+                        onClick={(e) => handleDeleteRun(e, r._id)}
+                        style={{
+                          background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer',
+                          padding: 4, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center'
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.color = '#ef4444'}
+                        onMouseLeave={e => e.currentTarget.style.color = '#94a3b8'}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  );
+                })}
+
+                {hasMoreRuns && (
+                  <button
+                    onClick={() => fetchRuns(runsCursor)}
+                    disabled={loadingMoreRuns}
+                    style={{
+                      width: '100%', marginTop: 6, padding: '8px 12px', background: '#f8fafc',
+                      border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 12, fontWeight: 600,
+                      color: '#475569', cursor: loadingMoreRuns ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    {loadingMoreRuns ? 'Loading more…' : 'Load more'}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+          <SpotButton onClick={() => navigate('/simulate')} size="sm"><RefreshCw size={14} /> {isAnalystView ? "Re-run Simulation" : "Re-run Test"}</SpotButton>
         </div>
       </header>
+
+      {/* Saved Run Read-Only Banner */}
+      {selectedRun && (
+        <div style={{
+          background: '#f5f3ff',
+          borderBottom: '1px solid #ddd6fe',
+          padding: '12px 32px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 16
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <History size={18} color="#6b4de6" />
+            <div>
+              <span style={{ fontWeight: 700, color: '#1e1b4b', fontSize: 13.5 }}>
+                Saved run from {new Date(selectedRun.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+              </span>
+              <span style={{ marginLeft: 8, fontSize: 11.5, color: '#6b4de6', background: '#ede9fe', padding: '2px 8px', borderRadius: 999, fontWeight: 600 }}>
+                {selectedRun.title || (selectedRun.scenarioId ? (isAnalystView ? 'Scenario' : 'Idea to try') : (isAnalystView ? 'Baseline' : 'Current setup'))} (Read-Only)
+              </span>
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <SpotButton
+              size="sm"
+              onClick={handleReRun}
+              disabled={reRunning}
+            >
+              <RefreshCw size={13} className={reRunning ? "animate-spin" : ""} /> {reRunning ? 'Re-running…' : 'Re-run'}
+            </SpotButton>
+            <button
+              onClick={() => {
+                setSelectedRun(null);
+                const raw = localStorage.getItem('spot:simulationResults');
+                if (raw) setResults(JSON.parse(raw));
+              }}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: '#64748b',
+                fontSize: 12.5,
+                fontWeight: 600,
+                cursor: 'pointer',
+                textDecoration: 'underline'
+              }}
+            >
+              Exit saved view
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* DASHBOARD CONTAINER */}
       <main style={{ padding: '32px', display: 'flex', flexDirection: 'column', gap: 24 }}>
@@ -907,16 +1190,16 @@ export default function ResultsPage() {
           <>
         <AIInsightsPanel results={results} idToLabel={idToLabel} simMode={simMode} idToResource={idToResource} processId={typeof window !== 'undefined' ? localStorage.getItem('spot:processId') : null} />
 
-        <PlainSummaryCard plain={plain} simMode={simMode} idToLabel={idToLabel} />
+        <PlainSummaryCard plain={plain} simMode={simMode} idToLabel={idToLabel} isAnalystView={isAnalystView} />
 
         {/* ROW 1: Dynamic Top Level Stats based on Mode */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 20, ...fade(0) }}>
           
           <div style={{ position: 'relative', background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', padding: '24px', display: 'flex', alignItems: 'center', gap: 20 }}>
-<InfoTip title="Average cycle time">The average time a customer takes from entering to leaving, waiting in line included. In this simulation customers keep arriving without a break, so if staff cannot keep up the line grows and this number climbs to hours or even days. Compare it with Time per customer to see how much of it is just waiting.</InfoTip>
+<InfoTip title={isAnalystView ? "Average cycle time" : "Time from arrival to leaving"}>The average time a customer takes from entering to leaving, waiting in line included. In this simulation customers keep arriving without a break, so if staff cannot keep up the line grows and this number climbs to hours or even days. Compare it with Time per customer to see how much of it is just waiting.</InfoTip>
             <div style={{ width: 56, height: 56, borderRadius: 12, background: '#f5f3ff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><Clock size={24} color="#6b4de6" /></div>
             <div>
-              <p style={{ fontSize: 13, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>{simMode === 'quick' ? 'Best-Case / Theoretical Duration' : 'Avg. Cycle Time'}</p>
+              <p style={{ fontSize: 13, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>{simMode === 'quick' ? 'Best-Case / Theoretical Duration' : (isAnalystView ? 'Avg. Cycle Time' : <Hint term="cycle_time">Time from arrival to leaving</Hint>)}</p>
               <p style={{ fontSize: 24, fontWeight: 800, color: '#0f172a' }}>{fmt(totalAvg)}</p>
               {simMode !== 'quick' && plain?.overloaded && <p style={{ fontSize: 11, color: '#b45309', marginTop: 4 }}>Inflated by a growing queue (see summary above)</p>}
             </div>
@@ -924,10 +1207,10 @@ export default function ResultsPage() {
 
           {simMode !== 'quick' && (
             <div style={{ position: 'relative', background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', padding: '24px', display: 'flex', alignItems: 'center', gap: 20 }}>
-<InfoTip title="Production speed">How many customers your process finishes every hour in this simulation. Higher is better. If it is much lower than the number of customers arriving, a queue will keep growing.</InfoTip>
+<InfoTip title={isAnalystView ? "Production speed" : "Customers served per hour"}>How many customers your process finishes every hour in this simulation. Higher is better. If it is much lower than the number of customers arriving, a queue will keep growing.</InfoTip>
               <div style={{ width: 56, height: 56, borderRadius: 12, background: '#ecfdf5', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><Zap size={24} color="#10b981" /></div>
               <div>
-                <p style={{ fontSize: 13, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>Production Speed</p>
+                <p style={{ fontSize: 13, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>{isAnalystView ? 'Production Speed' : <Hint term="throughput">Customers served per hour</Hint>}</p>
                 <p style={{ fontSize: 24, fontWeight: 800, color: '#0f172a' }}>{(throughput * 60).toFixed(2)} /hr</p>
               </div>
             </div>
@@ -947,11 +1230,11 @@ export default function ResultsPage() {
 
           {/* Critical Alert Card */}
           <div style={{ position: 'relative', background: bnLabel ? '#fef2f2' : '#fff', borderRadius: 12, border: `1px solid ${bnLabel ? '#fecaca' : '#e2e8f0'}`, padding: '24px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-<InfoTip title="Critical bottleneck">The step where customers wait the longest before they can be served. Speeding it up or adding staff here improves the whole process more than fixing any other step.</InfoTip>
+<InfoTip title={isAnalystView ? "Critical bottleneck" : "Where customers wait"}>The step where customers wait the longest before they can be served. Speeding it up or adding staff here improves the whole process more than fixing any other step.</InfoTip>
             {bnLabel ? (
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
-                  <p style={{ fontSize: 11, fontWeight: 800, color: '#dc2626', textTransform: 'uppercase', marginBottom: 4 }}>{simMode === 'quick' ? 'Slowest Task' : 'Critical Bottleneck'}</p>
+                  <p style={{ fontSize: 11, fontWeight: 800, color: '#dc2626', textTransform: 'uppercase', marginBottom: 4 }}>{simMode === 'quick' ? 'Slowest Task' : (isAnalystView ? 'Critical Bottleneck' : <Hint term="bottleneck">Where customers wait</Hint>)}</p>
                   <p style={{ fontSize: 20, fontWeight: 700, color: '#991b1b' }}>"{bnLabel}"</p>
                 </div>
                 <button onClick={() => navigate('/model')} style={{ padding: '8px 16px', background: '#dc2626', color: '#fff', border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Fix Now</button>
@@ -1045,7 +1328,7 @@ export default function ResultsPage() {
             </div>
         )}
 
-        {tab === 'resources' && <ResourceUtilizationSection results={results} />}
+        {tab === 'resources' && <ResourceUtilizationSection results={results} isAnalystView={isAnalystView} />}
 
         {tab === 'financial' && (
           <>
@@ -1062,130 +1345,224 @@ export default function ResultsPage() {
             {results?.financial_summary && simMode !== 'quick' && (
               <div style={{ position: 'relative', background: 'linear-gradient(to bottom right, #ffffff, #faf5ff)', borderRadius: 16, border: '1px solid #e2e8f0', padding: '28px', boxShadow: '0 4px 20px rgba(107, 77, 230, 0.04)' }}>
 <InfoTip title="Financial analysis" whole={false}>What this simulation cost to run. Active cost is paid while staff are working. Idle cost (waste) is paid while staff are waiting for work. Hover the charts below for more.</InfoTip>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 28 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
                   <div style={{ width: 40, height: 40, borderRadius: '50%', background: '#6b4de6', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 12px rgba(107, 77, 230, 0.2)' }}>
-                    <span style={{ color: '#fff', fontSize: 18, fontWeight: 700 }}>₨</span>
+                    <span style={{ color: '#fff', fontSize: 16, fontWeight: 700 }}>{currency}</span>
                   </div>
                   <h3 style={{ fontSize: 18, fontWeight: 800, color: '#0f172a', margin: 0 }}>Financial Analysis</h3>
                 </div>
-                
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 32 }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                    <div style={{ padding: '20px', background: '#fff', borderRadius: 14, border: '1px solid #e2e8f0', boxShadow: '0 2px 8px rgba(0,0,0,0.02)', position: 'relative', overflow: 'hidden' }}>
-                      <div style={{ position: 'absolute', top: 0, left: 0, width: 4, height: '100%', background: '#0f172a' }} />
-                      <p style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Total Operational Cost</p>
-                      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-                        <p style={{ fontSize: 32, fontWeight: 800, color: '#0f172a', margin: 0, letterSpacing: -0.5 }}>
-                          Rs {results.financial_summary.total_cost?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}
-                        </p>
-                        {anySalaryEstimated && (
-                          <span
-                            style={{
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 4,
-                              padding: '4px 8px',
-                              borderRadius: 6,
-                              background: '#fef3c7',
-                              border: '1px solid #fde68a',
-                              color: '#92400e',
-                              fontSize: 11,
-                              fontWeight: 600,
-                            }}
-                            title="At least one staff salary was estimated rather than explicitly stated"
-                          >
-                            <AlertTriangle size={12} color="#d97706" /> Based on estimated values
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-                      <div style={{ padding: '16px', background: 'linear-gradient(to bottom, #ffffff, #f5f3ff)', borderRadius: 12, border: '1px solid #ddd6fe', boxShadow: '0 2px 4px rgba(107, 77, 230, 0.05)' }}>
-                        <p style={{ fontSize: 11, fontWeight: 700, color: '#6b4de6', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Active Cost</p>
-                        <p style={{ fontSize: 18, fontWeight: 800, color: '#4338ca', margin: 0 }}>
-                          Rs {results.financial_summary.total_active_cost?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}
-                        </p>
-                      </div>
-                      <div style={{ padding: '16px', background: 'linear-gradient(to bottom, #ffffff, #ecfeff)', borderRadius: 12, border: '1px solid #a5f3fc', boxShadow: '0 2px 4px rgba(6, 182, 212, 0.06)' }}>
-                        <p style={{ fontSize: 11, fontWeight: 700, color: '#0891b2', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Idle Cost (Waste)</p>
-                        <p style={{ fontSize: 18, fontWeight: 800, color: '#0e7490', margin: 0 }}>
-                          Rs {results.financial_summary.total_idle_cost?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                  
-                  {/* Financial Donut Chart */}
-                  <div style={{ position: 'relative', height: 280, display: 'flex', flexDirection: 'column', alignItems: 'center', background: '#fff', borderRadius: 14, border: '1px solid #e2e8f0', padding: '24px', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
-<InfoTip title="Cost distribution">Splits the total cost into money spent while staff were working (purple) and money spent while they were idle (teal). A big teal slice means you are paying for people who are waiting.</InfoTip>
-                    <h4 style={{ fontSize: 14, fontWeight: 700, color: '#475569', marginBottom: 12, alignSelf: 'flex-start' }}>Cost Distribution</h4>
-                    <div style={{ flex: 1, width: '100%', minHeight: 0 }}>
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie
-                            data={[
-                              { name: 'Active Cost', value: results.financial_summary.total_active_cost || 0, color: '#6b4de6' },
-                              { name: 'Idle Cost', value: results.financial_summary.total_idle_cost || 0, color: '#06b6d4' }
-                            ]}
-                            cx="45%" cy="50%" innerRadius={55} outerRadius={75} paddingAngle={3} dataKey="value" stroke="none"
-                          >
-                            {[ '#6b4de6', '#06b6d4' ].map((color, index) => (
-                              <Cell key={`cell-${index}`} fill={color} />
-                            ))}
-                          </Pie>
-                          <Tooltip 
-                            formatter={(value) => `Rs ${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-                            contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', fontWeight: 600 }}
-                          />
-                          <Legend layout="vertical" verticalAlign="middle" align="right" iconType="circle" wrapperStyle={{ fontSize: 13, fontWeight: 600, color: '#475569' }}/>
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-                </div>
 
-                {/* Resource Cost Breakdown Chart */}
+                {/* Warning card if active == 0 && paid > 0 */}
+                {results.financial_summary.total_active_cost === 0 && results.financial_summary.total_cost > 0 && (
+                  <div style={{
+                    background: '#fffbeb',
+                    border: '1px solid #fef3c7',
+                    borderLeft: '4px solid #f59e0b',
+                    borderRadius: 12,
+                    padding: '16px 20px',
+                    marginBottom: 20,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 12
+                  }}>
+                    <AlertTriangle size={20} color="#d97706" style={{ flexShrink: 0 }} />
+                    <div>
+                      <p style={{ fontSize: 14, fontWeight: 700, color: '#92400e', margin: '0 0 2px' }}>
+                        No staff time was recorded, so all cost shows as idle. Assign staff to steps in Task Details
+                      </p>
+                      <p style={{ fontSize: 12, color: '#b45309', margin: 0 }}>
+                        Tasks executed in this simulation run had no staff resources assigned, so 100% of staff costs were counted as idle time.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {(() => {
+                  const fin = results.financial_summary;
+                  const nCustomers = fin.customers ?? results?.time_in_system?.count ?? results?.total_runs ?? results?.instances_completed ?? 0;
+                  const periodHours = fin.period_hours != null ? Number(fin.period_hours).toFixed(1) : (results?.total_sim_time ? (results.total_sim_time / 60).toFixed(1) : '0.0');
+                  const costPerCustomer = fin.cost_per_customer != null && fin.cost_per_customer > 0 ? fin.cost_per_customer : (nCustomers > 0 ? (fin.total_cost / nCustomers) : 0);
+                  const costPerCustomerFmt = costPerCustomer.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+                  return (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 32 }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                        <div style={{ padding: '20px', background: '#fff', borderRadius: 14, border: '1px solid #e2e8f0', boxShadow: '0 2px 8px rgba(0,0,0,0.02)', position: 'relative', overflow: 'hidden' }}>
+                          <div style={{ position: 'absolute', top: 0, left: 0, width: 4, height: '100%', background: '#0f172a' }} />
+                          <p style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+                            Cost for this run ({nCustomers} customers, {periodHours} hours)
+                          </p>
+                          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+                            <p style={{ fontSize: 32, fontWeight: 800, color: '#0f172a', margin: 0, letterSpacing: -0.5 }}>
+                              {currency} {fin.total_cost?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}
+                            </p>
+                            {anySalaryEstimated && (
+                              <span
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                  padding: '4px 8px',
+                                  borderRadius: 6,
+                                  background: '#fef3c7',
+                                  border: '1px solid #fde68a',
+                                  color: '#92400e',
+                                  fontSize: 11,
+                                  fontWeight: 600,
+                                }}
+                                title="At least one staff salary was estimated rather than explicitly stated"
+                              >
+                                <AlertTriangle size={12} color="#d97706" /> Based on estimated values
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+                          <div style={{ padding: '14px', background: 'linear-gradient(to bottom, #ffffff, #f5f3ff)', borderRadius: 12, border: '1px solid #ddd6fe', boxShadow: '0 2px 4px rgba(107, 77, 230, 0.05)' }}>
+                            <p style={{ fontSize: 11, fontWeight: 700, color: '#6b4de6', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>{isAnalystView ? 'Active Cost' : <Hint term="active_cost">Cost of active work</Hint>}</p>
+                            <p style={{ fontSize: 16, fontWeight: 800, color: '#4338ca', margin: 0 }}>
+                              {currency} {fin.total_active_cost?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}
+                            </p>
+                          </div>
+                          <div style={{ padding: '14px', background: 'linear-gradient(to bottom, #ffffff, #ecfeff)', borderRadius: 12, border: '1px solid #a5f3fc', boxShadow: '0 2px 4px rgba(6, 182, 212, 0.06)' }}>
+                            <p style={{ fontSize: 11, fontWeight: 700, color: '#0891b2', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>{isAnalystView ? 'Idle Cost' : <Hint term="idle_cost">Paid time with no work</Hint>}</p>
+                            <p style={{ fontSize: 16, fontWeight: 800, color: '#0e7490', margin: 0 }}>
+                              {currency} {fin.total_idle_cost?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}
+                            </p>
+                          </div>
+                          <div style={{ padding: '14px', background: 'linear-gradient(to bottom, #ffffff, #f8fafc)', borderRadius: 12, border: '1px solid #e2e8f0', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }}>
+                            <p style={{ fontSize: 11, fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Cost / Customer</p>
+                            <p style={{ fontSize: 16, fontWeight: 800, color: '#0f172a', margin: 0 }}>
+                              {currency} {costPerCustomerFmt}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      {/* Financial Donut Chart */}
+                      <div style={{ position: 'relative', height: 280, display: 'flex', flexDirection: 'column', alignItems: 'center', background: '#fff', borderRadius: 14, border: '1px solid #e2e8f0', padding: '24px', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
+                        <InfoTip title="Cost distribution">Splits the total cost into money spent while staff were working (purple) and money spent while they were idle (teal). A big teal slice means you are paying for people who are waiting.</InfoTip>
+                        <h4 style={{ fontSize: 14, fontWeight: 700, color: '#475569', marginBottom: 12, alignSelf: 'flex-start' }}>Cost Distribution</h4>
+                        <div style={{ flex: 1, width: '100%', minHeight: 0 }}>
+                          <ResponsiveContainer width="100%" height="100%">
+                            <PieChart>
+                              <Pie
+                                data={[
+                                  { name: isAnalystView ? 'Active Cost' : 'Active Work', value: fin.total_active_cost || 0, color: '#6b4de6' },
+                                  { name: isAnalystView ? 'Idle Cost' : 'Paid time with no work', value: fin.total_idle_cost || 0, color: '#06b6d4' }
+                                ]}
+                                cx="45%" cy="50%" innerRadius={55} outerRadius={75} paddingAngle={3} dataKey="value" stroke="none"
+                              >
+                                {[ '#6b4de6', '#06b6d4' ].map((color, index) => (
+                                  <Cell key={`cell-${index}`} fill={color} />
+                                ))}
+                              </Pie>
+                              <Tooltip 
+                                formatter={(value) => `${currency} ${Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                                contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', fontWeight: 600 }}
+                              />
+                              <Legend layout="vertical" verticalAlign="middle" align="right" iconType="circle" wrapperStyle={{ fontSize: 13, fontWeight: 600, color: '#475569' }}/>
+                            </PieChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Resource Cost Breakdown Chart & Summary */}
                 {results.financial_summary.resources && Object.keys(results.financial_summary.resources).length > 0 && (
                   (() => {
                     const filteredData = Object.values(results.financial_summary.resources)
                       .map(r => ({
                         name: r.name || r.id || 'Unnamed',
+                        displayName: `${r.name || r.id} (${r.utilization_pct != null ? r.utilization_pct : 0}% ${isAnalystView ? 'util' : 'busy'})`,
                         Active: r.active_cost || 0,
-                        Idle: r.idle_cost || 0
+                        Idle: r.idle_cost || 0,
+                        Total: r.total_cost != null ? r.total_cost : ((r.active_cost || 0) + (r.idle_cost || 0)),
+                        utilization_pct: r.utilization_pct ?? 0,
+                        type: r.type || 'staff',
+                        quantity: r.quantity || 1,
+                        hourly_rate: r.hourly_rate || 0,
+                        busy_hours: r.busy_hours || 0,
+                        paid_hours: r.paid_hours || 0
                       }))
-                      .filter(r => r.Active > 0 || r.Idle > 0)
+                      .filter(r => r.Active > 0 || r.Idle > 0 || r.Total > 0)
                       .sort((a,b) => (b.Active + b.Idle) - (a.Active + a.Idle));
 
                     if (filteredData.length === 0) return null;
 
                     return (
                       <div style={{ marginTop: 32, paddingTop: 28, borderTop: '1px dashed #cbd5e1' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 20 }}>
-                          <div style={{ width: 4, height: 16, background: '#64748b', borderRadius: 2 }} />
-                          <h4 style={{ fontSize: 14, fontWeight: 700, color: '#334155', margin: 0 }}>Cost Breakdown by Resource</h4>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 20 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <div style={{ width: 4, height: 16, background: '#64748b', borderRadius: 2 }} />
+                            <h4 style={{ fontSize: 14, fontWeight: 700, color: '#334155', margin: 0 }}>Cost Breakdown by Resource</h4>
+                          </div>
+                          <span style={{ fontSize: 12, color: '#64748b' }}>{isAnalystView ? "Stacked Active + Idle Cost & Utilization" : "Stacked Active + Idle Cost & Busy %"}</span>
                         </div>
                         <div style={{ position: 'relative', height: Math.max(220, filteredData.length * 60), background: '#fff', borderRadius: 14, border: '1px solid #e2e8f0', padding: '24px 24px 16px 0', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
-<InfoTip title="Cost breakdown by resource">The same cost, shown for each staff member or resource. Long teal bars point to resources that are paid for but often waiting with nothing to do.</InfoTip>
+                          <InfoTip title={isAnalystView ? "Cost breakdown by resource" : "Cost breakdown by staff member"}>{isAnalystView ? "The same cost, shown for each staff member or resource. Stacked purple (active) and teal (idle) bars with values and utilization %." : "The same cost, shown for each staff member. Stacked purple (active) and teal (idle) bars with values and busy percentage."}</InfoTip>
                           <ResponsiveContainer width="100%" height="100%">
                             <BarChart
                               data={filteredData}
-                              margin={{ top: 0, right: 10, left: 10, bottom: 0 }}
+                              margin={{ top: 0, right: 30, left: 10, bottom: 0 }}
                               layout="vertical"
                             >
                               <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
-                              <XAxis type="number" tick={{ fontSize: 11, fill: '#94a3b8', fontWeight: 500 }} axisLine={false} tickLine={false} tickFormatter={v => `Rs ${v}`} />
-                              <YAxis dataKey="name" type="category" tick={{ fontSize: 12, fill: '#475569', fontWeight: 600 }} axisLine={false} tickLine={false} width={150} />
+                              <XAxis type="number" tick={{ fontSize: 11, fill: '#94a3b8', fontWeight: 500 }} axisLine={false} tickLine={false} tickFormatter={v => `${currency} ${v}`} />
+                              <YAxis dataKey="displayName" type="category" tick={{ fontSize: 12, fill: '#475569', fontWeight: 600 }} axisLine={false} tickLine={false} width={180} />
                               <Tooltip 
-                                formatter={(value) => `Rs ${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} 
+                                formatter={(value, name) => [`${currency} ${Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, name]} 
                                 cursor={{fill: '#f8fafc'}}
                                 contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', fontWeight: 600 }}
                               />
                               <Legend verticalAlign="top" height={36} iconType="circle" wrapperStyle={{ fontSize: 12, fontWeight: 600 }} />
-                              <Bar dataKey="Active" stackId="a" fill="#6b4de6" barSize={18} radius={[0, 0, 0, 0]} />
-                              <Bar dataKey="Idle" stackId="a" fill="#06b6d4" barSize={18} radius={[0, 4, 4, 0]} />
+                              <Bar dataKey="Active" stackId="a" fill="#6b4de6" barSize={20} radius={[0, 0, 0, 0]}>
+                                <LabelList dataKey="Active" position="inside" formatter={v => v > 0 ? `${currency} ${Math.round(v)}` : ''} style={{ fill: '#fff', fontSize: 10, fontWeight: 700 }} />
+                              </Bar>
+                              <Bar dataKey="Idle" stackId="a" fill="#06b6d4" barSize={20} radius={[0, 4, 4, 0]}>
+                                <LabelList dataKey="Idle" position="inside" formatter={v => v > 0 ? `${currency} ${Math.round(v)}` : ''} style={{ fill: '#fff', fontSize: 10, fontWeight: 700 }} />
+                              </Bar>
                             </BarChart>
                           </ResponsiveContainer>
+                        </div>
+
+                        {/* Resource Summary Table */}
+                        <div style={{ marginTop: 20, overflowX: 'auto', background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', padding: '16px' }}>
+                          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, textAlign: 'left' }}>
+                            <thead>
+                              <tr style={{ borderBottom: '2px solid #e2e8f0', color: '#64748b' }}>
+                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>Resource</th>
+                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>Type</th>
+                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>Qty</th>
+                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>Rate</th>
+                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>Busy Hours</th>
+                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>{isAnalystView ? "Active Cost" : <Hint term="active_cost">Active Work</Hint>}</th>
+                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>{isAnalystView ? "Idle Cost" : <Hint term="idle_cost">Paid time with no work</Hint>}</th>
+                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>Total Cost</th>
+                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>{isAnalystView ? "Utilization" : <Hint term="utilization">How busy staff are</Hint>}</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {filteredData.map((r, idx) => (
+                                <tr key={idx} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                                  <td style={{ padding: '9px 10px', fontWeight: 600, color: '#1e293b' }}>{r.name}</td>
+                                  <td style={{ padding: '9px 10px', textTransform: 'capitalize', color: '#64748b' }}>{r.type}</td>
+                                  <td style={{ padding: '9px 10px', color: '#334155' }}>{r.quantity}</td>
+                                  <td style={{ padding: '9px 10px', color: '#334155' }}>{currency} {r.hourly_rate?.toFixed(2)}/h</td>
+                                  <td style={{ padding: '9px 10px', color: '#334155' }}>{r.busy_hours?.toFixed(2)}h</td>
+                                  <td style={{ padding: '9px 10px', color: '#4338ca', fontWeight: 600 }}>{currency} {r.Active?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                  <td style={{ padding: '9px 10px', color: '#0e7490', fontWeight: 600 }}>{currency} {r.Idle?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                  <td style={{ padding: '9px 10px', color: '#0f172a', fontWeight: 700 }}>{currency} {r.Total?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                  <td style={{ padding: '9px 10px', fontWeight: 700, color: r.utilization_pct > 80 ? '#dc2626' : (r.utilization_pct > 0 ? '#16a34a' : '#94a3b8') }}>
+                                    {r.utilization_pct != null ? `${r.utilization_pct}%` : '0.0%'}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
                         </div>
                       </div>
                     );
@@ -1211,7 +1588,11 @@ export default function ResultsPage() {
             gap: 20,
             ...fade(0)
           }}>
-<InfoTip title="Baseline vs What-If" whole={false}>Compares your original process (baseline) with the scenario you changed (what-if), so you can see whether your change helped.</InfoTip>
+<InfoTip title={isAnalystView ? "Baseline vs What-If" : "Current setup vs Idea to try"} whole={false}>
+  {isAnalystView
+    ? "Compares your original process (baseline) with the scenario you changed (what-if), so you can see whether your change helped."
+    : "Compares your original process (current setup) with the idea you changed, so you can see whether your change helped."}
+</InfoTip>
             {/* Title */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -1219,12 +1600,17 @@ export default function ResultsPage() {
                   <GitCompare size={18} color="#fff" />
                 </div>
                 <div>
-                  <h2 style={{ fontSize: 16, fontWeight: 800, color: '#1e1b4b', margin: 0 }}>Baseline vs What-If Performance Comparison</h2>
-                  <p style={{ fontSize: 12, color: '#6b7280', margin: '2px 0 0' }}>Comparing baseline process with scenario: <strong>"{whatifName}"</strong></p>
+                  <h2 style={{ fontSize: 16, fontWeight: 800, color: '#1e1b4b', margin: 0 }}>
+                    {isAnalystView ? "Baseline vs What-If Performance Comparison" : "Current Setup vs Idea Comparison"}
+                  </h2>
+                  <p style={{ fontSize: 12, color: '#6b7280', margin: '2px 0 0' }}>
+                    {isAnalystView ? "Comparing baseline process with scenario: " : "Comparing current setup with idea: "}
+                    <strong>"{whatifName}"</strong>
+                  </p>
                 </div>
               </div>
               <div style={{ background: '#e0e7ff', color: '#4338ca', fontSize: 11, fontWeight: 700, padding: '4px 10px', borderRadius: 9999 }}>
-                What-If Active
+                {isAnalystView ? "What-If Active" : "Idea Active"}
               </div>
             </div>
 
@@ -1232,12 +1618,17 @@ export default function ResultsPage() {
               <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 12, padding: '20px 24px', display: 'flex', gap: 16, alignItems: 'flex-start' }}>
                 <AlertTriangle size={22} color="#d97706" style={{ flexShrink: 0, marginTop: 2 }} />
                 <div>
-                  <p style={{ fontSize: 14, fontWeight: 700, color: '#92400e', margin: '0 0 6px' }}>Baseline and What-If used different simulation modes</p>
+                  <p style={{ fontSize: 14, fontWeight: 700, color: '#92400e', margin: '0 0 6px' }}>
+                    {isAnalystView ? "Baseline and What-If used different simulation modes" : "Current setup and idea used different test modes"}
+                  </p>
                   <p style={{ fontSize: 13, color: '#78350f', lineHeight: 1.6, margin: 0 }}>
-                    {comparisonMetrics.baseRuns <= 1 && comparisonMetrics.wiRuns > 1
-                      ? `Your baseline (${fmt(comparisonMetrics.baseAvg)}) was run in Quick Analysis — a single pass with no queuing or resource contention at all — while your what-if scenario (${fmt(comparisonMetrics.wiAvg)}) ran Deep Analysis with ${comparisonMetrics.wiRuns} iterations of real congestion. `
-                      : `Your what-if scenario (${fmt(comparisonMetrics.wiAvg)}) was run in Quick Analysis — a single pass with no queuing or resource contention at all — while your baseline (${fmt(comparisonMetrics.baseAvg)}) ran Deep Analysis with ${comparisonMetrics.baseRuns} iterations of real congestion. `}
-                    These aren't comparable — go to <strong>Simulate</strong> and re-run the baseline in Deep Analysis mode to get an accurate comparison.
+                    {formatPlainLanguage(
+                      comparisonMetrics.baseRuns <= 1 && comparisonMetrics.wiRuns > 1
+                        ? `Your baseline (${fmt(comparisonMetrics.baseAvg)}) was run in Quick Analysis — a single pass with no queuing or resource contention at all — while your what-if scenario (${fmt(comparisonMetrics.wiAvg)}) ran Deep Analysis with ${comparisonMetrics.wiRuns} iterations of real congestion. `
+                        : `Your what-if scenario (${fmt(comparisonMetrics.wiAvg)}) was run in Quick Analysis — a single pass with no queuing or resource contention at all — while your baseline (${fmt(comparisonMetrics.baseAvg)}) ran Deep Analysis with ${comparisonMetrics.baseRuns} iterations of real congestion. `,
+                      { isAnalystView }
+                    )}
+                    These aren't comparable — go to <strong>Simulate</strong> and re-run the benchmark in Deep Analysis mode to get an accurate comparison.
                   </p>
                   <button onClick={() => navigate('/simulate')} style={{ marginTop: 14, padding: '8px 16px', background: '#d97706', color: '#fff', border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Go to Simulate</button>
                 </div>
@@ -1249,9 +1640,11 @@ export default function ResultsPage() {
               
               {/* Metric 1: Cycle Time */}
               <div style={{ position: 'relative', background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', padding: 18 }}>
-<InfoTip title="Average cycle time" corner="br">Average time one customer takes from start to finish. The percentage shows how much it changed with your scenario. Lower is better.</InfoTip>
+<InfoTip title={isAnalystView ? "Average cycle time" : "Time from arrival to leaving"} corner="br">Average time one customer takes from start to finish. The percentage shows how much it changed with your scenario. Lower is better.</InfoTip>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: '#475569' }}>Avg. Cycle Time</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#475569' }}>
+                    {isAnalystView ? "Avg. Cycle Time" : <Hint term="cycle_time">Time from arrival to leaving</Hint>}
+                  </span>
                   {comparisonMetrics.cycleMeaningful ? (
                     <span style={{
                       fontSize: 12, fontWeight: 700, padding: '2px 8px', borderRadius: 6,
@@ -1276,7 +1669,7 @@ export default function ResultsPage() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                   <div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
-                      <span style={{ color: '#64748b' }}>Baseline</span>
+                      <span style={{ color: '#64748b' }}>{isAnalystView ? "Baseline" : "Current setup"}</span>
                       <span style={{ fontWeight: 700, color: '#0f172a' }}>{comparisonMetrics.baseCycleFormatted || fmt(comparisonMetrics.baseAvg)}</span>
                     </div>
                     <div style={{ height: 8, background: '#f1f5f9', borderRadius: 4, overflow: 'hidden' }}>
@@ -1286,7 +1679,7 @@ export default function ResultsPage() {
 
                   <div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
-                      <span style={{ color: '#6b4de6', fontWeight: 600 }}>What-If Scenario</span>
+                      <span style={{ color: '#6b4de6', fontWeight: 600 }}>{isAnalystView ? "What-If Scenario" : "Idea to try"}</span>
                       <span style={{ fontWeight: 700, color: '#6b4de6' }}>{comparisonMetrics.wiCycleFormatted || fmt(comparisonMetrics.wiAvg)}</span>
                     </div>
                     <div style={{ height: 8, background: '#f1f5f9', borderRadius: 4, overflow: 'hidden' }}>
@@ -1304,9 +1697,11 @@ export default function ResultsPage() {
               {/* Metric 2: Throughput */}
               {simMode !== 'quick' && (
                 <div style={{ position: 'relative', background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', padding: 18 }}>
-<InfoTip title="Production throughput" corner="br">How many customers are finished per hour. The percentage shows how much it changed with your scenario. Higher is better.</InfoTip>
+<InfoTip title={isAnalystView ? "Production throughput" : "Customers served per hour"} corner="br">How many customers are finished per hour. The percentage shows how much it changed with your scenario. Higher is better.</InfoTip>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                    <span style={{ fontSize: 13, fontWeight: 600, color: '#475569' }}>Production Throughput</span>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: '#475569' }}>
+                      {isAnalystView ? "Production Throughput" : <Hint term="throughput">Customers served per hour</Hint>}
+                    </span>
                     {comparisonMetrics.throughputMeaningful ? (
                       <span style={{
                         fontSize: 12, fontWeight: 700, padding: '2px 8px', borderRadius: 6,
@@ -1331,7 +1726,7 @@ export default function ResultsPage() {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                     <div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
-                        <span style={{ color: '#64748b' }}>Baseline</span>
+                        <span style={{ color: '#64748b' }}>{isAnalystView ? "Baseline" : "Current setup"}</span>
                         <span style={{ fontWeight: 700, color: '#0f172a' }}>{comparisonMetrics.baseThroughput.toFixed(1)}/hr</span>
                       </div>
                       <div style={{ height: 8, background: '#f1f5f9', borderRadius: 4, overflow: 'hidden' }}>
@@ -1346,7 +1741,7 @@ export default function ResultsPage() {
 
                     <div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
-                        <span style={{ color: '#6b4de6', fontWeight: 600 }}>What-If Scenario</span>
+                        <span style={{ color: '#6b4de6', fontWeight: 600 }}>{isAnalystView ? "What-If Scenario" : "Idea to try"}</span>
                         <span style={{ fontWeight: 700, color: '#6b4de6' }}>{comparisonMetrics.wiThroughput.toFixed(1)}/hr</span>
                       </div>
                       <div style={{ height: 8, background: '#f1f5f9', borderRadius: 4, overflow: 'hidden' }}>
@@ -1364,18 +1759,18 @@ export default function ResultsPage() {
 
               {/* Metric 3: Primary Bottleneck */}
               <div style={{ position: 'relative', background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', padding: 18, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-<InfoTip title="Bottleneck shift" corner="br">The bottleneck is the step that holds the process back most. If it moves to a different step after your change, the original problem was fixed and a new one is now the biggest.</InfoTip>
-                <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', marginBottom: 8, display: 'block' }}>{simMode === 'quick' ? 'Slowest Task Shift' : 'Bottleneck Shift'}</span>
+<InfoTip title={isAnalystView ? "Bottleneck shift" : "Wait point shift"} corner="br">The bottleneck is the step that holds the process back most. If it moves to a different step after your change, the original problem was fixed and a new one is now the biggest.</InfoTip>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', marginBottom: 8, display: 'block' }}>{simMode === 'quick' ? (isAnalystView ? 'Slowest Task Shift' : 'Slowest Step Shift') : (isAnalystView ? 'Bottleneck Shift' : 'Wait Point Shift')}</span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                   <div style={{ flex: 1 }}>
-                    <span style={{ fontSize: 11, color: '#94a3b8', display: 'block' }}>Baseline:</span>
+                    <span style={{ fontSize: 11, color: '#94a3b8', display: 'block' }}>{isAnalystView ? "Baseline:" : "Current setup:"}</span>
                     <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       "{comparisonMetrics.baseBnLabel}"
                     </div>
                   </div>
                   <div style={{ fontSize: 16, color: '#6b4de6', fontWeight: 700 }}>➔</div>
                   <div style={{ flex: 1 }}>
-                    <span style={{ fontSize: 11, color: '#6b4de6', display: 'block' }}>What-If:</span>
+                    <span style={{ fontSize: 11, color: '#6b4de6', display: 'block' }}>{isAnalystView ? "What-If:" : "Idea to try:"}</span>
                     <div style={{ fontSize: 13, fontWeight: 700, color: '#6b4de6', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       "{comparisonMetrics.wiBnLabel}"
                     </div>
@@ -1388,13 +1783,13 @@ export default function ResultsPage() {
             {/* Comparison Charts */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 20 }}>
               <div style={{ position: 'relative', background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', padding: '18px' }}>
-<InfoTip title="Cycle time comparison">Average time per customer before (baseline) and after (what-if) your change. A green bar means your change made it faster; red means slower.</InfoTip>
-                <h4 style={{ fontSize: 13, fontWeight: 700, color: '#475569', marginBottom: 8 }}>Cycle Time: Baseline vs What-If</h4>
+<InfoTip title={isAnalystView ? "Cycle time comparison" : "Time comparison"}>{isAnalystView ? "Average time per customer before (baseline) and after (what-if) your change. A green bar means your change made it faster; red means slower." : "Average time per customer before (current setup) and after your change. A green bar means your change made it faster; red means slower."}</InfoTip>
+                <h4 style={{ fontSize: 13, fontWeight: 700, color: '#475569', marginBottom: 8 }}>{isAnalystView ? "Cycle Time: Baseline vs What-If" : "Time from arrival to leaving: Current setup vs Idea"}</h4>
                 <div style={{ height: 180 }}>
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={[
-                      { name: 'Baseline', value: comparisonMetrics.baseAvg },
-                      { name: whatifName.length > 14 ? 'What-If' : whatifName, value: comparisonMetrics.wiAvg },
+                      { name: isAnalystView ? 'Baseline' : 'Current setup', value: comparisonMetrics.baseAvg },
+                      { name: whatifName.length > 14 ? (isAnalystView ? 'What-If' : 'Idea') : whatifName, value: comparisonMetrics.wiAvg },
                     ]} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                       <XAxis dataKey="name" tick={{ fontSize: 12, fill: '#64748b' }} axisLine={false} tickLine={false} />
@@ -1410,13 +1805,13 @@ export default function ResultsPage() {
               </div>
 
               <div style={{ position: 'relative', background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', padding: '18px' }}>
-<InfoTip title="Throughput comparison">Customers finished per hour before (baseline) and after (what-if) your change. A green bar means more customers were served; red means fewer.</InfoTip>
-                <h4 style={{ fontSize: 13, fontWeight: 700, color: '#475569', marginBottom: 8 }}>Throughput: Baseline vs What-If</h4>
+<InfoTip title={isAnalystView ? "Throughput comparison" : "Customers served comparison"}>{isAnalystView ? "Customers finished per hour before (baseline) and after (what-if) your change. A green bar means more customers were served; red means fewer." : "Customers finished per hour before (current setup) and after your change. A green bar means more customers were served; red means fewer."}</InfoTip>
+                <h4 style={{ fontSize: 13, fontWeight: 700, color: '#475569', marginBottom: 8 }}>{isAnalystView ? "Throughput: Baseline vs What-If" : "Customers served per hour: Current setup vs Idea"}</h4>
                 <div style={{ height: 180 }}>
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={[
-                      { name: 'Baseline', value: comparisonMetrics.baseThroughput },
-                      { name: whatifName.length > 14 ? 'What-If' : whatifName, value: comparisonMetrics.wiThroughput },
+                      { name: isAnalystView ? 'Baseline' : 'Current setup', value: comparisonMetrics.baseThroughput },
+                      { name: whatifName.length > 14 ? (isAnalystView ? 'What-If' : 'Idea') : whatifName, value: comparisonMetrics.wiThroughput },
                     ]} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                       <XAxis dataKey="name" tick={{ fontSize: 12, fill: '#64748b' }} axisLine={false} tickLine={false} />
@@ -1443,7 +1838,7 @@ export default function ResultsPage() {
               lineHeight: 1.5,
               boxShadow: '0 1px 2px rgba(0,0,0,0.02)'
             }}>
-              <RichText text={comparisonMetrics.descText} />
+              <RichText text={formatPlainLanguage(comparisonMetrics.descText, { isAnalystView })} />
             </div>
               </>
             )}
@@ -1452,7 +1847,7 @@ export default function ResultsPage() {
         )}
          </>
         )}
-        {tab === 'takeaways' && <KeyTakeaways lines={summaryLines} />}
+        {tab === 'takeaways' && <KeyTakeaways lines={summaryLines} isAnalystView={isAnalystView} />}
       </main>
     </div>
   );

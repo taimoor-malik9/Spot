@@ -8,39 +8,40 @@ def safe_float(val, default=0.0):
 
 
 def get_hourly_rate(resource: dict) -> float:
-    res_type = resource.get("type")
+    res_type = resource.get("type", "staff")
     hours_per_day = safe_float(resource.get("hours_per_day"), 8.0)
-    working_days = safe_float(resource.get("working_days_per_month"), 30.0)
+    working_days = safe_float(resource.get("working_days_per_month"), 22.0)
 
     # Avoid division by zero
     if hours_per_day <= 0:
         hours_per_day = 8.0
     if working_days <= 0:
-        working_days = 30.0
+        working_days = 22.0
+
+    working_hours_month = working_days * hours_per_day
 
     if res_type == "staff":
         salary = safe_float(resource.get("monthly_salary"), 0.0)
-        return salary / (working_days * hours_per_day)
+        return salary / working_hours_month
 
     elif res_type in ("equipment", "vehicle"):
         price = safe_float(resource.get("purchase_price"), 0.0)
         lifespan = safe_float(resource.get("lifespan_months"), 1.0)
-        running_cost = safe_float(resource.get("monthly_running_cost"), 0.0)
         if lifespan <= 0:
             lifespan = 1.0
-        depreciation_rate = price / (lifespan * working_days * hours_per_day)
-        running_rate = running_cost / (working_days * hours_per_day)
-        return depreciation_rate + running_rate
+        running_cost = safe_float(resource.get("monthly_running_cost"), 0.0)
+        monthly_equip = (price / lifespan) + running_cost
+        return monthly_equip / working_hours_month
 
     elif res_type == "facility":
         rent = safe_float(resource.get("monthly_rent"), 0.0)
         if rent > 0:
-            return rent / (working_days * hours_per_day)
+            return rent / working_hours_month
         price = safe_float(resource.get("purchase_price"), 0.0)
         lifespan = safe_float(resource.get("lifespan_months"), 1.0)
         if lifespan <= 0:
             lifespan = 1.0
-        return price / (lifespan * working_days * hours_per_day)
+        return (price / lifespan) / working_hours_month
 
     return 0.0
 
@@ -57,14 +58,11 @@ def calculate_idle_cost(resource: dict, total_sim_hours: float, busy_time_hours:
     quantity = safe_float(resource.get("quantity"), 1.0)
     if quantity <= 0:
         quantity = 1.0
-    # busy_time_hours is already summed ACROSS all units of this resource
-    # (traversal.py records one entry per unit consumed), so the hours
-    # available to compare against must be scaled the same way — one
-    # unit sitting idle the whole run is not the same as three units
-    # sitting idle the whole run.
-    total_available_hours = total_sim_hours * quantity
-    idle_hours = max(0, total_available_hours - busy_time_hours)
-    return round(get_hourly_rate(resource) * idle_hours, 2)
+    rate = get_hourly_rate(resource)
+    paid = quantity * rate * total_sim_hours
+    active = busy_time_hours * rate
+    idle = max(0.0, paid - active)
+    return round(idle, 2)
 
 
 def _as_resource_list(resources):
@@ -81,49 +79,76 @@ def _as_resource_list(resources):
     return resources or []
 
 
-def generate_financial_report(resources, resource_busy_times: dict, total_sim_minutes: float) -> dict:
+def generate_financial_report(resources, resource_busy_times: dict, total_sim_minutes: float, customers: int = None) -> dict:
     """
     resources:            resource list/dict from process_json (see _as_resource_list).
     resource_busy_times:   all_resource_busy from the simulation — a dict of
                            {normalized_resource_name: [duration_minutes, ...]},
-                           keyed by the SAME .strip().lower() normalization
-                           traversal.py uses for SimPy resource contention.
-                           NOTE: these are lists of per-task durations, not
-                           a running total — they must be summed here.
-    total_sim_minutes:     total simulated wall-clock time (env.now). All
-                           durations in this engine are normalized to
-                           MINUTES (see traversal.py), so this is minutes,
-                           not hours — converted to hours below before
-                           it's used with hourly rates.
+                           keyed by .strip().lower() resource name/id.
+    total_sim_minutes:     total simulated wall-clock time (env.now).
+    customers:             total instances/customers completed in this run.
     """
-    report = {"resources": {}, "total_active_cost": 0.0, "total_idle_cost": 0.0, "total_cost": 0.0}
     total_sim_hours = (total_sim_minutes / 60.0) if total_sim_minutes else 0.0
     resource_busy_times = resource_busy_times or {}
+
+    report = {
+        "resources": {},
+        "total_active_cost": 0.0,
+        "total_idle_cost": 0.0,
+        "total_cost": 0.0,
+        "period_minutes": round(total_sim_minutes or 0.0, 2),
+        "period_hours": round(total_sim_hours, 3),
+        "customers": customers,
+        "cost_per_customer": 0.0
+    }
 
     for res in _as_resource_list(resources):
         rid = res.get("id") or res.get("name")
         normalized_name = (res.get("name") or "").strip().lower()
+        res_id_key = str(res.get("id") or "").strip().lower()
 
-        busy_minutes_list = resource_busy_times.get(normalized_name, [])
+        busy_minutes_list = resource_busy_times.get(normalized_name)
+        if busy_minutes_list is None and res_id_key:
+            busy_minutes_list = resource_busy_times.get(res_id_key, [])
+        busy_minutes_list = busy_minutes_list or []
+
         busy_hours = (sum(busy_minutes_list) / 60.0) if busy_minutes_list else 0.0
+        rate = get_hourly_rate(res)
+        quantity = safe_float(res.get("quantity"), 1.0)
+        if quantity <= 0:
+            quantity = 1.0
 
-        active_cost = calculate_active_cost(res, busy_hours)
-        idle_cost = calculate_idle_cost(res, total_sim_hours, busy_hours)
+        paid = round(quantity * rate * total_sim_hours, 2)
+        active = round(busy_hours * rate, 2)
+        idle = round(max(0.0, paid - active), 2)
+        total = paid  # Correct model: total = paid; idle = paid - active
+
+        total_avail_hours = quantity * total_sim_hours
+        utilization_pct = round((busy_hours / total_avail_hours) * 100, 1) if total_avail_hours > 0 else 0.0
 
         report["resources"][rid] = {
-            "name": res.get("name"),
-            "type": res.get("type"),
-            "hourly_rate": round(get_hourly_rate(res), 2),
-            "active_cost": active_cost,
-            "idle_cost": idle_cost,
-            "total_cost": round(active_cost + idle_cost, 2),
+            "name": res.get("name") or rid,
+            "type": res.get("type", "staff"),
+            "quantity": quantity,
+            "hourly_rate": round(rate, 2),
+            "paid_hours": round(total_avail_hours, 2),
+            "busy_hours": round(busy_hours, 2),
+            "active_cost": active,
+            "idle_cost": idle,
+            "total_cost": total,
+            "utilization_pct": utilization_pct,
         }
-        report["total_active_cost"] += active_cost
-        report["total_idle_cost"] += idle_cost
+        report["total_active_cost"] += active
+        report["total_idle_cost"] += idle
+        report["total_cost"] += total
 
     report["total_active_cost"] = round(report["total_active_cost"], 2)
     report["total_idle_cost"] = round(report["total_idle_cost"], 2)
-    report["total_cost"] = round(report["total_active_cost"] + report["total_idle_cost"], 2)
+    report["total_cost"] = round(report["total_cost"], 2)
+
+    if customers and customers > 0:
+        report["cost_per_customer"] = round(report["total_cost"] / customers, 2)
+
     return report
 
 

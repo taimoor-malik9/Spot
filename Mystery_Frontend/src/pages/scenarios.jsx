@@ -62,6 +62,13 @@ import {
   ContextPad,
   GatewayPopover,
 } from '../components/model/BpmnCanvasComponents';
+import {
+  useAnalystView,
+  Hint,
+  LABELS,
+  PALETTE_TOOLTIPS,
+  formatPlainLanguage,
+} from '../lib/labels';
 
 function isXorGateway(type) {
   if (!type) return false;
@@ -748,6 +755,7 @@ function BPMNPalette({
   setShowAdv,
   onAdd
 }) {
+  const [isAnalystView] = useAnalystView();
   const [internalExpanded, setInternalExpanded] = useState(expanded);
   const [internalShowAdv, setInternalShowAdv] = useState(showAdv);
 
@@ -826,26 +834,26 @@ function BPMNPalette({
       ],
     },
     {
-      id: 'gateways', name: 'Gateways',
+      id: 'gateways', name: isAnalystView ? 'Gateways' : 'Decisions & Branches',
       items: [
-        { id: 'exclusive-gateway',   label: 'Exclusive Gateway',   icon: '✕◇', advanced: false },
-        { id: 'parallel-gateway',    label: 'Parallel Gateway',    icon: '+◇', advanced: false },
-        { id: 'inclusive-gateway',   label: 'Inclusive Gateway',   icon: '○◇', advanced: true },
-        { id: 'complex-gateway',     label: 'Complex Gateway',     icon: '*◇', advanced: true },
-        { id: 'event-based-gateway', label: 'Event-Based Gateway', icon: '◯◇', advanced: true },
+        { id: 'exclusive-gateway',   label: isAnalystView ? 'Exclusive Gateway' : 'Choice (either/or)',   icon: '✕◇', advanced: false },
+        { id: 'parallel-gateway',    label: isAnalystView ? 'Parallel Gateway' : 'Parallel branch',    icon: '+◇', advanced: false },
+        { id: 'inclusive-gateway',   label: isAnalystView ? 'Inclusive Gateway' : 'Multi-choice',   icon: '○◇', advanced: true },
+        { id: 'complex-gateway',     label: isAnalystView ? 'Complex Gateway' : 'Complex decision',     icon: '*◇', advanced: true },
+        { id: 'event-based-gateway', label: isAnalystView ? 'Event-Based Gateway' : 'Event choice', icon: '◯◇', advanced: true },
       ],
     },
     {
-      id: 'flows', name: 'Flows',
+      id: 'flows', name: isAnalystView ? 'Flows' : 'Step Connections',
       items: [
-        { id: 'sequence-flow', label: 'Sequence Flow', icon: '→', advanced: false },
-        { id: 'message-flow',  label: 'Message Flow',  icon: '⇢', advanced: false },
-        { id: 'association',   label: 'Association',   icon: '⤏', advanced: true },
+        { id: 'sequence-flow', label: isAnalystView ? 'Sequence Flow' : 'Next step arrow', icon: '→', advanced: false },
+        { id: 'message-flow',  label: isAnalystView ? 'Message Flow' : 'Message arrow',  icon: '⇢', advanced: false },
+        { id: 'association',   label: isAnalystView ? 'Association' : 'Connection note',   icon: '⤏', advanced: true },
       ],
     },
-    { id: 'swimlanes', name: 'Swimlanes', items: [
-        { id: 'pool', label: 'Pool', icon: '▭▭', advanced: false },
-        { id: 'lane', label: 'Lane', icon: '║', advanced: false },
+    { id: 'swimlanes', name: isAnalystView ? 'Swimlanes' : 'Roles & Lanes', items: [
+        { id: 'pool', label: isAnalystView ? 'Pool' : 'Organization', icon: '▭▭', advanced: false },
+        { id: 'lane', label: isAnalystView ? 'Lane' : 'Role Lane', icon: '║', advanced: false },
     ]},
     { id: 'artifacts', name: 'Artifacts', items: [
         { id: 'data-object', label: 'Data Object', icon: '📄', advanced: false },
@@ -886,6 +894,7 @@ function BPMNPalette({
                   <div
                     key={item.id}
                     draggable
+                    title={PALETTE_TOOLTIPS[item.id] || item.label}
                     onDragStart={(e) => {
                       e.dataTransfer.effectAllowed = 'move';
                       e.dataTransfer.setData('application/reactflow', JSON.stringify({ type: item.id, label: item.label }));
@@ -905,6 +914,7 @@ function BPMNPalette({
                   <div
                     key={item.id}
                     draggable
+                    title={PALETTE_TOOLTIPS[item.id] || item.label}
                     onDragStart={(e) => {
                       e.dataTransfer.effectAllowed = 'move';
                       e.dataTransfer.setData('application/reactflow', JSON.stringify({ type: item.id, label: item.label }));
@@ -1292,6 +1302,7 @@ function DottedCanvas({ children, isEmpty, emptyMsg, onDrop, onDragOver, onMouse
 function ComparisonPane({ scenarios, compareIds, scenarioResults, backendScenarioIds }) {
   if (compareIds.length < 2) return null;
 
+  const [isAnalystView] = useAnalystView();
   const [isCollapsed, setIsCollapsed] = useState(false);
 
   const selectedScenarios = compareIds.map(id => scenarios.find(s => s.id === id)).filter(Boolean);
@@ -1356,7 +1367,7 @@ function ComparisonPane({ scenarios, compareIds, scenarioResults, backendScenari
           </button>
           <h3 className="text-sm font-semibold text-gray-800 flex items-center gap-2">
             <GitCompare size={16} className="text-violet-500" />
-            Scenario Comparison
+            {isAnalystView ? "Scenario Comparison" : "Idea Comparison"}
           </h3>
         </div>
         <div className="flex items-center gap-2">
@@ -1365,7 +1376,9 @@ function ComparisonPane({ scenarios, compareIds, scenarioResults, backendScenari
               Compare up to {MAX_COMPARE} at a time
             </span>
           )}
-          <span className="text-xs text-gray-500">{compareIds.length} scenarios selected</span>
+          <span className="text-xs text-gray-500">
+            {compareIds.length} {isAnalystView ? "scenarios selected" : "ideas selected"}
+          </span>
         </div>
       </div>
       
@@ -1374,9 +1387,9 @@ function ComparisonPane({ scenarios, compareIds, scenarioResults, backendScenari
         <table className="w-full text-left text-xs">
           <thead>
             <tr className="border-b border-gray-100">
-              <th className="py-2 font-medium text-gray-500">Scenario</th>
-              <th className="py-2 font-medium text-gray-500">Avg Cycle Time</th>
-              <th className="py-2 font-medium text-gray-500">Throughput /hr</th>
+              <th className="py-2 font-medium text-gray-500">{isAnalystView ? "Scenario" : "Idea"}</th>
+              <th className="py-2 font-medium text-gray-500">{isAnalystView ? "Avg Cycle Time" : "Time from arrival to leaving"}</th>
+              <th className="py-2 font-medium text-gray-500">{isAnalystView ? "Throughput /hr" : "Customers / hr"}</th>
               <th className="py-2 font-medium text-gray-500">Max Wait Time</th>
             </tr>
           </thead>
@@ -1391,7 +1404,7 @@ function ComparisonPane({ scenarios, compareIds, scenarioResults, backendScenari
                     <div className="flex items-center gap-2">
                       <span className={`h-2 w-2 rounded-full ${s._isBaseline ? 'bg-sky-500' : 'bg-violet-400'}`} />
                       <span className={`font-medium ${isBase ? 'text-gray-900' : 'text-gray-700'}`}>{s.name}</span>
-                      {isBase && <span className="text-[9px] px-1.5 py-0.5 rounded bg-gray-200 text-gray-600 font-semibold uppercase">Base</span>}
+                      {isBase && <span className="text-[9px] px-1.5 py-0.5 rounded bg-gray-200 text-gray-600 font-semibold uppercase">{isAnalystView ? "Base" : "Current"}</span>}
                     </div>
                   </td>
                   <td className="py-2.5 text-gray-800 font-medium">
@@ -1438,6 +1451,7 @@ export default function ScenariosPage() {
   // ── Backend state ────────────────────────────────────────────────────────────
   const baseProcessId = localStorage.getItem('spot:processId') || null;
   const navigate = useNavigate();
+  const [isAnalystView] = useAnalystView();
   const [backendScenarioIds, setBackendScenarioIds] = useState({}); // { localId: backendId }
   const [scenarioSaving, setScenarioSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState('idle'); // 'idle' | 'saving' | 'saved'
@@ -1667,7 +1681,7 @@ export default function ScenariosPage() {
       } else {
         baselineForkedThisSessionRef.current = true;
         targetActiveId = forkBaseline();
-        showMsg('info', 'Baseline is read-only — created a new What-If scenario for your changes.');
+        showMsg('info', isAnalystView ? 'Baseline is read-only — created a new What-If scenario for your changes.' : 'Current setup is read-only — created a new idea for your changes.');
       }
     }
 
@@ -2089,7 +2103,7 @@ export default function ScenariosPage() {
           if (els.length > 0) {
             localStorage.setItem('spot:scenario_template', saved);
             
-            const baselineTitle = localStorage.getItem('spot:processTitle') || 'Baseline (Original)';
+            const baselineTitle = localStorage.getItem('spot:processTitle') || (isAnalystView ? 'Baseline (Original)' : 'Current setup (Original)');
             
             // Sync viewport (zoom and pan) from Model page
             const savedVP = localStorage.getItem('spot:model:viewport');
@@ -2109,7 +2123,7 @@ export default function ScenariosPage() {
               if (hasBaseline) {
                 return prev.map(s => s.id === 'baseline' ? { ...s, name: baselineTitle } : s);
               }
-              return [{ id: 'baseline', name: baselineTitle, description: 'Original model', _isBaseline: true }, ...prev];
+              return [{ id: 'baseline', name: baselineTitle, description: isAnalystView ? 'Original model' : 'Current setup', _isBaseline: true }, ...prev];
             });
             
             // Sync baseline canvas elements and connections from Model page
@@ -2232,12 +2246,12 @@ export default function ScenariosPage() {
         localStorage.setItem('spot:hasWhatIfResults', 'false');
         localStorage.removeItem('spot:comparisonResults');
         
-        showMsg('success', 'Baseline simulation complete! Navigating to results...');
+        showMsg('success', isAnalystView ? 'Baseline simulation complete! Navigating to results...' : 'Test complete! Navigating to results...');
         setTimeout(() => {
           navigate('/results');
         }, 1000);
       } catch (err) {
-        showMsg('error', `Baseline simulation failed: ${err.message}`);
+        showMsg('error', isAnalystView ? `Baseline simulation failed: ${err.message}` : `Test failed: ${err.message}`);
       } finally {
         setScenarioSimulating(prev => ({ ...prev, baseline: false }));
       }
@@ -2339,7 +2353,7 @@ export default function ScenariosPage() {
       localStorage.setItem('spot:hasWhatIfResults', 'true');
 
       // 2. Ensure baseline is run using the same config
-      showMsg('info', 'Generating baseline simulation results with matching configuration for comparison...');
+      showMsg('info', isAnalystView ? 'Generating baseline simulation results with matching configuration for comparison...' : 'Testing current setup with matching configuration for comparison...');
       const bRes = await runSimulation(baseId, comparisonConfig);
       const baseRes = bRes.results || bRes;
       baseRes.mode = comparisonConfig.mode;
@@ -2413,7 +2427,7 @@ export default function ScenariosPage() {
       } else {
         baselineForkedThisSessionRef.current = true;
         targetActiveId = forkBaseline();
-        showMsg('info', 'Baseline is read-only — created a new What-If scenario for your changes.');
+        showMsg('info', isAnalystView ? 'Baseline is read-only — created a new What-If scenario for your changes.' : 'Current setup is read-only — created a new idea for your changes.');
       }
     }
     
@@ -2942,11 +2956,11 @@ export default function ScenariosPage() {
                 </span>
                 {currentScenario?._isBaseline ? (
                   <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600 shrink-0">
-                    Baseline
+                    {isAnalystView ? 'Baseline' : <Hint term="baseline">Current setup</Hint>}
                   </span>
                 ) : (
                   <span className="rounded-md bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-600 shrink-0">
-                    What-If
+                    {isAnalystView ? 'What-If' : <Hint term="scenario">Idea to try</Hint>}
                   </span>
                 )}
                 {activeId === currentScenario?.id && (
@@ -3061,7 +3075,7 @@ export default function ScenariosPage() {
               <div className="flex-1 overflow-y-auto divide-y divide-gray-50">
                 {sortedScenarios.length === 0 ? (
                   <div className="py-6 text-center text-xs text-gray-400">
-                    No scenarios found
+                    {isAnalystView ? "No scenarios found" : "No ideas found"}
                   </div>
                 ) : (
                   sortedScenarios.map((s) => {
@@ -3083,7 +3097,7 @@ export default function ScenariosPage() {
                           }}
                           onClick={(e) => e.stopPropagation()}
                           className="h-3.5 w-3.5 rounded border-gray-300 text-sky-600 focus:ring-sky-500 cursor-pointer shrink-0"
-                          title="Compare scenario"
+                          title={isAnalystView ? "Compare scenario" : "Compare idea"}
                         />
 
                         {/* Scenario info (click to select) */}
@@ -3100,11 +3114,11 @@ export default function ScenariosPage() {
                             </span>
                             {s._isBaseline ? (
                               <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-semibold uppercase shrink-0">
-                                Base
+                                {isAnalystView ? "Base" : "Current"}
                               </span>
                             ) : (
                               <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 font-semibold uppercase shrink-0">
-                                What-If
+                                {isAnalystView ? "What-If" : "Idea"}
                               </span>
                             )}
                           </div>
@@ -3257,7 +3271,7 @@ export default function ScenariosPage() {
                 ) : (
                   <Play size={16} className="mr-1 text-emerald-600 fill-emerald-600" />
                 )}
-                {scenarioSaving ? 'Saving…' : (activeId === 'baseline' ? scenarioSimulating.baseline : scenarioSimulating[backendScenarioIds[activeId] || scenarios.find(s => s.id === activeId)?._backendId]) ? 'Running…' : 'Run Simulation'}
+                {scenarioSaving ? 'Saving…' : (activeId === 'baseline' ? scenarioSimulating.baseline : scenarioSimulating[backendScenarioIds[activeId] || scenarios.find(s => s.id === activeId)?._backendId]) ? 'Running…' : (isAnalystView ? 'Run Simulation' : 'Run Test')}
               </TBtn>
             </>
           )}
@@ -3274,9 +3288,9 @@ export default function ScenariosPage() {
             {activeId === 'baseline' && (
               <div className="shrink-0 flex items-center justify-center gap-2 bg-gradient-to-r from-blue-50 via-indigo-50 to-blue-50 text-blue-700 border-b border-blue-100 px-4 py-2 text-xs font-medium select-none z-10 shadow-2xs">
                 <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800 uppercase tracking-wide">
-                  Baseline Read-Only
+                  {isAnalystView ? 'Baseline Read-Only' : 'Current setup (Read-Only)'}
                 </span>
-                <span>Editing canvas creates a new What-If scenario automatically</span>
+                <span>{isAnalystView ? 'Editing canvas creates a new What-If scenario automatically' : 'Editing creates a new idea to try automatically'}</span>
               </div>
             )}
             <div className="min-h-0 flex-1 relative" onClick={() => { setSelectedTaskId(null); setSelectedConnId(null); }}>
@@ -3284,7 +3298,7 @@ export default function ScenariosPage() {
                 isEmpty={scenarios.length === 0 || activeElements.length === 0}
                 emptyMsg={
                   scenarios.length === 0
-                    ? 'Create a scenario with the “Add scenario” control above, then drag shapes from the left onto this area.'
+                    ? 'No scenarios yet. Click New to create one.'
                     : 'Drag shapes from the palette on the left onto this canvas. Drag placed shapes to move them.'
                 }
                 onDrop={handleCanvasDrop}
@@ -3629,7 +3643,7 @@ export default function ScenariosPage() {
               >
                 <div className="shrink-0 flex items-center justify-between border-b border-gray-100 bg-gradient-to-b from-slate-50 to-white px-4 py-3">
                   <div>
-                    <h2 className="text-sm font-semibold text-gray-900">BPMN Elements</h2>
+                    <h2 className="text-sm font-semibold text-gray-900">{isAnalystView ? "BPMN Elements" : "Elements"}</h2>
                     <p className="text-[11px] text-gray-400 mt-0.5">Click or drag to add</p>
                   </div>
                   <button
@@ -3666,10 +3680,12 @@ export default function ScenariosPage() {
                 }}>
                   <div>
                     <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: '#111827' }}>
-                      {selectedTask.type.includes('gateway') ? 'Gateway Routing' : 'Task Setup'}
+                      {selectedTask.type.includes('gateway')
+                        ? (isAnalystView ? 'Gateway Routing' : 'Decision Routing')
+                        : (isAnalystView ? 'Task Setup' : 'Step Setup')}
                     </h3>
                     <p style={{ margin: '3px 0 0', fontSize: 11, color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 180 }}>
-                      {selectedTask.label || selectedTask.id}
+                      {formatPlainLanguage(selectedTask.label || selectedTask.id, { isAnalystView })}
                     </p>
                   </div>
                   <button onClick={() => setSelectedTaskId(null)} style={{ padding: 6, background: 'transparent', border: 'none', cursor: 'pointer', borderRadius: 8 }}>
@@ -3682,17 +3698,23 @@ export default function ScenariosPage() {
                   <div>
                     {selectedTask.type === 'parallel-gateway' ? (
                       <p style={{ fontSize: 12, color: '#4b5563', marginBottom: 16 }}>
-                        Parallel Gateways (AND) route tokens to ALL outgoing paths simultaneously. No routing probabilities are needed.
+                        {isAnalystView
+                          ? 'Parallel Gateways (AND) route tokens to ALL outgoing paths simultaneously. No routing probabilities are needed.'
+                          : 'This parallel split starts all outgoing paths at the same time. No path percentages are needed.'}
                       </p>
                     ) : (
                     <>
-                      <p style={{ fontSize: 12, color: '#4b5563', marginBottom: 16 }}>Set routing probabilities for outgoing paths. Values should be between 0 and 1 (e.g., 0.5 for 50%).</p>
+                      <p style={{ fontSize: 12, color: '#4b5563', marginBottom: 16 }}>
+                        {isAnalystView
+                          ? 'Set routing probabilities for outgoing paths. Values should be between 0 and 1 (e.g., 0.5 for 50%).'
+                          : 'Set the share of customers for each path. Use numbers between 0 and 1 (e.g. 0.5 for 50%).'}
+                      </p>
                       {connections.filter(c => (c.from ?? c.fromId) === selectedTaskId).length === 0 ? (
                         <p style={{ fontSize: 12, color: '#9ca3af' }}>No outgoing paths found.</p>
                       ) : (
                         connections.filter(c => (c.from ?? c.fromId) === selectedTaskId).map(conn => {
                           const targetNode = elements.find(n => n.id === (conn.to ?? conn.toId));
-                          const targetName = targetNode?.label || targetNode?.id || 'Unknown';
+                          const targetName = formatPlainLanguage(targetNode?.label || targetNode?.id || 'Unknown', { isAnalystView });
                           return (
                             <div key={conn.id || `${conn.from ?? conn.fromId}-${conn.to ?? conn.toId}`} style={{ marginBottom: 12 }}>
                               <label style={{ fontSize: 11, fontWeight: 600, color: '#4b5563', marginBottom: 6, display: 'flex', justifyContent: 'space-between' }}>
@@ -4358,9 +4380,11 @@ export default function ScenariosPage() {
           }} onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
-                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#1f2937' }}>Start Scenario Simulation</h3>
+                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#1f2937' }}>
+                  {isAnalystView ? 'Start Scenario Simulation' : 'Start Idea Test Run'}
+                </h3>
                 <p style={{ margin: '3px 0 0 0', fontSize: 11, color: '#6b7280' }}>
-                  Set up parameters for comparing this scenario against Baseline
+                  {isAnalystView ? 'Set up parameters for comparing this scenario against Baseline' : 'Set up parameters for comparing this idea against Current setup'}
                 </p>
               </div>
               <button onClick={() => setShowSimConfigModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af' }}>
@@ -4454,15 +4478,6 @@ export default function ScenariosPage() {
               </button>
             </div>
           </div>
-        </div>
-      )}
-
-      {import.meta.env.DEV && (
-        <div
-          className="fixed top-3 right-4 z-[200] rounded-md bg-slate-900 px-2 py-1 font-mono text-[10px] text-white shadow-lg pointer-events-none select-none opacity-90"
-          title="Shown only when Vite dev is running. If missing, you are not on the dev server bundle."
-        >
-          Dev · Scenarios v2
         </div>
       )}
     </div>

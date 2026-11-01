@@ -27,7 +27,7 @@ const ProcessSchema = new mongoose.Schema({
     default: []
   },
   nodes: {
-    type: Array,
+    type: mongoose.Schema.Types.Mixed,
     default: []
   },
   edges: [{
@@ -58,6 +58,12 @@ const ProcessSchema = new mongoose.Schema({
     enum: ['waiting', 'cost', 'throughput', null],
     default: null
   },
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    index: true,
+    default: null
+  },
   createdAt: {
     type: Date,
     default: Date.now
@@ -82,6 +88,28 @@ function normalizeEdgeData(data) {
   return {};
 }
 
+function normalizeNodeOrigin(nodes) {
+  if (!Array.isArray(nodes)) return [];
+  return nodes.map(n => {
+    if (!n || typeof n !== 'object') return n;
+    const d = n.data && typeof n.data === 'object' ? { ...n.data } : {};
+    const origin = d.origin || n.origin || 'user';
+    const kept = d.kept !== undefined ? Boolean(d.kept) : (n.kept !== undefined ? Boolean(n.kept) : false);
+    const estimated = Boolean(d.estimated ?? n.estimated);
+    return {
+      ...n,
+      origin,
+      kept,
+      data: {
+        ...d,
+        origin,
+        kept,
+        estimated,
+      }
+    };
+  });
+}
+
 ProcessSchema.pre('save', function (next) {
   this.updatedAt = new Date();
   try {
@@ -89,6 +117,9 @@ ProcessSchema.pre('save', function (next) {
     invalidateSuggestionsCache(this._id);
   } catch (err) {
     // Non-blocking
+  }
+  if (Array.isArray(this.nodes)) {
+    this.nodes = normalizeNodeOrigin(this.nodes);
   }
   if (Array.isArray(this.edges)) {
     this.edges = this.edges.map(e => ({
@@ -100,6 +131,9 @@ ProcessSchema.pre('save', function (next) {
 });
 
 ProcessSchema.post('init', function () {
+  if (Array.isArray(this.nodes)) {
+    this.nodes = normalizeNodeOrigin(this.nodes);
+  }
   if (Array.isArray(this.edges)) {
     this.edges = this.edges.map(e => ({
       ...e,

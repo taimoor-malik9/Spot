@@ -13,6 +13,8 @@ import ScenariosPage from '@/pages/scenarios'
 import BaselinePage from '@/pages/baseline'
 import SimulatePage from '@/pages/simulate'
 import ResultsPage from '@/pages/results'
+import DashboardPage from '@/pages/dashboard'
+import ProfilePage from '@/pages/Profile'
 
 function HomeRoute() {
   const { user, isGuest, loading } = useAuth();
@@ -34,6 +36,30 @@ function App() {
         <Route path="/forgot-password" element={<ForgotPassword />} />
 
         {/* In-app routes with AppLayout and route protections */}
+        <Route
+          path="/dashboard"
+          element={
+            <FullAccessRoute>
+              <AppLayout>
+                <div className="layout-route-shell flex flex-1 flex-col min-h-0 min-w-0 w-full overflow-hidden">
+                  <DashboardPage />
+                </div>
+              </AppLayout>
+            </FullAccessRoute>
+          }
+        />
+        <Route
+          path="/profile"
+          element={
+            <FullAccessRoute>
+              <AppLayout>
+                <div className="layout-route-shell flex flex-1 flex-col min-h-0 min-w-0 w-full overflow-hidden">
+                  <ProfilePage />
+                </div>
+              </AppLayout>
+            </FullAccessRoute>
+          }
+        />
         <Route
           path="/model"
           element={

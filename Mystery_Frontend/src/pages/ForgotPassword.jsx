@@ -3,7 +3,6 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Eye, EyeOff, Check, X, Loader2, AlertCircle } from 'lucide-react';
 import SpotLogo from '@/components/SpotLogo';
 import AuthShowcase from '@/components/AuthShowcase';
-import { request } from '@/lib/apiService';
 import '@/styles/auth.css';
 
 export default function ForgotPassword() {
@@ -53,10 +52,17 @@ export default function ForgotPassword() {
 
     setIsSubmitting(true);
     try {
-      const data = await request('/api/auth/recovery/start', {
+      const res = await fetch('/api/auth/recovery/start', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: normalized }),
       });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        setServerError(data.error || 'Recovery failed');
+        return;
+      }
 
       if (Array.isArray(data.questions) && data.questions.length === 2) {
         setQuestions(data.questions);
@@ -64,8 +70,8 @@ export default function ForgotPassword() {
       } else {
         setServerError('Recovery failed');
       }
-    } catch (err) {
-      setServerError(err.message || 'Recovery failed');
+    } catch {
+      setServerError('Recovery failed');
     } finally {
       setIsSubmitting(false);
     }
@@ -84,13 +90,21 @@ export default function ForgotPassword() {
 
     setIsSubmitting(true);
     try {
-      const data = await request('/api/auth/recovery/verify', {
+      const res = await fetch('/api/auth/recovery/verify', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: email.trim().toLowerCase(),
           answers: [a1, a2],
         }),
       });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        setServerError(data.error || "Answers don't match");
+        return;
+      }
 
       if (data.token) {
         setRecoveryToken(data.token);
@@ -98,8 +112,8 @@ export default function ForgotPassword() {
       } else {
         setServerError("Answers don't match");
       }
-    } catch (err) {
-      setServerError(err.message || "Answers don't match");
+    } catch {
+      setServerError("Answers don't match");
     } finally {
       setIsSubmitting(false);
     }
@@ -126,18 +140,26 @@ export default function ForgotPassword() {
 
     setIsSubmitting(true);
     try {
-      await request('/api/auth/recovery/reset', {
+      const res = await fetch('/api/auth/recovery/reset', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           token: recoveryToken,
           password,
         }),
       });
 
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        setServerError(data.error || 'Session expired. Start again.');
+        return;
+      }
+
       // Success: redirect to /login with state notice
       navigate('/login', { replace: true, state: { notice: 'Password updated' } });
-    } catch (err) {
-      setServerError(err.message || 'Session expired. Start again.');
+    } catch {
+      setServerError('Session expired. Start again.');
     } finally {
       setIsSubmitting(false);
     }

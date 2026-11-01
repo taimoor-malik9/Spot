@@ -1,3 +1,5 @@
+const dns = require('dns');
+try { dns.setServers(['8.8.8.8', '1.1.1.1']); } catch (e) {}
 const path = require('path');
 
 // Uses Google Gemini API (free tier) instead of a paid SDK.
@@ -63,17 +65,17 @@ Return either:
   "type": "spec",
   "pools": [
     {
-      "name": "Pool / Participant Name",
+      "name": "Business / Organization Name",
       "steps": [
         {
           "id": "step_id",
           "label": "Action Verb + Noun",
           "kind": "task" | "wait_for_message" | "send_message",
-          "lane": "Lane Name",
-          "origin": "stated" | "inferred",
+          "lane": "Lane / Role Name",
           "duration": 5,
           "duration_unit": "minutes" | "hours" | "days",
-          "resource": "Resource Name or null"
+          "resource": "Staff Role Name or null",
+          "resources": { "Staff Role Name": 1 }
         }
       ],
       "branches": [
@@ -83,8 +85,8 @@ Return either:
           "options": [
             {
               "label": "Option Label",
-              "probability": 0.8,
-              "steps": ["step_id_a", "step_id_b"],
+              "probability": null,
+              "steps": ["step_id_a"],
               "rejoin": true
             }
           ]
@@ -100,44 +102,51 @@ Return either:
   ],
   "resources": [
     {
-      "id": "Resource Name",
-      "name": "Resource Name",
+      "id": "Staff Role Name",
+      "name": "Staff Role Name",
       "type": "staff" | "equipment" | "facility",
       "quantity": 1,
       "quantitySource": "stated" | "assumed",
-      "costSource": "stated" | "assumed",
+      "costSource": "assumed",
       "hours_per_day": 8,
       "working_days_per_month": 22,
-      "monthly_salary": 50000
+      "monthly_salary": 60000
     }
   ]
 }
 
-=== RULES FOR SPEC GENERATION ===
-1. POOLS & PARTICIPANTS:
-   - Identify each distinct actor/organization (e.g. "Customer", "Store", "Cashier", "Kitchen", "Delivery Driver").
-   - Give each actor their own pool in "pools".
-2. STEPS & KINDS:
-   - "task": active work being performed by someone or something (has duration and resource).
-   - "wait_for_message": waiting for a message, order, trigger, or delivery from another pool. When this is the first step of a receiving pool, the compiler automatically turns it into a message start event.
-   - "send_message": sending a confirmation, notification, or handoff to another pool. When this is the last step of a sending pool, the compiler automatically turns it into a message end event.
-   - "origin": "stated" if explicitly mentioned by user; "inferred" if added for logical completeness. Inferred steps have duration 0.
-   - "lane": swimlane within the pool. If no sub-lanes, use the pool name. Never leave empty.
-3. BRANCHES & DECISIONS:
-   - "afterStepId": the step ID after which the decision gateway is placed.
-   - "question": phrase as a question ("Payment Valid?", "Item in Stock?").
-   - "options": at least 2 choices. Probabilities across options must sum to 1.0.
-   - "steps": MUST be an array of valid step IDs belonging to that branch path. NEVER empty. Every step ID in "steps" must be defined in the pool's "steps" array.
-   - "rejoin": true if the branch merges back into the main workflow; false if the branch terminates the process (e.g. order rejected/cancelled).
-4. HANDOFFS:
-   - Model all interactions between different pools as handoffs from a sending step to a receiving step:
-     { "fromStepId": "sending_step_id", "toStepId": "receiving_step_id" }.
-   - Cross-pool sequence flows are not allowed; handoffs become BPMN message flows.
-5. RESOURCES:
-   - Infer resources (staff, equipment, facility) needed for simulation.
-   - The customer / applicant / requester is the process subject and NEVER a resource.
-   - All server/worker roles (Cashier, Chef, Driver, Clerk) must be defined in "resources".
-`;
+=== DOMAIN-INDEPENDENT MODELING RULES ===
+1. POOLS & PARTICIPANTS (Rule 2a):
+   - By default, ALL steps belong to ONE primary pool representing the business or organization running the process.
+   - The customer / client / applicant / requester is a swimlane ("lane": "Customer") WITHIN this main business pool, NOT a separate pool.
+   - Staff roles are also lanes within this same pool (e.g. "lane": "Receptionist", "lane": "Doctor", "lane": "Barista", "lane": "Technician").
+   - Create an extra pool ONLY when the description explicitly names a separate, independent external organization or third party that performs its own steps (e.g. an external courier, supplier, or partner bank).
+   - Within a pool, sequence flows connect all steps. Within one pool there are ZERO message flows and ZERO message events.
+   - Message flows ("handoffs") are ONLY used across DIFFERENT pools.
+2. ACTIVITIES & LANES (Rule 2b):
+   - Each real activity appears EXACTLY ONCE, in the lane of the role that performs it.
+   - Never duplicate an activity in two different lanes.
+3. WORK AS TASKS (Rule 2c):
+   - Anything that takes time or uses staff or equipment MUST be a "task" ("kind": "task").
+   - Events are strictly start, end, and true external triggers from an external pool. Never model staff work as an event.
+4. WAITING IS NOT A STEP (Rule 2d):
+   - Waiting is NOT a step; queues form automatically at resources during simulation. Never model "waiting in queue" or "waiting for staff" as a step or event.
+5. EMPTY BRANCHES (Rule 2e):
+   - A branch where nothing happens has an empty steps array: "steps": []. The compiler draws a direct labeled sequence flow from the split gateway to the join gateway.
+   - NEVER create a dummy or placeholder task (e.g. "Do Nothing", "Pass", "Proceed") on an empty branch.
+6. DECISIONS & BRANCHES (Rule 2f):
+   - Each decision is modeled exactly once, in the lane of the role who decides, placed directly after the step where the outcome is evaluated ("afterStepId").
+   - "afterStepId" MUST reference a step in the pool's main flow. NEVER set "afterStepId" to a step that is already inside another branch option! If a subsequent decision occurs after divergent branch paths rejoin, include an explicit review or assessment task in the pool's main flow between the decisions (e.g. "Review Evaluation", "Determine Approval") performed by staff, and place the subsequent decision after that step.
+   - NO DUPLICATE STEPS IN BRANCHES: If different branch paths lead to the same subsequent step, do NOT place that step inside both branch options! Put ONLY the branch-divergent steps inside the branch options, set "rejoin": true, and keep the subsequent shared step in the pool's main flow after the decision. A step ID must NEVER appear in multiple branch options.
+7. GATEWAY LABELS & PROBABILITIES (Rule 2g):
+   - Labels belong ONLY on split outputs (the branch options). Join outputs must never be labeled.
+   - NEVER invent or guess probabilities: if the user's description does not explicitly state percentages, leave "probability": null. The system will identify unresolved gateways and ask the user.
+8. ORIGIN IS SET BY CODE (Rule 2h):
+   - Do NOT include an "origin" field. The system automatically assigns "origin": "stated" to user steps and "origin": "structural" to compiler gateways and events.
+9. RESOURCES & FINANCIAL ACTIVE COST:
+   - Every staff-handled task MUST specify the performing role in "resource": "Role Name" and "resources": { "Role Name": 1 }.
+   - The customer / requester is NEVER a resource ("resource": null, "resources": {}).
+   - All staff roles performing tasks MUST be listed in the top-level "resources" array with "type": "staff", "quantity": 1 (or stated count), "hours_per_day": 8, "working_days_per_month": 22, and realistic "monthly_salary" (e.g. 50000 to 120000) so that active utilization and active financial costs are properly calculated.`;
 
 const SYSTEM_PROMPT = `You are a BPMN 2.0 process modeling assistant for SPOT (Simulation Platform for Optimization using Digital Twin). You convert plain-language descriptions into a BPMN diagram AND infer the resources needed to run a discrete-event simulation on it.
 
@@ -145,7 +154,7 @@ const SYSTEM_PROMPT = `You are a BPMN 2.0 process modeling assistant for SPOT (S
 1. Exactly ONE start-event in the ENTIRE diagram (the whole BPMN). Never create more than one start-event in the entire diagram or across pools/swimlanes. The process begins at this single start-event.
 2. At least ONE end-event per pool, zero outgoing edges. Multiple end events allowed (one per distinct outcome).
 3. Use the specific event subtype whenever one fits — message-intermediate-catch (receiving something mid-process), message-intermediate-throw (sending something mid-process), timer-intermediate-catch (a pure wait — "wait for delivery", "wait 2 days"), message-start-event / message-end-event (a message starts or ends the process). Fall back to the generic intermediate-event only when none of those fit, and only where the description implies a real wait or trigger — never invent one. See CHOOSING THE RIGHT NODE TYPE below for the full distinction.
-4. Gateways: exclusive-gateway (XOR, one path taken), parallel-gateway (AND, all paths taken), inclusive-gateway (OR, one or more paths). Use gateway_type field.
+4. Gateways: add a gateway ONLY when the owner describes a choice or different outcomes (e.g. "if the customer waits too long, they leave"). A gateway must be a split (>=2 outgoing sequence flows) or a join (>=2 incoming). Gateways with a single path (1 incoming, 1 outgoing) must not exist. Types: exclusive-gateway (XOR, one path taken), parallel-gateway (AND, all paths taken), inclusive-gateway (OR, one or more paths). Use gateway_type field.
 5. Every gateway that SPLITS (1 in, 2+ out) must have a matching gateway of the same type downstream that JOINS the same branches back (2+ in, 1 out) before the flow continues, unless a branch terminates directly at an end-event.
 6. For exclusive/inclusive gateway branches, edge probabilities (edge.data.probability) across all outgoing branches from the same gateway MUST sum to exactly 1. Parallel gateway branches get probability: null (all branches always taken).
 7. Loops (rework/retry) = a sequence flow edge back to an earlier task/gateway. Never duplicate a node to represent a repeat.
@@ -244,9 +253,9 @@ If the description is too vague to model at all, or a resource's fundamental TYP
 === NODE ORIGIN (stated vs inferred) & GATEWAY BRANCHES ===
 - Every node in "nodes" MUST set "origin" to either "stated" or "inferred":
   - "stated": tasks directly mentioned or described in the owner's text.
-  - Start/end events and join gateways required for BPMN structure may be added without flagging as inferred (set origin: "stated").
-  - "inferred": ANY other task/activity that you add to bridge flow, fix connectivity, or evaluate conditions that was NOT explicitly stated by the owner MUST be marked origin: "inferred".
-- Do not invent branches or gateway probabilities unless the owner's text states them. If a branch is implied without an explicit probability, set a reasonable probability and flag "probabilityEstimated": true on that edge's data object (edge.data.probabilityEstimated: true). If explicitly stated, flag probabilityEstimated: false.
+  - "inferred": ANY task/activity that you add to bridge flow, fix connectivity, or evaluate conditions that was NOT explicitly stated by the owner MUST be marked origin: "inferred".
+  - Code will automatically mark BPMN structural elements (start/end events, gateways, repair nodes) as origin: "structural".
+- Add a gateway ONLY when the owner describes a choice or different outcomes (e.g. "if the customer waits too long, they leave"). Never create gateways with a single path or for linear sequential steps. Do not invent branches or gateway probabilities unless the owner's text states them. If a branch is implied without an explicit probability, set a reasonable probability and flag "probabilityEstimated": true on that edge's data object (edge.data.probabilityEstimated: true). If explicitly stated, flag probabilityEstimated: false.
 
 === COMMON MISTAKES — CHECK YOURSELF BEFORE RESPONDING ===
 - Output must be raw JSON only — no markdown code fences, no comments, no trailing commas, no text before or after the JSON object.
@@ -316,10 +325,10 @@ async function callGemini({ systemPrompt, contents, generationConfig, expectJson
   };
 
   const candidateModels = [
-    process.env.GEMINI_MODEL || 'gemini-flash-latest',
-    'gemini-flash-lite-latest',
-    'gemini-2.0-flash-lite',
-    'gemini-2.5-flash'
+    process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite',
+    'gemini-3.1-flash-lite',
+    'gemini-3.8-flash',
+    'gemini-flash-latest'
   ];
 
   let response;
@@ -339,7 +348,7 @@ async function callGemini({ systemPrompt, contents, generationConfig, expectJson
         if (response.ok) break;
 
         lastErrBody = await response.text();
-        if (response.status === 429 || response.status === 503) {
+        if (response.status === 404 || response.status === 429 || response.status === 503) {
           console.warn(`⚠️ Model ${modelName} returned status ${response.status}. Trying next fallback model...`);
           break;
         }
@@ -428,11 +437,14 @@ async function generateProcess(description, history = []) {
     const compiled = compileBpmn(parsed);
 
     // 3. validateBpmn as safety net
-    const validation = validateBpmn(compiled);
+    const validation = validateBpmn(compiled, { allowUnresolved: true });
     if (validation.errors && validation.errors.length > 0) {
       console.warn('validateBpmn compiler safety net found issues:', validation.errors);
     }
     const finalDiagram = validation.repaired || compiled;
+    finalDiagram.unresolvedGateways = validation.unresolvedGateways || [];
+    finalDiagram.duplicateWarnings = validation.duplicateWarnings || [];
+    finalDiagram.validationRepairs = validation.repairs || [];
 
     // 4. Build confirmation payload for review card
     const isFirstPass = !history || history.length === 0;
@@ -444,6 +456,8 @@ async function generateProcess(description, history = []) {
           diagram: finalDiagram,
           confirmations,
           spec: parsed,
+          unresolvedGateways: finalDiagram.unresolvedGateways,
+          duplicateWarnings: finalDiagram.duplicateWarnings,
         };
       }
     }
@@ -451,6 +465,8 @@ async function generateProcess(description, history = []) {
     return {
       ...finalDiagram,
       spec: parsed,
+      unresolvedGateways: finalDiagram.unresolvedGateways,
+      duplicateWarnings: finalDiagram.duplicateWarnings,
     };
   }
 
@@ -651,9 +667,16 @@ function normalizeDiagram(diagram) {
       n.data.lane = assignedLane;
     }
 
-    // Server-side enforcement: for every inferred task force duration=0, duration_min=null, duration_max=null, resources={}
-    const nodeOrigin = n.origin || n.data?.origin || 'stated';
+    // Module D1b: Do not rely on LLM for "structural"; code sets it.
+    const isStructural = n.type.includes('event') || n.type.includes('gateway');
+    let nodeOrigin = n.origin || n.data?.origin;
+    if (isStructural) {
+      nodeOrigin = 'structural';
+    } else if (!nodeOrigin || nodeOrigin === 'structural') {
+      nodeOrigin = 'stated';
+    }
     n.origin = nodeOrigin;
+    if (!n.data) n.data = {};
     n.data.origin = nodeOrigin;
 
     if (n.type === 'task' && nodeOrigin === 'inferred') {
@@ -693,7 +716,8 @@ function normalizeDiagram(diagram) {
         type: 'end-event',
         pool: pool === 'default' ? null : pool,
         lane: null,
-        data: { label: 'Process Ended' }
+        origin: 'structural',
+        data: { label: 'Process Ended', origin: 'structural' }
       };
       diagram.nodes.push(newEnd);
 
