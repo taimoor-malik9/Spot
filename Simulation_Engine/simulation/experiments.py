@@ -496,6 +496,10 @@ def run_experiment(process_json, config, goal, run_process, target=None):
 
     wait_str = "waiting is 0" if baseline["avg_wait_time"] < 0.05 else f"waiting is {baseline['avg_wait_time']:.1f} min"
 
+    if tested_candidates:
+        best_measured = max(c["improvement_pct"] for c in tested_candidates)
+        ceiling_pct = min(100.0, max(ceiling_pct, round(best_measured, 1)))
+
     if target_pct is not None:
         if target_metric == "cycle_time" and target_pct > (ceiling_pct + 0.1):
             # Target exceeds honest ceiling!
@@ -504,9 +508,9 @@ def run_experiment(process_json, config, goal, run_process, target=None):
             achieved_pct = best_candidate["improvement_pct"] if best_candidate else 0.0
 
             reason = (
-                f"Staff-handled steps are {round(X, 1)} of {round(Y, 1)} minutes "
-                f"(work time is {round(X, 1)} min and {wait_str}, so staffing cannot go lower), "
-                f"so the best you can reach is {ceiling_pct}%. The rest is customer time or fixed."
+                f"Staff-handled steps are only {round(X, 1)} of {round(Y, 1)} minutes, "
+                f"so most of the cycle time is queueing, customer time or fixed time. "
+                f"The best option tested reaches {ceiling_pct}%, short of your {target_pct}% target."
             )
 
             # Speed-up each step would need to reach target
