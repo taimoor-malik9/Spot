@@ -84,7 +84,7 @@ router.get('/security-questions', (req, res) => {
 // POST /api/auth/signup
 router.post('/signup', authLimiter, async (req, res) => {
   try {
-    const { name, email, password, securityQuestions } = req.body || {};
+    const { name, email, password, securityQuestions, preferredLanguage } = req.body || {};
 
     if (!name || typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({ error: 'Full name is required' });
@@ -140,6 +140,7 @@ router.post('/signup', authLimiter, async (req, res) => {
       email: normalizedEmail,
       passwordHash,
       provider: 'local',
+      preferredLanguage: ['en', 'ur-roman', 'ur'].includes(preferredLanguage) ? preferredLanguage : 'en',
       securityQuestions: [
         { questionId: q1Id, answerHash: answer1Hash },
         { questionId: q2Id, answerHash: answer2Hash }
@@ -596,7 +597,7 @@ router.get('/me', requireAuth, async (req, res) => {
 // PUT /api/auth/me (edit profile: name, email, business preferences)
 const updateProfileHandler = async (req, res) => {
   try {
-    const { name, email, businessName, businessType, currency, workingHoursPerDay } = req.body || {};
+    const { name, email, businessName, businessType, currency, workingHoursPerDay, preferredLanguage } = req.body || {};
     const user = req.user;
 
     if (name !== undefined) {
@@ -637,6 +638,12 @@ const updateProfileHandler = async (req, res) => {
       const hrs = Number(workingHoursPerDay);
       if (Number.isFinite(hrs) && hrs > 0 && hrs <= 24) {
         user.workingHoursPerDay = hrs;
+      }
+    }
+
+    if (preferredLanguage !== undefined) {
+      if (['en', 'ur-roman', 'ur'].includes(preferredLanguage)) {
+        user.preferredLanguage = preferredLanguage;
       }
     }
 

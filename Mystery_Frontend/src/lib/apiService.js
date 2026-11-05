@@ -351,10 +351,15 @@ function backendTypeToFrontend(type) {
   return 'task';
 }
 // ─── AI API ────────────────────────────────────────────────────────────────
-export async function generateAIProcess(description, history = [], intakeLanguage = 'en') {
+export async function generateAIProcess(description, history = [], preferredLanguage = 'en') {
   return request('/api/ai/generate-process', {
     method: 'POST',
-    body: JSON.stringify({ description, history, intakeLanguage }),
+    body: JSON.stringify({
+      description,
+      history,
+      preferredLanguage,
+      intakeLanguage: preferredLanguage,
+    }),
   });
 }
 // ─── Process API ──────────────────────────────────────────────────────────

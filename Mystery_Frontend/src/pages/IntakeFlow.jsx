@@ -9,7 +9,8 @@ import IntakeScreens from './IntakeScreens';
 import { applyIntakeToRawDiagram } from '../lib/intake/applyIntake';
 import ConfirmationCard from './ConfirmationCard';
 import { useAuth } from '@/context/AuthContext';
-import { detectLanguage, t } from '../lib/intake/i18n';
+import { useLanguage } from '@/context/LanguageContext';
+import { detectLanguageWithConfidence, getSuggestionBanner, t } from '../lib/intake/i18n';
 import {
   friendlyError,
   ensureDefaultBranchProbabilities,
@@ -95,7 +96,9 @@ export default function IntakeFlow({
   const intakeAnswers = state?.answers !== undefined ? state.answers : localAnswers;
   const validationErrors = state?.validationResult?.errors || localValidation?.errors || [];
   const assumptions = state?.validationResult?.repairs || localValidation?.repairs || [];
-  const intakeLanguage = state?.intakeLanguage || 'en';
+  const { preferredLanguage, setLanguage } = useLanguage();
+  const [suggestedLanguage, setSuggestedLanguage] = useState(null);
+  const intakeLanguage = preferredLanguage;
 
   const updateGuided = useCallback((patchOrFn) => {
     if (updateState) {
@@ -310,19 +313,26 @@ export default function IntakeFlow({
       const prompt = textToSubmit || description;
       if (!prompt.trim() || loading) return;
 
-      const detectedLang = detectLanguage(prompt);
-      const currentLang =
-        state?.intakeLanguage && state.intakeLanguage !== 'en'
-          ? state.intakeLanguage
-          : detectedLang;
+      // Detection is only a suggestion: if differs with confidence >= 0.8, suggest banner
+      const detected = detectLanguageWithConfidence(prompt);
+      if (detected.language !== preferredLanguage && detected.confidence >= 0.8) {
+        try {
+          const dismissedCount = Number(localStorage.getItem('spot_dismiss_lang_' + detected.language) || 0);
+          if (dismissedCount < 2) {
+            setSuggestedLanguage(detected.language);
+          }
+        } catch {
+          // ignore
+        }
+      }
 
       setLoading(true);
       setError(null);
       setClarification(null);
-      setLoadingText(t('mappingProcess', currentLang));
+      setLoadingText(t('mappingProcess', preferredLanguage));
 
       try {
-        const result = await generateAIProcess(prompt.trim(), history, currentLang);
+        const result = await generateAIProcess(prompt.trim(), history, preferredLanguage);
 
         if (result.type === 'clarification') {
           setClarification(result.question);
@@ -339,7 +349,7 @@ export default function IntakeFlow({
         if (raw && (raw.type === 'spec' || (!raw.nodes && raw.pools))) {
           raw = compileBpmn(raw);
         }
-        raw = normalizeAndRepairBpmn(raw, { userDescription: prompt.trim(), lang: currentLang });
+        raw = normalizeAndRepairBpmn(raw, { userDescription: prompt.trim(), lang: preferredLanguage });
         raw = ensureDefaultBranchProbabilities(raw);
         const validation = validateBpmn(raw, { allowUnresolved: true });
         const finalRaw = validation.repaired || raw;
@@ -349,7 +359,6 @@ export default function IntakeFlow({
           version: (prev.version || 1) + 1,
           validationResult: validation,
           currentStep: 1,
-          intakeLanguage: currentLang,
         }));
         setClarification(null);
       } catch (err) {
@@ -359,7 +368,7 @@ export default function IntakeFlow({
         setLoading(false);
       }
     },
-    [description, loading, state?.intakeLanguage, updateGuided]
+    [description, loading, preferredLanguage, updateGuided]
   );
 
   const handleClarificationSubmit = useCallback(async () => {
@@ -864,6 +873,76 @@ export default function IntakeFlow({
           {t('stepOf', intakeLanguage, step, 3)}
         </span>
       </div>
+
+      {/* Language Suggestion Banner */}
+      {suggestedLanguage && (
+        <div style={{
+          margin: '10px 16px 0',
+          padding: '10px 14px',
+          background: '#fffbeb',
+          border: '1px solid #fde68a',
+          borderRadius: 12,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          fontSize: 12,
+          color: '#92400e',
+          boxShadow: '0 1px 2px rgba(0,0,0,0.04)'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <AlertCircle size={15} color="#d97706" style={{ flexShrink: 0 }} />
+            <span style={{ fontWeight: 500 }}>
+              {getSuggestionBanner(suggestedLanguage, preferredLanguage).message}
+            </span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+            <button
+              type="button"
+              onClick={() => {
+                setLanguage(suggestedLanguage);
+                setSuggestedLanguage(null);
+              }}
+              style={{
+                padding: '4px 10px',
+                background: '#5E43F3',
+                color: '#fff',
+                borderRadius: 6,
+                fontWeight: 600,
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: 11
+              }}
+            >
+              {getSuggestionBanner(suggestedLanguage, preferredLanguage).yes}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                try {
+                  const count = Number(localStorage.getItem('spot_dismiss_lang_' + suggestedLanguage) || 0) + 1;
+                  localStorage.setItem('spot_dismiss_lang_' + suggestedLanguage, String(count));
+                } catch {
+                  // ignore
+                }
+                setSuggestedLanguage(null);
+              }}
+              style={{
+                padding: '4px 8px',
+                background: 'transparent',
+                color: '#92400e',
+                borderRadius: 6,
+                fontWeight: 500,
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: 11
+              }}
+            >
+              {getSuggestionBanner(suggestedLanguage, preferredLanguage).no}
+            </button>
+          </div>
+        </div>
+      )}
 
       {step === 2 ? (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -1917,13 +1996,13 @@ export default function IntakeFlow({
                 }}
               >
                 <span style={{ fontSize: 10.5, color: '#6b7280', textTransform: 'uppercase', fontWeight: 600 }}>
-                  Rush Hour Pace
+                  {t('rushHourPace', intakeLanguage)}
                 </span>
                 <span style={{ fontSize: 13, fontWeight: 700, color: '#111827', textTransform: 'capitalize' }}>
-                  {simulationReadyData?.simulationConfig?.busyness || 'Steady'}
+                  {t('busyness_' + (simulationReadyData?.simulationConfig?.busyness || 'steady'), intakeLanguage)}
                 </span>
                 <span style={{ fontSize: 10.5, color: '#7c3aed' }}>
-                  ~{simulationReadyData?.simulationConfig?.customers_per_hour || 20} arrivals/hr
+                  {t('arrivalsPerHour', intakeLanguage, simulationReadyData?.simulationConfig?.customers_per_hour || 20)}
                 </span>
               </div>
 
@@ -1940,17 +2019,17 @@ export default function IntakeFlow({
                 }}
               >
                 <span style={{ fontSize: 10.5, color: '#6b7280', textTransform: 'uppercase', fontWeight: 600 }}>
-                  Main Goal
+                  {t('mainGoal', intakeLanguage)}
                 </span>
                 <span style={{ fontSize: 13, fontWeight: 700, color: '#111827', textTransform: 'capitalize' }}>
-                  {simulationReadyData?.simulationConfig?.goal === 'waiting'
-                    ? 'Wait Times'
-                    : simulationReadyData?.simulationConfig?.goal === 'cost'
-                    ? 'Reduce Costs'
-                    : 'Throughput'}
+                  {simulationReadyData?.simulationConfig?.goal === 'cost'
+                    ? t('goalReduceCosts', intakeLanguage)
+                    : simulationReadyData?.simulationConfig?.goal === 'throughput'
+                    ? t('goalThroughput', intakeLanguage)
+                    : t('goalWaitTimes', intakeLanguage)}
                 </span>
                 <span style={{ fontSize: 10.5, color: '#059669' }}>
-                  Optimized for SPOT
+                  {t('optimizedForSpot', intakeLanguage)}
                 </span>
               </div>
             </div>
@@ -1978,8 +2057,8 @@ export default function IntakeFlow({
                     justifyContent: 'space-between',
                   }}
                 >
-                  <span>Patched Simulation Model</span>
-                  <span style={{ color: '#10b981', fontWeight: 700 }}>● Applied to Canvas</span>
+                  <span>{t('patchedSimulationModel', intakeLanguage)}</span>
+                  <span style={{ color: '#10b981', fontWeight: 700 }}>● {t('appliedToCanvas', intakeLanguage)}</span>
                 </div>
                 <DiagramPreview
                   key={`preview_step3_v${version}`}
@@ -2030,7 +2109,7 @@ export default function IntakeFlow({
                   cursor: 'pointer',
                 }}
               >
-                <ArrowLeft size={13} /> Edit Answers
+                <ArrowLeft size={13} /> {t('editAnswers', intakeLanguage)}
               </button>
 
               <button
@@ -2051,7 +2130,7 @@ export default function IntakeFlow({
                   cursor: 'pointer',
                 }}
               >
-                <RotateCcw size={13} /> Start Over
+                <RotateCcw size={13} /> {t('startOverBtn', intakeLanguage)}
               </button>
             </div>
           </div>

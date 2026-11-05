@@ -91,7 +91,8 @@ export function extractOrderedSteps(rawDiagram, options = {}) {
     if (!node) return false;
     const isGw = node.type?.includes('gateway');
     const lbl = (getStepLabel(node) || '').toLowerCase();
-    return (isGw && inEdges.length >= 2) || lbl.includes('rejoin');
+    const isMerge = node.gateway_role === 'merge' || node.data?.gateway_role === 'merge';
+    return (isGw && inEdges.length >= 2) || isMerge || lbl.includes('rejoin');
   }
 
   function isJoinNode(nodeId) {
@@ -130,6 +131,8 @@ export function extractOrderedSteps(rawDiagram, options = {}) {
   function recordTask(node, condition) {
     if (visited.has(node.id)) return;
     visited.add(node.id);
+    const isStructural = node.origin === 'structural' || node.data?.origin === 'structural' || node.data?.hidden;
+    if (isStructural) return; // Structural tasks hidden from user-facing step list
     const actor = getActor(node);
     const isInferred = node.origin === 'inferred' || node.data?.origin === 'inferred';
     const isKept = node.kept === true || node.data?.kept === true;

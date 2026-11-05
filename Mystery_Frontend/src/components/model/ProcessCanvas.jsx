@@ -158,11 +158,20 @@ export function ProcessCanvasWorld({
                   </span>
                 </div>
               </foreignObject>
+            ) : (/^(rejoin|merge)$/i.test(el.label || '') || el.gateway_role === 'merge') ? (
+              <title>Dono raaste yahan milte hain</title>
             ) : (
-              <text x={nodeW / 2} y={nodeH + 13} textAnchor="middle" fontSize="11"
-                fill={labelColor} fontWeight="500" style={{ pointerEvents: 'none', userSelect: 'none' }}>
-                {(el.label || '').length > 15 ? el.label.slice(0, 14) + '…' : el.label}
-              </text>
+              <foreignObject x={-50} y={nodeH + 2} width={nodeW + 100} height={38}>
+                <div style={{
+                  width: '100%', height: '100%', display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+                  fontSize: 10, fontWeight: 500, color: labelColor, textAlign: 'center', lineHeight: 1.15,
+                  pointerEvents: 'none', userSelect: 'none', overflow: 'hidden',
+                }} title={el.label}>
+                  <span style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                    {el.label}
+                  </span>
+                </div>
+              </foreignObject>
             )}
             {count > 0 && (
               <g>

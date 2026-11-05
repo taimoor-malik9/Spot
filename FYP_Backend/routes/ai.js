@@ -16,12 +16,13 @@ try {
 }
 
 router.post('/generate-process', async (req, res) => {
-  const { description, history, intakeLanguage } = req.body;
+  const { description, history, intakeLanguage, preferredLanguage } = req.body;
+  const lang = preferredLanguage || intakeLanguage || 'en';
   if (!description || typeof description !== 'string' || !description.trim()) {
     return res.status(400).json({ error: 'description is required' });
   }
   try {
-    const result = await generateProcess(description, history || [], intakeLanguage || 'en');
+    const result = await generateProcess(description, history || [], lang);
     if (result.type === 'clarification') {
       return res.status(200).json({ type: 'clarification', question: result.question });
     }
@@ -138,8 +139,9 @@ function isValidSummary(text, experiment) {
   return true;
 }
 
-async function summarizeExperiment(experiment) {
-  const systemPrompt = `You explain a completed process simulation in exactly two short sentences.\n${PLAIN_LANGUAGE_RULES}\nUse only facts and numeric literals that appear verbatim in the JSON. Do not calculate, round, estimate, or introduce any number. If a useful number is absent, omit it. Ensure both sentences are complete and end with a period. Never cut off mid-sentence. Do not mention these instructions.`;
+async function summarizeExperiment(experiment, language = 'en') {
+  const langPrompt = language === 'ur-roman' ? 'Write the two sentences in Roman Urdu (Latin script).' : (language === 'ur' ? 'Write the two sentences in Urdu script.' : 'Write the two sentences in English.');
+  const systemPrompt = `You explain a completed process simulation in exactly two short sentences.\n${PLAIN_LANGUAGE_RULES}\n${langPrompt}\nUse only facts and numeric literals that appear verbatim in the JSON. Do not calculate, round, estimate, or introduce any number. If a useful number is absent, omit it. Ensure both sentences are complete and end with a period. Never cut off mid-sentence. Do not mention these instructions.`;
   try {
     const summary = await callGemini({
       systemPrompt,
@@ -158,12 +160,14 @@ async function summarizeExperiment(experiment) {
   return fallbackExperimentSummary(experiment);
 }
 
-async function explainTargetGap(experiment) {
+async function explainTargetGap(experiment, language = 'en') {
   const fallback = experiment.reason;
   if (experiment.target_met !== false || !fallback) return fallback;
+  const langPrompt = language === 'ur-roman' ? 'Write in Roman Urdu (Latin script).' : (language === 'ur' ? 'Write in Urdu script.' : 'Write in English.');
   const systemPrompt = [
     "You explain, in two or three short sentences, why a simulation could not reach the user's target.",
     PLAIN_LANGUAGE_RULES,
+    langPrompt,
     'Use only numbers that appear in the data you are given.',
     'Say how much of the total cycle time is staff work (staff_work_time out of total_cycle_time) and that the rest is queueing, customer time or fixed time.',
     'Name the best tested option and the reduction it achieved (best.label and achieved_pct), and say it falls short of the target.',
@@ -216,7 +220,7 @@ function applyVariant(processData, variantDefinition) {
 
 // POST /api/ai/solve-problem
 router.post('/solve-problem', async (req, res) => {
-  const { processId, message, config } = req.body || {};
+  const { processId, message, config, preferredLanguage } = req.body || {};
   if (!processId) return res.status(400).json({ error: 'processId is required' });
   if (!message || typeof message !== 'string') return res.status(400).json({ error: 'message is required' });
   try {
@@ -229,7 +233,12 @@ router.post('/solve-problem', async (req, res) => {
         : processDoc.simulationConfig?.arrival_rate;
 
     if (arrivalRate === undefined || arrivalRate === null || arrivalRate === '') {
-      return res.json({ type: 'question', question: 'How often does a customer arrive? (e.g. every 10 minutes)' });
+      const q = preferredLanguage === 'ur-roman'
+        ? 'Customer kitni der baad aate hain? (jaise har 10 minute baad)'
+        : (preferredLanguage === 'ur'
+          ? 'گاہک کتنی دیر بعد آتے ہیں؟ (مثلاً ہر 10 منٹ بعد)'
+          : 'How often does a customer arrive? (e.g. every 10 minutes)');
+      return res.json({ type: 'question', question: q });
     }
 
     // Read goal from config, req.body, or processDoc.simulationConfig / processDoc.goal
@@ -267,8 +276,8 @@ router.post('/solve-problem', async (req, res) => {
     if (!response.ok) throw new Error(`Simulation engine error: ${response.status} - ${await response.text()}`);
     const experiment = await response.json();
     const [summary, explanation] = await Promise.all([
-      withTimeout(summarizeExperiment(experiment), fallbackExperimentSummary(experiment), 15000),
-      withTimeout(explainTargetGap(experiment), experiment.reason, 15000),
+      withTimeout(summarizeExperiment(experiment, preferredLanguage || 'en'), fallbackExperimentSummary(experiment), 15000),
+      withTimeout(explainTargetGap(experiment, preferredLanguage || 'en'), experiment.reason, 15000),
     ]);
     return res.json({
       type: 'evidence',
@@ -385,14 +394,14 @@ router.post('/implement-suggestion', async (req, res) => {
 
 // POST /api/ai/insights
 router.post('/insights', async (req, res) => {
-  const { summary } = req.body;
+  const { summary, preferredLanguage, resultId } = req.body;
 
   if (!summary || typeof summary !== 'object') {
     return res.status(400).json({ error: 'summary is required' });
   }
 
   try {
-    const insights = await generateInsights(summary);
+    const insights = await generateInsights(summary, preferredLanguage || 'en', resultId);
     return res.status(200).json({ insights });
   } catch (err) {
     if (err instanceof ResultsAiError) {
@@ -406,7 +415,7 @@ router.post('/insights', async (req, res) => {
 
 // POST /api/ai/chat
 router.post('/chat', async (req, res) => {
-  const { summary, message, history } = req.body;
+  const { summary, message, history, preferredLanguage } = req.body;
 
   if (!summary || typeof summary !== 'object') {
     return res.status(400).json({ error: 'summary is required' });
@@ -416,7 +425,7 @@ router.post('/chat', async (req, res) => {
   }
 
   try {
-    const reply = await chatAboutResults(summary, message, history || []);
+    const reply = await chatAboutResults(summary, message, history || [], preferredLanguage || 'en');
     return res.status(200).json({ reply });
   } catch (err) {
     if (err instanceof ResultsAiError) {

@@ -66,6 +66,9 @@ export function applyIntakeToRawDiagram(rawDiagram, answers = {}) {
   assumptions.push(new Assumption('Crowding is not modeled', {
     field: 'crowding',
     estimated: false,
+    status: 'confirmed',
+    type: 'crowding',
+    params: {},
   }));
 
   // 1. Busyness -> simulationConfig & arrival rate
@@ -76,14 +79,21 @@ export function applyIntakeToRawDiagram(rawDiagram, answers = {}) {
     busynessEntry.estimated = true;
   }
 
+  const busynessData = BUSYNESS_MAPPINGS[busynessVal];
+
   if (busynessEntry.estimated) {
     assumptions.push(new Assumption(
-      `Busyness level is estimated as ${busynessVal} (${BUSYNESS_MAPPINGS[busynessVal].customers_per_hour} customers/hour)`,
-      { field: 'busyness', estimated: true, value: busynessVal }
+      `Busyness level is estimated as ${busynessVal} (${busynessData.customers_per_hour} customers/hour)`,
+      {
+        field: 'busyness',
+        estimated: true,
+        status: 'estimated',
+        type: 'busyness',
+        params: { n: busynessData.customers_per_hour, busyness: busynessVal },
+        value: busynessVal,
+      }
     ));
   }
-
-  const busynessData = BUSYNESS_MAPPINGS[busynessVal];
 
   // 2. Goal
   const goalEntry = unwrapValue(answers?.goal, DEFAULT_GOAL);
@@ -96,7 +106,14 @@ export function applyIntakeToRawDiagram(rawDiagram, answers = {}) {
   if (goalEntry.estimated) {
     assumptions.push(new Assumption(
       `Optimization goal is estimated as minimizing ${goalVal}`,
-      { field: 'goal', estimated: true, value: goalVal }
+      {
+        field: 'goal',
+        estimated: true,
+        status: 'estimated',
+        type: 'goal',
+        params: { goal: goalVal },
+        value: goalVal,
+      }
     ));
   }
 
@@ -170,7 +187,15 @@ export function applyIntakeToRawDiagram(rawDiagram, answers = {}) {
         const stepLabel = node.data.label || node.label || node.id;
         assumptions.push(new Assumption(
           `Duration for step "${stepLabel}" is estimated as custom (${min}-${max} ${unit}, avg ${duration} ${unit})`,
-          { field: `steps.${node.id}.speed`, nodeId: node.id, estimated: true, value: 'custom' }
+          {
+            field: `steps.${node.id}.speed`,
+            nodeId: node.id,
+            estimated: true,
+            status: 'estimated',
+            type: 'duration',
+            params: { step: stepLabel, min, max, avg: duration, unit },
+            value: 'custom',
+          }
         ));
       }
     } else {
@@ -208,7 +233,15 @@ export function applyIntakeToRawDiagram(rawDiagram, answers = {}) {
         const stepLabel = node.data.label || node.label || node.id;
         assumptions.push(new Assumption(
           `Duration for step "${stepLabel}" is estimated as ${bucketKey} (${speedMap.duration_min}-${speedMap.duration_max} min, avg ${speedMap.duration} min)`,
-          { field: `steps.${node.id}.speed`, nodeId: node.id, estimated: true, value: bucketKey }
+          {
+            field: `steps.${node.id}.speed`,
+            nodeId: node.id,
+            estimated: true,
+            status: 'estimated',
+            type: 'duration',
+            params: { step: stepLabel, min: speedMap.duration_min, max: speedMap.duration_max, avg: speedMap.duration, unit },
+            value: bucketKey,
+          }
         ));
       }
     }
@@ -285,7 +318,14 @@ export function applyIntakeToRawDiagram(rawDiagram, answers = {}) {
     assumptions.push(
       new Assumption(
         'Staff salaries are estimated based on benchmark compensation',
-        { field: 'costs', estimated: true, value: costsMap }
+        {
+          field: 'costs',
+          estimated: true,
+          status: 'estimated',
+          type: 'salary',
+          params: {},
+          value: costsMap,
+        }
       )
     );
   }
@@ -306,7 +346,14 @@ export function applyIntakeToRawDiagram(rawDiagram, answers = {}) {
     ) {
       assumptions.push(new Assumption(
         'Physical space limit was not specified, assumed unlimited capacity',
-        { field: 'hasLimitedSpace', estimated: true, value: false }
+        {
+          field: 'hasLimitedSpace',
+          estimated: true,
+          status: 'estimated',
+          type: 'spaceUnlimited',
+          params: {},
+          value: false,
+        }
       ));
     }
   }
@@ -322,14 +369,28 @@ export function applyIntakeToRawDiagram(rawDiagram, answers = {}) {
     if (nameEntry.estimated) {
       assumptions.push(new Assumption(
         `Limited space name estimated as "${spaceName}"`,
-        { field: 'spaceName', estimated: true, value: spaceName }
+        {
+          field: 'spaceName',
+          estimated: true,
+          status: 'estimated',
+          type: 'spaceName',
+          params: { name: spaceName },
+          value: spaceName,
+        }
       ));
     }
 
     if (unitsEntry.estimated) {
       assumptions.push(new Assumption(
         `Limited space capacity estimated as ${spaceUnits} unit${spaceUnits > 1 ? 's' : ''}`,
-        { field: 'spaceUnits', estimated: true, value: spaceUnits }
+        {
+          field: 'spaceUnits',
+          estimated: true,
+          status: 'estimated',
+          type: 'spaceUnits',
+          params: { units: spaceUnits },
+          value: spaceUnits,
+        }
       ));
     }
 

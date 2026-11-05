@@ -21,6 +21,7 @@ import { validateDurationRules } from '../lib/durationRules';
 import { SPEED_MAPPINGS, BUSYNESS_MAPPINGS } from '../lib/intake/schema';
 import { useAnalystView } from '../lib/labels';
 import { friendlyError } from '../lib/intake/friendlyErrors';
+import { t, renderAssumption } from '../lib/intake/i18n';
 
 const COST_FIELD_LABELS = {
   hours_per_day: 'Hours/day',
@@ -108,18 +109,24 @@ export default function ConfirmationCard({
   const [assumptionList, setAssumptionList] = useState(() => {
     if (!Array.isArray(assumptions)) return [];
     return assumptions.map((a, i) => {
-      const text = typeof a === 'string' ? a : a.text || a.message || '';
-      const field = a.field || '';
-      const estimated = a.estimated !== undefined ? Boolean(a.estimated) : true;
-      const val = a.value !== undefined ? a.value : '';
+      const type = typeof a === 'object' ? a.type || null : null;
+      const params = typeof a === 'object' ? a.params || {} : {};
+      const field = typeof a === 'object' ? a.field || '' : '';
+      const estimated = typeof a === 'object' ? (a.estimated !== undefined ? Boolean(a.estimated) : true) : true;
+      const status = typeof a === 'object' ? a.status || (estimated ? 'estimated' : 'confirmed') : 'estimated';
+      const val = typeof a === 'object' && a.value !== undefined ? a.value : '';
+      const localizedText = renderAssumption(a, lang);
       return {
         id: `asm_${i}_${Date.now()}`,
-        originalText: text,
-        text,
+        originalText: localizedText,
+        text: localizedText,
+        type,
+        params,
         field,
         estimated,
+        status,
         value: val,
-        nodeId: a.nodeId || null,
+        nodeId: (typeof a === 'object' && a.nodeId) || null,
         isEditing: false,
         tempValue: val,
       };
@@ -451,7 +458,7 @@ export default function ConfirmationCard({
         >
           {hasErrors
             ? (lang === 'ur-roman' ? `${validationErrors.length} masail hal karein` : `${validationErrors.length} ${isAnalystView ? 'BPMN issue' : 'process issue'}${validationErrors.length !== 1 ? 's' : ''} to resolve`)
-            : (lang === 'ur-roman' ? `${totalFields} cheezein jaanchne ke liye` : `${totalFields} thing${totalFields !== 1 ? 's' : ''} to review`)}
+            : t('reviewHeaderCount', lang, totalFields)}
         </span>
         {open ? (
           <ChevronUp size={13} color={hasErrors ? '#dc2626' : '#d97706'} />
@@ -587,7 +594,7 @@ export default function ConfirmationCard({
               }}
             >
               <div style={{ fontSize: 11.5, fontWeight: 600, color: '#92400e', marginBottom: 6 }}>
-                Step Durations (minutes)
+                {t('stepDurationsMinutes', lang)}
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
                 {safeConfirmations.durations.map((d) => (
@@ -663,9 +670,9 @@ export default function ConfirmationCard({
                     gap: 5,
                   }}
                 >
-                  <HelpCircle size={13} color="#d97706" /> Model Assumptions ({assumptionList.length})
+                  <HelpCircle size={13} color="#d97706" /> {t('modelAssumptions', lang, assumptionList.length)}
                 </span>
-                <span style={{ fontSize: 10, color: '#9ca3af' }}>Tap Edit to adjust</span>
+                <span style={{ fontSize: 10, color: '#9ca3af' }}>{t('tapEditToAdjust', lang)}</span>
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -691,7 +698,7 @@ export default function ConfirmationCard({
                           flex: 1,
                         }}
                       >
-                        {asm.text}
+                        {renderAssumption(asm, lang)}
                       </span>
 
                       <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
@@ -709,7 +716,7 @@ export default function ConfirmationCard({
                               gap: 3,
                             }}
                           >
-                            <AlertTriangle size={9} /> Estimated
+                            <AlertTriangle size={9} /> {t('estimatedBadge', lang)}
                           </span>
                         ) : (
                           <span
@@ -725,7 +732,7 @@ export default function ConfirmationCard({
                               gap: 3,
                             }}
                           >
-                            <Check size={9} /> Confirmed
+                            <Check size={9} /> {t('confirmedBadge', lang)}
                           </span>
                         )}
 
@@ -951,7 +958,7 @@ export default function ConfirmationCard({
                   marginBottom: 4,
                 }}
               >
-                <CheckCircle size={13} /> Auto-repairs Applied:
+                <CheckCircle size={13} /> {t('autoRepairsApplied', lang)}
               </div>
               <ul style={{ margin: 0, paddingLeft: 16 }}>
                 {activeRepairs.map((r, i) => (
@@ -977,7 +984,7 @@ export default function ConfirmationCard({
             >
               <div style={{ fontSize: 11.5, fontWeight: 700, color: '#b91c1c', display: 'flex', alignItems: 'center', gap: 5 }}>
                 <AlertCircle size={13} />
-                Action required to resolve {isAnalystView ? 'BPMN validation:' : 'process checks:'}
+                {t('actionRequiredTitle', lang)}
               </div>
 
               {/* Action 1: Auto-repair button if repairable */}
@@ -1011,7 +1018,7 @@ export default function ConfirmationCard({
                     cursor: 'pointer',
                   }}
                 >
-                  <CheckCircle size={12} /> Apply Auto-repairs & Proceed
+                  <CheckCircle size={12} /> {t('applyAndProceed', lang)}
                 </button>
               )}
 
@@ -1019,14 +1026,14 @@ export default function ConfirmationCard({
               {onWhatShouldChange && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                   <span style={{ fontSize: 11, fontWeight: 600, color: '#374151' }}>
-                    What should change?
+                    {t('whatShouldChange', lang)}
                   </span>
                   <div style={{ display: 'flex', gap: 6 }}>
                     <input
                       type="text"
                       value={cardCorrection}
                       onChange={(e) => setCardCorrection(e.target.value)}
-                      placeholder="e.g. Add end event after packaging..."
+                      placeholder={t('whatShouldChangePlaceholder', lang)}
                       style={{
                         flex: 1,
                         padding: '5px 8px',
@@ -1066,7 +1073,7 @@ export default function ConfirmationCard({
                         cursor: !cardCorrection.trim() || cardUpdating ? 'not-allowed' : 'pointer',
                       }}
                     >
-                      {cardUpdating ? 'Updating…' : 'Update'}
+                      {cardUpdating ? (lang === 'ur-roman' ? 'Update ho raha hai…' : 'Updating…') : t('update', lang)}
                     </button>
                   </div>
                 </div>
@@ -1088,7 +1095,7 @@ export default function ConfirmationCard({
                     padding: 0,
                   }}
                 >
-                  ← Answer questions to adjust process
+                  {t('answerQuestionsLink', lang)}
                 </button>
               )}
             </div>
@@ -1123,7 +1130,7 @@ export default function ConfirmationCard({
               <CheckCircle size={13} />
               {hasErrors
                 ? (lang === 'ur-roman' ? 'Pehle upar wala sawal bharein' : 'Answer question above first')
-                : (lang === 'ur-roman' ? 'Confirm karein' : 'Confirm & Apply')}
+                : t('confirmAndApply', lang)}
             </button>
 
             {onOpenResourcePanel && (
@@ -1141,7 +1148,7 @@ export default function ConfirmationCard({
                   fontWeight: 500,
                 }}
               >
-                Apply & go deeper →
+                {t('applyGoDeeper', lang)}
               </button>
             )}
           </div>

@@ -60,8 +60,10 @@ const SPEC_SYSTEM_PROMPT = `You are a BPMN process modeling assistant for SPOT (
 You convert plain-language business descriptions into a structured process draft or SPECification, which is then compiled deterministically into a valid BPMN 2.0 diagram.
 Do NOT output nodes and edges. Output ONLY the high-level process specification.
 
-=== NO FILLER TASKS (CRITICAL) ===
+=== NO FILLER TASKS & EXACT STEP ORDER (CRITICAL) ===
+Return steps in the exact order the user described. For every decision list each branch separately, including branches that contain no activity. Mark retries/loops with the step they return to. Do not invent steps.
 Only create activities the user actually described or clearly implied. Do NOT add generic tasks such as 'Start process', 'Review', 'Check', 'Notify', 'Verify', 'Process', 'End process', or any task with no real work behind it. Do not split one described step into several. Start/end are events; decisions and merges are gateways, never tasks. If unsure whether a step exists, leave it out.
+If the user reuses the same condition later in the process (same question asked again), reuse the same decision instead of creating a duplicate question.
 
 === RESPONSE FORMAT ===
 Always return pure valid JSON with NO Markdown fences, NO commentary.
@@ -162,8 +164,10 @@ Return either:
 
 const SYSTEM_PROMPT = `You are a BPMN 2.0 process modeling assistant for SPOT (Simulation Platform for Optimization using Digital Twin). You convert plain-language descriptions into a BPMN diagram AND infer the resources needed to run a discrete-event simulation on it.
 
-=== NO FILLER TASKS (CRITICAL) ===
+=== NO FILLER TASKS & EXACT STEP ORDER (CRITICAL) ===
+Return steps in the exact order the user described. For every decision list each branch separately, including branches that contain no activity. Mark retries/loops with the step they return to. Do not invent steps.
 Only create activities the user actually described or clearly implied. Do NOT add generic tasks such as 'Start process', 'Review', 'Check', 'Notify', 'Verify', 'Process', 'End process', or any task with no real work behind it. Do not split one described step into several. Start/end are events; decisions and merges are gateways, never tasks. If unsure whether a step exists, leave it out.
+If the user reuses the same condition later in the process (same question asked again), reuse the same decision instead of creating a duplicate question.
 
 === STRUCTURAL RULES ===
 1. Exactly ONE start-event in the ENTIRE diagram (the whole BPMN). Never create more than one start-event in the entire diagram or across pools/swimlanes. The process begins at this single start-event.
@@ -174,11 +178,8 @@ Only create activities the user actually described or clearly implied. Do NOT ad
 6. For exclusive/inclusive gateway branches, edge probabilities (edge.data.probability) across all outgoing branches from the same gateway MUST sum to exactly 1. Parallel gateway branches get probability: null (all branches always taken).
 7. Loops (rework/retry) = a sequence flow edge back to an earlier task/gateway. Never duplicate a node to represent a repeat.
 8. Every non-start node needs >=1 incoming edge. Every non-end node needs >=1 outgoing edge. Every node must be reachable from its pool's start-event and must be able to reach some end-event. No orphans, no dead-ends.
-9. NEVER connect an event (start-event, intermediate-event, end-event) directly to or from a gateway. NEVER connect two gateways directly to each other — there must ALWAYS be at least one real task/activity between an event and a gateway, and between two gateways. If you find yourself wanting to chain two gateways back-to-back with nothing in between, that's a signal the two decisions are really ONE decision — merge them into a single gateway with more outgoing branches instead of chaining. Concrete example:
-   - WRONG: 'gw_ingredients_available' --> 'gw_customer_decision' (two gateways directly connected, nothing between them)
-   - WRONG (still bad — same problem, just papered over): 'gw_ingredients_available' --> task labeled "Evaluate Decision" (a fake/filler task whose only purpose is to sit between two gateways) --> 'gw_customer_decision'
-   - RIGHT: give 'gw_ingredients_available' a real task on each branch that a person actually does (e.g. "Call Customer About Substitution") before the customer's decision gateway — a task must represent genuine work with a duration and a resource, never a placeholder just to satisfy the structural rule.
-   Do this correctly the first time; do not rely on downstream auto-repair to patch chained gateways for you — auto-inserted filler tasks look robotic and confuse the person reading the diagram.
+9. EMPTY BRANCHES AND DIRECT GATEWAY FLOWS:
+   If a decision branch has no real activity in the user's description, connect the split gateway directly to the next element (merge gateway or next task), with the branch label on that flow. Gateways can connect directly to other gateways (e.g. split gateway connecting directly to a merge gateway on an empty branch) or directly to tasks. NEVER insert a task just to sit between two gateways or to satisfy 'every branch must contain a task'. NEVER create placeholder tasks such as 'Evaluate Decision', 'Review', 'Check', 'Do nothing', 'Pass', or 'Proceed'.
 
 === POOLS & LANES ===
 - If the description involves more than one actor/organization (e.g. "Customer" and "Store"), model each as a separate pool node (type: "pool").
@@ -392,7 +393,7 @@ async function callGemini({ systemPrompt, contents, generationConfig, expectJson
   return raw;
 }
 
-async function generateProcess(description, history = [], intakeLanguage = 'en') {
+async function generateProcess(description, history = [], preferredLanguage = 'en') {
   if (!GEMINI_API_KEY) {
     throw new AiValidationError('GEMINI_API_KEY is not set in .env', null);
   }
@@ -407,12 +408,15 @@ async function generateProcess(description, history = [], intakeLanguage = 'en')
     { role: 'user', parts: [{ text: description }] }
   ];
 
+  const prefLang = preferredLanguage === 'ur-roman' ? 'ur-roman' : (preferredLanguage === 'ur' ? 'ur' : 'en');
   const languageInstruction = `
 === LANGUAGE & TERMINOLOGY REQUIREMENT (CRITICAL) ===
-User's intake language is: ${intakeLanguage === 'ur-roman' ? 'Roman Urdu (ur-roman)' : (intakeLanguage === 'ur' ? 'Urdu script (ur)' : 'English (en)')}.
-Write ALL user-facing text (step names, branch labels, questions, warnings, hints) in the user's language.
-Roman Urdu stays in Roman script. Never use BPMN jargon (gateway, exclusive/parallel split, sequence flow, lane, rejoin, token) in user-facing text.
-Step names generated by the AI must stay in the user's own wording (do not translate "Quality Check" if the user wrote "Quality check karna").
+User's preferred output language is: ${prefLang === 'ur-roman' ? 'Roman Urdu (ur-roman)' : (prefLang === 'ur' ? 'Urdu script (ur)' : 'English (en)')}.
+Write ALL user-facing text generated by the AI (clarification questions, branch labels, warnings, hints, explanations) in the user's preferred language.
+Roman Urdu stays in Roman script. Urdu script uses Urdu Arabic script.
+Never use BPMN jargon (gateway, exclusive/parallel split, sequence flow, lane, rejoin, token) in user-facing text.
+CRITICAL: The user can describe a process in ANY language (English, Roman Urdu, Urdu script, mixed). You must accurately understand and parse the process description regardless of what language the user typed, but write your own commentary, questions, and branch labels in the preferred language.
+CRITICAL: Keep the user's own step names, role names, and process names EXACTLY as the user wrote them in their own wording (do NOT translate the user's terms).
 `;
 
   const basePrompt = USE_SPEC_COMPILER ? SPEC_SYSTEM_PROMPT : SYSTEM_PROMPT;
@@ -832,8 +836,7 @@ function normalizeDiagram(diagram) {
     }
   });
 
-  // 6. Fix direct event <-> gateway connections
-  fixDirectEventGatewayConnections(diagram);
+  // 6. Direct event <-> gateway and gateway <-> gateway connections are valid BPMN (do not insert fake tasks)
 
   // 7. Auto-normalize gateway probabilities
   const finalModelNodes = diagram.nodes.filter(n => n.type !== 'pool' && n.type !== 'lane');
@@ -874,124 +877,6 @@ function isEventNode(type) {
 
 function isGatewayNode(type) {
   return type === 'gateway' || (type && type.endsWith('-gateway'));
-}
-
-function fixDirectEventGatewayConnections(diagram) {
-  if (!diagram || !Array.isArray(diagram.nodes) || !Array.isArray(diagram.edges)) return;
-
-  const newNodes = [];
-  const edgesToRemove = new Set();
-  const newEdges = [];
-
-  diagram.edges.forEach((edge, idx) => {
-    const srcNode = diagram.nodes.find(n => n.id === edge.source);
-    const tgtNode = diagram.nodes.find(n => n.id === edge.target);
-
-    if (!srcNode || !tgtNode) return;
-
-    const srcIsEvent = isEventNode(srcNode.type);
-    const tgtIsGateway = isGatewayNode(tgtNode.type);
-
-    const srcIsGateway = isGatewayNode(srcNode.type);
-    const tgtIsEvent = isEventNode(tgtNode.type);
-
-    const bothAreGateways = srcIsGateway && tgtIsGateway;
-
-    if ((srcIsEvent && tgtIsGateway) || (srcIsGateway && tgtIsEvent) || bothAreGateways) {
-      edgesToRemove.add(edge.id || `${edge.source}->${edge.target}`);
-
-      const taskId = `task_inserted_${edge.source}_${edge.target}_${idx}`;
-      let taskLabel = 'Process Request';
-      if (bothAreGateways) {
-        let srcLabel = srcNode.data?.label || srcNode.label || 'Decision';
-        taskLabel = `Evaluate ${srcLabel.replace(/\?$/, '')}`;
-      } else if (srcIsEvent && srcNode.data?.label) {
-        const cleaned = srcNode.data.label.replace(/^Start\s*/i, '').replace(/^Claim\s*/i, '');
-        taskLabel = cleaned ? `Receive & Handle ${cleaned}` : 'Receive Request';
-      } else if (tgtIsEvent && tgtNode.data?.label) {
-        taskLabel = `Finalize ${tgtNode.data.label.replace(/^End\s*/i, '')}`;
-      } else if (tgtIsGateway && tgtNode.data?.label) {
-        taskLabel = `Process ${tgtNode.data.label.replace(/\?$/, '')}`;
-      }
-
-      const pool = tgtIsGateway ? (tgtNode.pool || srcNode.pool) : (srcNode.pool || tgtNode.pool);
-      const lane = tgtIsGateway ? (tgtNode.lane || srcNode.lane) : (srcNode.lane || tgtNode.lane);
-
-      const insertedTask = {
-        id: taskId,
-        type: 'task',
-        label: taskLabel,
-        pool: pool || null,
-        lane: lane || null,
-        origin: 'inferred',
-        data: {
-          label: taskLabel,
-          origin: 'inferred',
-          duration: 0,
-          duration_min: null,
-          duration_max: null,
-          duration_unit: 'minutes',
-          resources: {},
-          resource: null,
-        }
-      };
-
-      newNodes.push(insertedTask);
-
-      if (srcIsEvent && tgtIsGateway) {
-        newEdges.push({
-          id: `edge_ins_1_${idx}`,
-          source: edge.source,
-          target: taskId,
-          flowType: edge.flowType || 'sequence',
-          data: edge.data || {}
-        });
-        newEdges.push({
-          id: `edge_ins_2_${idx}`,
-          source: taskId,
-          target: edge.target,
-          flowType: 'sequence',
-          data: { probability: null }
-        });
-      } else if (bothAreGateways) {
-        newEdges.push({
-          id: `edge_ins_1_${idx}`,
-          source: edge.source,
-          target: taskId,
-          flowType: 'sequence',
-          data: edge.data || {}
-        });
-        newEdges.push({
-          id: `edge_ins_2_${idx}`,
-          source: taskId,
-          target: edge.target,
-          flowType: 'sequence',
-          data: { probability: null }
-        });
-      } else {
-        newEdges.push({
-          id: `edge_ins_1_${idx}`,
-          source: edge.source,
-          target: taskId,
-          flowType: 'sequence',
-          data: edge.data || {}
-        });
-        newEdges.push({
-          id: `edge_ins_2_${idx}`,
-          source: taskId,
-          target: edge.target,
-          flowType: edge.flowType || 'sequence',
-          data: {}
-        });
-      }
-    }
-  });
-
-  if (newNodes.length > 0) {
-    diagram.nodes.push(...newNodes);
-    diagram.edges = diagram.edges.filter(e => !edgesToRemove.has(e.id || `${e.source}->${e.target}`));
-    diagram.edges.push(...newEdges);
-  }
 }
 
 function validateDiagram(diagram) {

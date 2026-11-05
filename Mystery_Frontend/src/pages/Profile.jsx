@@ -13,9 +13,11 @@ import {
   AlertTriangle,
   Loader2,
   ArrowLeft,
-  KeyRound
+  KeyRound,
+  Globe
 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
+import { useLanguage } from '@/context/LanguageContext';
 import PageShell from '@/components/layout/PageShell';
 import '../styles/account-pages.css';
 import { updateProfile, changePassword } from '../lib/apiService';
@@ -47,6 +49,7 @@ const CURRENCIES = [
 export default function ProfilePage() {
   const navigate = useNavigate();
   const { user, updateUser, logout } = useAuth();
+  const { preferredLanguage, setLanguage } = useLanguage();
 
   // Profile form state
   const [name, setName] = useState(user?.name || '');
@@ -105,6 +108,7 @@ export default function ProfilePage() {
         businessType,
         currency,
         workingHoursPerDay: Number(workingHoursPerDay) || 8,
+        preferredLanguage,
       });
 
       const updatedUser = res.user || {
@@ -114,6 +118,7 @@ export default function ProfilePage() {
         businessType,
         currency,
         workingHoursPerDay: Number(workingHoursPerDay) || 8,
+        preferredLanguage,
       };
 
       updateUser(updatedUser);
@@ -277,6 +282,31 @@ export default function ProfilePage() {
                     className="spot-input bg-slate-50 border border-slate-200 text-slate-900 focus:bg-white focus:outline-none focus:border-[#5E43F3] focus:ring-1 focus:ring-[#5E43F3]"
                   />
                 </div>
+              </div>
+            </div>
+
+            {/* Language Preferences */}
+            <div className="p-6 pt-3 border-t border-slate-100">
+              <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider mb-3">
+                Language Preferences
+              </h4>
+              <div className="spot-field">
+                <label>Preferred Application Language</label>
+                <div className="spot-input-wrap">
+                  <Globe size={16} className="spot-input-icon" />
+                  <select
+                    value={preferredLanguage}
+                    onChange={(e) => setLanguage(e.target.value)}
+                    className="spot-input bg-slate-50 border border-slate-200 text-slate-900 focus:bg-white focus:outline-none focus:border-[#5E43F3] focus:ring-1 focus:ring-[#5E43F3] cursor-pointer"
+                  >
+                    <option value="en">English (en)</option>
+                    <option value="ur-roman">Roman Urdu (ur-roman)</option>
+                    <option value="ur">اردو (ur)</option>
+                  </select>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Controls the language across all pages, AI intake, charts, and messages. Changes apply instantly.
+                </p>
               </div>
             </div>
 

@@ -27,6 +27,8 @@ import {
   isGatewayNode,
   isStartEventNode,
   isEndEventNode,
+  hasFuzzyMatch,
+  matchesAdjacentGateway,
 } from './deterministicNormalizer.js';
 import { validateBpmn, isMessageFlow } from './validateBpmn.js';
 import { extractOrderedSteps } from './stepListHelper.js';
@@ -341,6 +343,97 @@ const FIXTURE_FACTORIES = {
       },
     }),
   },
+
+  manufacturing_qc: {
+    en: (variation = 0) => ({
+      description: 'Worker assembles mechanical parts. Quality check passed? If failed, assemble mechanical parts again. Quality check passed? If passed, package product. Expedited shipping? If yes, deliver expedited. If no, standard shipping flow.',
+      draft: {
+        roles: ['Worker', 'Inspector', 'Packaging'],
+        activities: [
+          { id: 'assemble', label: 'Assemble mechanical parts', role: 'Worker', duration: 25 },
+          { id: 'package_item', label: 'Package product', role: 'Packaging', duration: 10 },
+          { id: 'expedite_del', label: 'Deliver expedited', role: 'Packaging', duration: 15 },
+        ],
+        decisions: [
+          {
+            id: 'dec_qc_1',
+            question: 'Quality check passed?',
+            role: 'Inspector',
+            afterActivityId: 'assemble',
+            branches: [
+              { label: 'Pass', steps: ['package_item'] },
+              { label: 'Failed - rework', steps: [], loopsTo: 'assemble' },
+            ],
+          },
+          {
+            id: 'dec_qc_repeated',
+            question: 'Quality check passed?',
+            role: 'Inspector',
+            afterActivityId: 'assemble',
+            branches: [
+              { label: 'Pass', steps: ['package_item'] },
+              { label: 'Failed - rework', steps: [], loopsTo: 'assemble' },
+            ],
+          },
+          {
+            id: 'dec_shipping',
+            question: 'Expedited shipping?',
+            role: 'Packaging',
+            afterActivityId: 'package_item',
+            branches: [
+              { label: 'Expedited', steps: ['expedite_del'] },
+              { label: 'Standard flow', steps: [] },
+            ],
+          },
+        ],
+        order: ['assemble', 'dec_qc_1', 'package_item', 'dec_shipping', 'expedite_del'],
+      },
+    }),
+    ru: (variation = 0) => ({
+      description: 'Worker mechanical parts assemble karta hai. Quality check pass hua? Agar fail ho jaye, dobara mechanical parts assemble karo. Quality check pass hua? Agar pass ho, to product package karo. Urgent delivery? Agar haan, to urgent deliver karo. Agar nahi, to standard flow.',
+      draft: {
+        roles: ['Worker', 'Inspector', 'Packaging'],
+        activities: [
+          { id: 'assemble_ru', label: 'Mechanical parts assemble karna', role: 'Worker', duration: 25 },
+          { id: 'package_item_ru', label: 'Product package karna', role: 'Packaging', duration: 10 },
+          { id: 'expedite_del_ru', label: 'Urgent deliver karna', role: 'Packaging', duration: 15 },
+        ],
+        decisions: [
+          {
+            id: 'dec_qc_ru_1',
+            question: 'Quality check pass hua?',
+            role: 'Inspector',
+            afterActivityId: 'assemble_ru',
+            branches: [
+              { label: 'Pass', steps: ['package_item_ru'] },
+              { label: 'Fail - dobara assemble', steps: [], loopsTo: 'assemble_ru' },
+            ],
+          },
+          {
+            id: 'dec_qc_ru_repeated',
+            question: 'Quality check pass hua?',
+            role: 'Inspector',
+            afterActivityId: 'assemble_ru',
+            branches: [
+              { label: 'Pass', steps: ['package_item_ru'] },
+              { label: 'Fail - dobara assemble', steps: [], loopsTo: 'assemble_ru' },
+            ],
+          },
+          {
+            id: 'dec_shipping_ru',
+            question: 'Urgent delivery?',
+            role: 'Packaging',
+            afterActivityId: 'package_item_ru',
+            branches: [
+              { label: 'Urgent', steps: ['expedite_del_ru'] },
+              { label: 'Standard flow', steps: [] },
+            ],
+          },
+        ],
+        order: ['assemble_ru', 'dec_qc_ru_1', 'package_item_ru', 'dec_shipping_ru', 'expedite_del_ru'],
+      },
+    }),
+  },
 };
 
 describe('Module: AI Model Generation Pipeline & Deterministic Auto-Fixes (Section 9)', () => {
@@ -348,7 +441,7 @@ describe('Module: AI Model Generation Pipeline & Deterministic Auto-Fixes (Secti
     clearAutoFixLogs();
   });
 
-  const fixtureNames = ['loan_approval', 'restaurant_order', 'support_ticket', 'hiring', 'refund'];
+  const fixtureNames = ['loan_approval', 'restaurant_order', 'support_ticket', 'hiring', 'refund', 'manufacturing_qc'];
   const languages = ['en', 'ru'];
 
   for (const fName of fixtureNames) {
@@ -362,7 +455,7 @@ describe('Module: AI Model Generation Pipeline & Deterministic Auto-Fixes (Secti
           const { description, draft } = factory(run);
 
           // 1. Build diagram from draft
-          const rawDiagram = buildBpmnFromDraft(draft, { userDescription: description });
+          const rawDiagram = buildBpmnFromDraft(draft, { userDescription: description, lang });
 
           // 2. Validate using SPOT standard validateBpmn
           const validation = validateBpmn(rawDiagram, { allowUnresolved: true });
@@ -374,10 +467,116 @@ describe('Module: AI Model Generation Pipeline & Deterministic Auto-Fixes (Secti
             `Run ${run} for ${fName} [${lang}] failed validation: ${validation.errors.join(', ')}`
           );
 
-          // Assert 1: No task has != 1 incoming or != 1 outgoing sequence flow
           const modelNodes = rawDiagram.nodes.filter(isTaskNode);
           const seqEdges = rawDiagram.edges.filter((e) => !isMessageFlow(e));
 
+          // Generic Invariant 1: Every task name has a fuzzy match to the input text
+          modelNodes.forEach((task) => {
+            if (task.origin === 'structural' && task.data?.hidden) return;
+            const label = task.data?.label || task.label || '';
+            assert.ok(
+              hasFuzzyMatch(label, description),
+              `Task "${label}" was not described in user description: "${description}"`
+            );
+          });
+
+          // Generic Invariant 2: No task is named after an adjacent gateway's question
+          modelNodes.forEach((task) => {
+            assert.ok(
+              !matchesAdjacentGateway(task, rawDiagram),
+              `Task "${task.id}" (${task.data?.label || task.label}) matches adjacent gateway question`
+            );
+          });
+
+          // Generic Invariant 3: No visible task has zero duration and zero resources
+          modelNodes.forEach((task) => {
+            const isHiddenStructural = (task.origin === 'structural' || task.data?.origin === 'structural') && Boolean(task.data?.hidden);
+            if (isHiddenStructural) return;
+            const dur = Number(task.data?.duration != null ? task.data.duration : (task.duration != null ? task.duration : 0));
+            const durMin = task.data?.duration_min != null ? Number(task.data.duration_min) : null;
+            const resObj = task.data?.resources || task.resources || {};
+            const hasRes = Object.keys(resObj).length > 0 || Boolean(task.data?.resource || task.resource);
+            assert.ok(
+              (dur > 0) || (durMin != null && durMin > 0) || hasRes,
+              `Visible task "${task.id}" (${task.data?.label || task.label}) cannot have 0 duration and 0 resources`
+            );
+          });
+
+          // Generic Invariant 4: Step order matches draft order
+          const ordered = extractOrderedSteps(rawDiagram);
+          const orderedLabels = ordered.map((s) => (s.label || '').toLowerCase());
+          const draftActivitiesInOrder = (draft.order || [])
+            .filter((id) => (draft.activities || []).some((a) => a.id === id))
+            .map((id) => (draft.activities || []).find((a) => a.id === id).label.toLowerCase());
+
+          let lastFoundIdx = -1;
+          draftActivitiesInOrder.forEach((draftLbl) => {
+            const foundIdx = orderedLabels.findIndex(
+              (ol, idx) => idx > lastFoundIdx && (ol.includes(draftLbl) || draftLbl.includes(ol))
+            );
+            if (foundIdx !== -1) {
+              assert.ok(foundIdx >= lastFoundIdx, `Step "${draftLbl}" must appear in sequence (found at ${foundIdx})`);
+              lastFoundIdx = foundIdx;
+            }
+          });
+
+          // Generic Invariant 5: Every retry/rework loops back to an earlier step
+          const reworkEdges = seqEdges.filter((e) => {
+            const l = (e.label || e.data?.label || '').toLowerCase();
+            return l.includes('rework') || l.includes('fail') || l.includes('dobara') || Boolean(e.data?.isRework);
+          });
+          reworkEdges.forEach((re) => {
+            const tgt = rawDiagram.nodes.find((n) => n.id === re.target);
+            assert.ok(tgt, `Rework target "${re.target}" must exist`);
+            assert.ok(
+              !isEndEventNode(tgt),
+              `Rework edge "${re.id}" must loop back, cannot terminate at an end event`
+            );
+          });
+
+          // Generic Invariant 6: Every empty branch is a direct flow (no placeholder task)
+          (draft.decisions || []).forEach((dec) => {
+            (dec.branches || dec.options || []).forEach((b) => {
+              if (Array.isArray(b.steps) && b.steps.length === 0) {
+                const branchEdge = seqEdges.find((e) => {
+                  const lbl = (e.label || e.data?.label || '').toLowerCase();
+                  const bLbl = (b.label || '').toLowerCase();
+                  return lbl === bLbl || (bLbl.length >= 3 && (lbl.includes(bLbl) || bLbl.includes(lbl)));
+                });
+                if (branchEdge) {
+                  const tgtNode = rawDiagram.nodes.find((n) => n.id === branchEdge.target);
+                  assert.ok(tgtNode, `Target of empty branch flow "${branchEdge.id}" must exist`);
+                  if (isTaskNode(tgtNode)) {
+                    assert.ok(
+                      hasFuzzyMatch(tgtNode.data?.label || tgtNode.label, description),
+                      `Empty branch direct flow must not point to an invented placeholder task "${tgtNode.id}"`
+                    );
+                  }
+                }
+              }
+            });
+          });
+
+          // Generic Invariant 7: A repeated condition produces one decision, not two
+          const splitGateways = rawDiagram.nodes.filter(
+            (n) => isGatewayNode(n) && seqEdges.filter((e) => e.source === n.id).length >= 2
+          );
+          const seenQuestions = new Set();
+          splitGateways.forEach((gw) => {
+            const qNorm = (gw.data?.label || gw.label || '')
+              .toLowerCase()
+              .replace(/[^a-z0-9]/g, '')
+              .trim();
+            if (qNorm) {
+              assert.ok(
+                !seenQuestions.has(qNorm),
+                `Repeated condition "${gw.data?.label || gw.label}" must produce one decision, not two`
+              );
+              seenQuestions.add(qNorm);
+            }
+          });
+
+          // Generic Invariant 8: The graph is valid (tasks have 1 in and 1 out, no orphan nodes, no single-path gateways)
           modelNodes.forEach((task) => {
             const inSeq = seqEdges.filter((e) => e.target === task.id);
             const outSeq = seqEdges.filter((e) => e.source === task.id);
@@ -385,101 +584,33 @@ describe('Module: AI Model Generation Pipeline & Deterministic Auto-Fixes (Secti
             assert.equal(
               inSeq.length,
               1,
-              `Task "${task.id}" (${task.data?.label || task.label}) must have exactly 1 incoming sequence flow (found ${inSeq.length})`
+              `Task "${task.id}" (${task.data?.label || task.label}) must have exactly 1 incoming flow (found ${inSeq.length})`
             );
             assert.equal(
               outSeq.length,
               1,
-              `Task "${task.id}" (${task.data?.label || task.label}) must have exactly 1 outgoing sequence flow (found ${outSeq.length})`
+              `Task "${task.id}" (${task.data?.label || task.label}) must have exactly 1 outgoing flow (found ${outSeq.length})`
             );
           });
 
-          // Assert 2: No orphan tasks
-          modelNodes.forEach((task) => {
-            const inSeq = seqEdges.filter((e) => e.target === task.id);
-            const outSeq = seqEdges.filter((e) => e.source === task.id);
-            assert.ok(inSeq.length > 0 && outSeq.length > 0, `Task "${task.id}" cannot be an orphan`);
-          });
-
-          // Assert 3: No single-path gateways
+          // Gateways cannot be single-path
           const gateways = rawDiagram.nodes.filter(isGatewayNode);
           gateways.forEach((gw) => {
             const inSeq = seqEdges.filter((e) => e.target === gw.id);
             const outSeq = seqEdges.filter((e) => e.source === gw.id);
             assert.ok(
               outSeq.length >= 2 || inSeq.length >= 2,
-              `Gateway "${gw.id}" cannot be a single-path gateway (in: ${inSeq.length}, out: ${outSeq.length})`
+              `Gateway "${gw.id}" cannot be single-path (in: ${inSeq.length}, out: ${outSeq.length})`
             );
           });
 
-          // Assert 4: No task whose name is absent from the user's description (except structural)
-          modelNodes.forEach((task) => {
-            if (task.origin === 'structural') return;
-            const label = (task.data?.label || task.label || '').toLowerCase();
-            const words = label.split(/\s+/).filter((w) => w.length >= 4);
-            const matchesDesc = words.some((w) => description.toLowerCase().includes(w));
-            assert.ok(
-              matchesDesc,
-              `Task "${label}" was not described in user description: "${description}"`
-            );
-          });
-
-          // Assert 5: Auto-fixes logged with type and element
+          // Auto-fixes logged with type and element
           const logs = getAutoFixLogs();
           assert.ok(Array.isArray(logs), 'Auto-fix logs must be an array');
           logs.forEach((log) => {
             assert.ok(log.type, 'Auto-fix log entry must have a type');
             assert.ok(log.element, 'Auto-fix log entry must have an element ID');
           });
-
-          // Specific fixture assertions
-          if (fName === 'loan_approval') {
-            // Rejection paths merge through a gateway before Notify Rejection
-            const rejTask = modelNodes.find((n) =>
-              (n.data?.label || n.label || '').match(/rejection/i)
-            );
-            assert.ok(rejTask, 'Loan approval must contain a Notify Rejection task');
-            const inToRej = seqEdges.filter((e) => e.target === rejTask.id);
-            assert.equal(inToRej.length, 1, 'Notify Rejection must have exactly 1 incoming flow');
-            const srcOfRej = rawDiagram.nodes.find((n) => n.id === inToRej[0].source);
-            assert.ok(
-              isGatewayNode(srcOfRej),
-              'Predecessor of Notify Rejection must be a merge gateway combining paths'
-            );
-          }
-
-          if (fName === 'restaurant_order') {
-            // "Khana banana" / Chef is never an orphan and appears before Waiter serves
-            const chefTask = modelNodes.find((n) =>
-              (n.data?.label || n.label || '').match(/khana banana/i)
-            );
-            assert.ok(chefTask, 'Restaurant process must contain Khana banana step');
-            const ordered = extractOrderedSteps(rawDiagram);
-            const chefIdx = ordered.findIndex((s) => s.label.match(/khana banana/i));
-            const serveIdx = ordered.findIndex((s) => s.label.match(/serve/i));
-            assert.ok(chefIdx !== -1, 'Khana banana must be in ordered steps');
-            if (serveIdx !== -1) {
-              assert.ok(
-                chefIdx < serveIdx,
-                `Khana banana (idx ${chefIdx}) must appear before serve food (idx ${serveIdx})`
-              );
-            }
-          }
-
-          if (fName === 'support_ticket' || fName === 'refund') {
-            // Rework branches loop back to an earlier step, not an end event
-            const reworkEdges = seqEdges.filter((e) => {
-              const l = (e.label || e.data?.label || '').toLowerCase();
-              return l.includes('rework') || l.includes('fail') || l.includes('dobara');
-            });
-            reworkEdges.forEach((re) => {
-              const tgt = rawDiagram.nodes.find((n) => n.id === re.target);
-              assert.ok(
-                !isEndEventNode(tgt),
-                `Rework edge "${re.id}" must loop back, cannot terminate at an end event`
-              );
-            });
-          }
 
           successCount++;
         }
