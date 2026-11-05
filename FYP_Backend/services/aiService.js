@@ -469,7 +469,7 @@ CRITICAL: Keep the user's own step names, role names, and process names EXACTLY 
     normalizeDiagram(parsed);
     rawDiagram = parsed;
   } else {
-    rawDiagram = buildLinearFallbackDiagram(description);
+    rawDiagram = buildLinearFallbackDiagram(description, parsed, { lang: prefLang });
   }
 
   // 1. Run deterministic normalization & auto-fixes
@@ -538,7 +538,7 @@ Please return a corrected JSON spec or draft fixing these exact issues. Ensure e
   // 5. If still invalid after 2 retries, fall back to simplified linear version (valid by construction)
   if (validation.errors && validation.errors.length > 0) {
     console.warn('Validator errors remained after retries; engaging linear fallback pipeline.');
-    rawDiagram = buildLinearFallbackDiagram(description);
+    rawDiagram = buildLinearFallbackDiagram(description, parsed, { lang: prefLang });
     rawDiagram = normalizeAndRepairBpmn(rawDiagram, { userDescription: description });
     validation = validateBpmn(rawDiagram, { allowUnresolved: true });
   }

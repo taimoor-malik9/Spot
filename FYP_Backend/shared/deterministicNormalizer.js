@@ -522,29 +522,37 @@ export function connectOrphanTasks(diagram, userDescription = '', draftOrder = [
       taskIdx = diagram.nodes.findIndex((n) => n.id === task.id);
     }
 
-    // Predecessor: nearest earlier node in sequence
+    // Predecessor: nearest earlier node in sequence within the same pool
     let predecessor = null;
     for (let i = taskIdx - 1; i >= 0; i--) {
       const candId = canonicalOrder[i];
       const candNode = diagram.nodes.find((n) => n.id === candId);
       if (candNode && candNode.id !== task.id && !isContainerNode(candNode) && !isEndEventNode(candNode)) {
-        predecessor = candNode;
-        break;
+        if (!task.pool || !candNode.pool || task.pool === candNode.pool) {
+          predecessor = candNode;
+          break;
+        }
       }
     }
-    if (!predecessor) predecessor = startEvent;
+    if (!predecessor) {
+      predecessor = diagram.nodes.find((n) => isStartEventNode(n) && (!task.pool || !n.pool || task.pool === n.pool)) || startEvent;
+    }
 
-    // Successor: nearest later node in sequence
+    // Successor: nearest later node in sequence within the same pool
     let successor = null;
     for (let i = taskIdx + 1; i < canonicalOrder.length; i++) {
       const candId = canonicalOrder[i];
       const candNode = diagram.nodes.find((n) => n.id === candId);
       if (candNode && candNode.id !== task.id && !isContainerNode(candNode) && !isStartEventNode(candNode)) {
-        successor = candNode;
-        break;
+        if (!task.pool || !candNode.pool || task.pool === candNode.pool) {
+          successor = candNode;
+          break;
+        }
       }
     }
-    if (!successor) successor = endEvent;
+    if (!successor) {
+      successor = diagram.nodes.find((n) => isEndEventNode(n) && (!task.pool || !n.pool || task.pool === n.pool)) || endEvent;
+    }
 
     if (isOrphanIn && isOrphanOut) {
       // Splicing: if an edge exists between predecessor and successor, splice into it
@@ -721,18 +729,28 @@ export function ensureSingleStartAndEndEvents(diagram, options = {}) {
       primaryStart.label = defaultStart;
       if (primaryStart.data) primaryStart.data.label = defaultStart;
     }
-    if (starts.length > 1) {
-      // Keep only the first start event, reroute edges from other start events
-      const extraStarts = starts.slice(1);
-      const extraIds = new Set(extraStarts.map((s) => s.id));
-      diagram.nodes = diagram.nodes.filter((n) => !extraIds.has(n.id));
-      diagram.edges.forEach((e) => {
-        if (extraIds.has(e.source)) {
-          e.source = primaryStart.id;
-        }
-      });
-      logAutoFix('deduplicate-start-events', primaryStart.id, { removed: [...extraIds] });
-    }
+    // Deduplicate extra start events ONLY within the same pool
+    const startsByPool = new Map();
+    starts.forEach((s) => {
+      const p = s.pool || null;
+      if (!startsByPool.has(p)) startsByPool.set(p, []);
+      startsByPool.get(p).push(s);
+    });
+
+    startsByPool.forEach((poolStarts) => {
+      if (poolStarts.length > 1) {
+        const poolPrimary = poolStarts[0];
+        const extraStarts = poolStarts.slice(1);
+        const extraIds = new Set(extraStarts.map((s) => s.id));
+        diagram.nodes = diagram.nodes.filter((n) => !extraIds.has(n.id));
+        diagram.edges.forEach((e) => {
+          if (extraIds.has(e.source)) {
+            e.source = poolPrimary.id;
+          }
+        });
+        logAutoFix('deduplicate-start-events', poolPrimary.id, { removed: [...extraIds] });
+      }
+    });
   }
 
   // Ensure at least 1 end event
@@ -747,13 +765,14 @@ export function ensureSingleStartAndEndEvents(diagram, options = {}) {
       data: { label: defaultEnd, origin: 'structural' },
     };
     diagram.nodes.push(primaryEnd);
+    ends.push(primaryEnd);
     logAutoFix('insert-end-event', primaryEnd.id);
   } else if (primaryEnd.label === 'End' && isUr) {
     primaryEnd.label = defaultEnd;
     if (primaryEnd.data) primaryEnd.data.label = defaultEnd;
   }
 
-  // Ensure terminal non-end nodes connect to an end event
+  // Ensure terminal non-end nodes connect to an end event within their own pool
   const seqEdges = diagram.edges.filter((e) => !isMessageFlow(e));
   const outgoingMap = new Set(seqEdges.map((e) => e.source));
   const terminalNodes = diagram.nodes.filter(
@@ -761,14 +780,30 @@ export function ensureSingleStartAndEndEvents(diagram, options = {}) {
   );
 
   terminalNodes.forEach((tn) => {
+    const tnPool = tn.pool || null;
+    let poolEnd = ends.find((e) => (e.pool || null) === tnPool);
+    if (!poolEnd) {
+      poolEnd = {
+        id: `end_auto_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        type: 'end-event',
+        label: defaultEnd,
+        pool: tnPool,
+        lane: tn.lane || null,
+        origin: 'structural',
+        data: { label: defaultEnd, origin: 'structural' },
+      };
+      diagram.nodes.push(poolEnd);
+      ends.push(poolEnd);
+      logAutoFix('insert-end-event', poolEnd.id);
+    }
     diagram.edges.push({
       id: `seq_terminal_to_end_${tn.id}`,
       source: tn.id,
-      target: primaryEnd.id,
+      target: poolEnd.id,
       flowType: 'sequence',
       data: {},
     });
-    logAutoFix('connect-terminal-to-end', tn.id, { endEventId: primaryEnd.id });
+    logAutoFix('connect-terminal-to-end', tn.id, { endEventId: poolEnd.id });
   });
 
   return diagram;
@@ -782,13 +817,13 @@ export function ensureReachability(diagram) {
   if (!diagram || !Array.isArray(diagram.nodes) || !Array.isArray(diagram.edges)) return diagram;
 
   const modelNodes = diagram.nodes.filter((n) => !isContainerNode(n));
-  const startEvent = modelNodes.find(isStartEventNode);
-  const endEvent = modelNodes.find(isEndEventNode);
-  if (!startEvent || !endEvent) return diagram;
+  const startNodes = modelNodes.filter(isStartEventNode);
+  const endNodes = modelNodes.filter(isEndEventNode);
+  if (startNodes.length === 0 || endNodes.length === 0) return diagram;
 
-  // Forward reachability from start
-  const reachableFromStart = new Set([startEvent.id]);
-  const queueStart = [startEvent.id];
+  // Forward reachability from all start events
+  const reachableFromStart = new Set(startNodes.map((s) => s.id));
+  const queueStart = [...reachableFromStart];
 
   while (queueStart.length > 0) {
     const curr = queueStart.shift();
@@ -800,23 +835,26 @@ export function ensureReachability(diagram) {
     });
   }
 
-  // Fix unreachable nodes
+  // Fix unreachable nodes: connect to a start event in the SAME pool (never cross pools)
   modelNodes.forEach((n) => {
     if (!reachableFromStart.has(n.id) && !isStartEventNode(n)) {
-      diagram.edges.push({
-        id: `seq_reach_start_${n.id}`,
-        source: startEvent.id,
-        target: n.id,
-        flowType: 'sequence',
-        data: {},
-      });
-      reachableFromStart.add(n.id);
-      logAutoFix('fix-reachability-from-start', n.id);
+      const poolStart = startNodes.find((s) => (s.pool || null) === (n.pool || null)) || startNodes[0];
+      if ((poolStart.pool || null) === (n.pool || null)) {
+        diagram.edges.push({
+          id: `seq_reach_start_${n.id}`,
+          source: poolStart.id,
+          target: n.id,
+          flowType: 'sequence',
+          data: {},
+        });
+        reachableFromStart.add(n.id);
+        logAutoFix('fix-reachability-from-start', n.id);
+      }
     }
   });
 
-  // Backward reachability to end
-  const canReachEnd = new Set(modelNodes.filter(isEndEventNode).map((e) => e.id));
+  // Backward reachability to end: start from all end events
+  const canReachEnd = new Set(endNodes.map((e) => e.id));
   const queueEnd = [...canReachEnd];
 
   while (queueEnd.length > 0) {
@@ -829,17 +867,21 @@ export function ensureReachability(diagram) {
     });
   }
 
+  // Fix nodes unable to reach end: connect to an end event in the SAME pool
   modelNodes.forEach((n) => {
     if (!canReachEnd.has(n.id) && !isEndEventNode(n)) {
-      diagram.edges.push({
-        id: `seq_reach_end_${n.id}`,
-        source: n.id,
-        target: endEvent.id,
-        flowType: 'sequence',
-        data: {},
-      });
-      canReachEnd.add(n.id);
-      logAutoFix('fix-reachability-to-end', n.id);
+      const poolEnd = endNodes.find((e) => (e.pool || null) === (n.pool || null)) || endNodes[0];
+      if ((poolEnd.pool || null) === (n.pool || null)) {
+        diagram.edges.push({
+          id: `seq_reach_end_${n.id}`,
+          source: n.id,
+          target: poolEnd.id,
+          flowType: 'sequence',
+          data: {},
+        });
+        canReachEnd.add(n.id);
+        logAutoFix('fix-reachability-to-end', n.id);
+      }
     }
   });
 
@@ -863,26 +905,33 @@ export function ensureTaskLanes(diagram, defaultLane = 'Staff') {
     diagram.nodes.unshift(poolNode);
   }
 
+  const existingPoolIds = new Set(diagram.nodes.filter((n) => n.type === 'pool').map((p) => p.id));
   const existingLanes = new Set(
-    diagram.nodes.filter((n) => n.type === 'lane').map((l) => l.label || l.data?.label || l.id)
+    diagram.nodes
+      .filter((n) => n.type === 'lane')
+      .map((l) => `${l.pool || poolNode.id}:${(l.label || l.data?.label || l.id).toLowerCase()}`)
   );
 
   diagram.nodes.forEach((n) => {
     if (isTaskNode(n)) {
       const assignedLane = n.lane || n.data?.lane || defaultLane;
+      const currentPool = n.pool || n.data?.pool;
+      const assignedPool = (currentPool && existingPoolIds.has(currentPool)) ? currentPool : poolNode.id;
+
       n.lane = assignedLane;
-      n.pool = poolNode.id;
+      n.pool = assignedPool;
       if (!n.data) n.data = {};
       n.data.lane = assignedLane;
-      n.data.pool = poolNode.id;
+      n.data.pool = assignedPool;
 
-      if (!existingLanes.has(assignedLane)) {
-        existingLanes.add(assignedLane);
+      const laneKey = `${assignedPool}:${assignedLane.toLowerCase()}`;
+      if (!existingLanes.has(laneKey)) {
+        existingLanes.add(laneKey);
         diagram.nodes.push({
-          id: `lane_${assignedLane.toLowerCase().replace(/[^a-z0-9_]/g, '_')}`,
+          id: `lane_${assignedLane.toLowerCase().replace(/[^a-z0-9_]/g, '_')}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
           type: 'lane',
           label: assignedLane,
-          pool: poolNode.id,
+          pool: assignedPool,
           data: { label: assignedLane },
         });
       }
@@ -1405,16 +1454,121 @@ export function buildLinearFallbackDiagram(userDescription, extractedSteps = [],
   const startLbl = lang === 'ur' ? 'شروع' : (lang === 'ur-roman' ? 'Shuru' : 'Start');
   const endLbl = lang === 'ur' ? 'ختم' : (lang === 'ur-roman' ? 'Khatam' : 'End');
 
-  const steps = extractedSteps.length > 0
-    ? extractedSteps
-    : [
-        { label: 'Receive Request', role: 'Staff' },
-        { label: 'Process Request', role: 'Staff' },
-        { label: 'Complete Process', role: 'Staff' },
-      ];
+  let steps = [];
+  let inputResources = [];
+
+  if (Array.isArray(extractedSteps) && extractedSteps.length > 0) {
+    steps = extractedSteps;
+  } else if (extractedSteps && typeof extractedSteps === 'object') {
+    if (Array.isArray(extractedSteps.resources)) {
+      inputResources = extractedSteps.resources;
+    }
+    if (Array.isArray(extractedSteps.activities) && extractedSteps.activities.length > 0) {
+      steps = extractedSteps.activities;
+    } else if (Array.isArray(extractedSteps.steps) && extractedSteps.steps.length > 0) {
+      steps = extractedSteps.steps;
+    } else if (Array.isArray(extractedSteps.pools) && extractedSteps.pools.length > 0) {
+      extractedSteps.pools.forEach((pool) => {
+        (pool.steps || []).forEach((s) => {
+          steps.push({
+            ...s,
+            role: s.lane || s.resource || pool.role || pool.name || 'Staff',
+          });
+        });
+      });
+    } else if (Array.isArray(extractedSteps.nodes)) {
+      steps = extractedSteps.nodes
+        .filter((n) => n.type === 'task')
+        .map((n) => ({
+          id: n.id,
+          label: n.data?.label || n.label,
+          role: n.lane || n.data?.lane || n.data?.resource || 'Staff',
+          duration: n.data?.duration ?? n.duration ?? 5,
+          duration_unit: n.data?.duration_unit || n.duration_unit || 'minutes',
+          resource: n.data?.resource || n.resource,
+          resources: n.data?.resources || n.resources,
+        }));
+    }
+  }
+
+  // If no steps provided from structured input, try extracting sentences from userDescription
+  if (steps.length === 0 && typeof userDescription === 'string' && userDescription.trim()) {
+    const rawSentences = userDescription
+      .split(/(?<=[.!?])\s+|\n+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 8);
+
+    if (rawSentences.length > 0) {
+      steps = rawSentences.map((sentence, idx) => {
+        const lower = sentence.toLowerCase();
+        let role = 'Staff';
+        if (/\b(customer|patient|client|applicant|requester|member|guest)\b/.test(lower)) {
+          role = 'Customer';
+        } else if (/\b(chef|cook|baker)\b/.test(lower)) {
+          role = 'Chef';
+        } else if (/\b(courier|driver|rider|delivery)\b/.test(lower)) {
+          role = 'Courier';
+        } else if (/\b(cashier)\b/.test(lower)) {
+          role = 'Cashier';
+        } else if (/\b(barista)\b/.test(lower)) {
+          role = 'Barista';
+        } else if (/\b(doctor|physician)\b/.test(lower)) {
+          role = 'Doctor';
+        } else if (/\b(nurse)\b/.test(lower)) {
+          role = 'Nurse';
+        } else if (/\b(receptionist)\b/.test(lower)) {
+          role = 'Receptionist';
+        } else if (/\b(technician|mechanic)\b/.test(lower)) {
+          role = 'Technician';
+        } else if (/\b(carpenter|craftsman)\b/.test(lower)) {
+          role = 'Carpenter';
+        } else if (/\b(officer|underwriter|manager)\b/.test(lower)) {
+          role = 'Officer';
+        }
+        return {
+          id: `step_${idx + 1}`,
+          label: sentence.replace(/[.!?]+$/, ''),
+          role,
+          duration: 5,
+          duration_unit: 'minutes',
+          kept: true,
+          origin: 'stated',
+        };
+      });
+    }
+  }
+
+  if (steps.length === 0) {
+    steps = [
+      { label: 'Receive Request', role: 'Staff', duration: 5, kept: true, origin: 'stated' },
+      { label: 'Process Request', role: 'Staff', duration: 5, kept: true, origin: 'stated' },
+      { label: 'Complete Process', role: 'Staff', duration: 5, kept: true, origin: 'stated' },
+    ];
+  }
 
   const poolId = 'pool_linear';
-  const roleName = steps[0]?.role || 'Staff';
+  const isCustomerRole = (role) => /^(customer|patient|client|applicant|requester|member|guest|complainant)$/i.test(String(role || '').trim());
+
+  // Collect all roles and staff roles
+  const rolesSet = new Set();
+  const staffRolesSet = new Set();
+
+  steps.forEach((step) => {
+    const r = (typeof step === 'object' && step.role) ? step.role : 'Staff';
+    rolesSet.add(r);
+    if (!isCustomerRole(r)) {
+      staffRolesSet.add(r);
+    }
+  });
+
+  // If no staff role found at all, ensure at least one task is handled by Staff
+  if (staffRolesSet.size === 0) {
+    staffRolesSet.add('Staff');
+    rolesSet.add('Staff');
+  }
+
+  const allRoles = Array.from(rolesSet);
+  const primaryRole = allRoles[0] || 'Staff';
 
   const nodes = [
     {
@@ -1423,31 +1577,53 @@ export function buildLinearFallbackDiagram(userDescription, extractedSteps = [],
       label: 'Main Process',
       data: { label: 'Main Process' },
     },
-    {
-      id: 'lane_main',
-      type: 'lane',
-      label: roleName,
-      pool: poolId,
-      data: { label: roleName },
-    },
-    {
-      id: 'start_linear',
-      type: 'start-event',
-      label: startLbl,
-      pool: poolId,
-      lane: roleName,
-      origin: 'structural',
-      data: { label: startLbl, origin: 'structural' },
-    },
   ];
+
+  // Add lanes for all roles
+  allRoles.forEach((r, idx) => {
+    nodes.push({
+      id: `lane_${r.toLowerCase().replace(/[^a-z0-9_]/g, '_')}_${idx}`,
+      type: 'lane',
+      label: r,
+      pool: poolId,
+      data: { label: r },
+    });
+  });
+
+  // Start event
+  nodes.push({
+    id: 'start_linear',
+    type: 'start-event',
+    label: startLbl,
+    pool: poolId,
+    lane: primaryRole,
+    origin: 'structural',
+    data: { label: startLbl, origin: 'structural' },
+  });
 
   const edges = [];
   let prevId = 'start_linear';
 
   steps.forEach((step, idx) => {
     const taskId = `task_lin_${idx + 1}`;
-    const taskLabel = typeof step === 'string' ? step : (step.label || `Step ${idx + 1}`);
-    const taskRole = (typeof step === 'object' && step.role) ? step.role : roleName;
+    const taskLabel = typeof step === 'string' ? step : (step.label || step.name || `Step ${idx + 1}`);
+    let taskRole = (typeof step === 'object' && step.role) ? step.role : primaryRole;
+
+    // If all steps were customer and we had to add Staff, make non-first step Staff
+    if (staffRolesSet.has('Staff') && !allRoles.includes('Staff') && idx > 0) {
+      taskRole = 'Staff';
+    }
+
+    const duration = (typeof step === 'object' && step.duration != null)
+      ? Number(step.duration)
+      : (typeof step === 'object' && step.duration_min != null ? Number(step.duration_min) : 5);
+    const durationUnit = (typeof step === 'object' && step.duration_unit) ? step.duration_unit : 'minutes';
+
+    const isCust = isCustomerRole(taskRole);
+    const taskResource = isCust ? null : (step.resource || taskRole);
+    const taskResources = isCust
+      ? {}
+      : (step.resources && Object.keys(step.resources).length > 0 ? step.resources : { [taskResource]: 1 });
 
     nodes.push({
       id: taskId,
@@ -1455,14 +1631,18 @@ export function buildLinearFallbackDiagram(userDescription, extractedSteps = [],
       label: taskLabel,
       pool: poolId,
       lane: taskRole,
-      origin: 'stated',
+      origin: step.origin || 'stated',
+      kept: true,
       data: {
         label: taskLabel,
-        origin: 'stated',
-        duration: 5,
-        duration_unit: 'minutes',
-        resource: taskRole,
-        resources: { [taskRole]: 1 },
+        origin: step.origin || 'stated',
+        kept: true,
+        duration,
+        duration_unit: durationUnit,
+        duration_min: step.duration_min != null ? Number(step.duration_min) : null,
+        duration_max: step.duration_max != null ? Number(step.duration_max) : null,
+        resource: taskResource,
+        resources: taskResources,
       },
     });
 
@@ -1483,7 +1663,7 @@ export function buildLinearFallbackDiagram(userDescription, extractedSteps = [],
     type: 'end-event',
     label: endLbl,
     pool: poolId,
-    lane: roleName,
+    lane: allRoles[allRoles.length - 1] || primaryRole,
     origin: 'structural',
     data: { label: endLbl, origin: 'structural' },
   });
@@ -1496,21 +1676,30 @@ export function buildLinearFallbackDiagram(userDescription, extractedSteps = [],
     data: {},
   });
 
+  // Resources
+  const resources = Array.from(staffRolesSet).map((role) => {
+    const existing = inputResources.find(
+      (r) => (r.name && r.name.toLowerCase() === role.toLowerCase()) || (r.id && r.id.toLowerCase() === role.toLowerCase())
+    );
+    if (existing) return existing;
+    return {
+      id: role,
+      name: role,
+      type: 'staff',
+      quantity: 1,
+      quantitySource: 'assumed',
+      costSource: 'assumed',
+      hours_per_day: 8,
+      working_days_per_month: 22,
+      monthly_salary: 60000,
+    };
+  });
+
   const rawDiagram = {
     type: 'diagram',
     nodes,
     edges,
-    resources: [
-      {
-        id: roleName,
-        name: roleName,
-        type: 'staff',
-        quantity: 1,
-        hours_per_day: 8,
-        working_days_per_month: 22,
-        monthly_salary: 60000,
-      },
-    ],
+    resources,
   };
 
   logAutoFix('build-linear-fallback', 'fallback', { stepCount: steps.length });
