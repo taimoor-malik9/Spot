@@ -16,12 +16,12 @@ try {
 }
 
 router.post('/generate-process', async (req, res) => {
-  const { description, history } = req.body;
+  const { description, history, intakeLanguage } = req.body;
   if (!description || typeof description !== 'string' || !description.trim()) {
     return res.status(400).json({ error: 'description is required' });
   }
   try {
-    const result = await generateProcess(description, history || []);
+    const result = await generateProcess(description, history || [], intakeLanguage || 'en');
     if (result.type === 'clarification') {
       return res.status(200).json({ type: 'clarification', question: result.question });
     }

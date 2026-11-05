@@ -20,6 +20,7 @@ export function getInitialGuidedState() {
             answers: parsed.answers || null,
             currentStep: typeof parsed.currentStep === 'number' ? parsed.currentStep : 1,
             validationResult: parsed.validationResult || { errors: [], repairs: [] },
+            intakeLanguage: typeof parsed.intakeLanguage === 'string' ? parsed.intakeLanguage : 'en',
           };
         }
       }
@@ -35,5 +36,6 @@ export function getInitialGuidedState() {
     answers: null,
     currentStep: 1,
     validationResult: { errors: [], repairs: [] },
+    intakeLanguage: 'en',
   };
 }

@@ -20,6 +20,7 @@ import { validateBpmn } from '../lib/intake/validateBpmn';
 import { validateDurationRules } from '../lib/durationRules';
 import { SPEED_MAPPINGS, BUSYNESS_MAPPINGS } from '../lib/intake/schema';
 import { useAnalystView } from '../lib/labels';
+import { friendlyError } from '../lib/intake/friendlyErrors';
 
 const COST_FIELD_LABELS = {
   hours_per_day: 'Hours/day',
@@ -64,6 +65,7 @@ export default function ConfirmationCard({
   onOpenResourcePanel,
   onWhatShouldChange = null,
   onBackToQuestions = null,
+  lang = 'en',
 }) {
   const [isAnalystView] = useAnalystView();
   const [open, setOpen] = useState(true);
@@ -448,8 +450,8 @@ export default function ConfirmationCard({
           }}
         >
           {hasErrors
-            ? `${validationErrors.length} ${isAnalystView ? 'BPMN issue' : 'process issue'}${validationErrors.length !== 1 ? 's' : ''} to resolve`
-            : `${totalFields} thing${totalFields !== 1 ? 's' : ''} to review`}
+            ? (lang === 'ur-roman' ? `${validationErrors.length} masail hal karein` : `${validationErrors.length} ${isAnalystView ? 'BPMN issue' : 'process issue'}${validationErrors.length !== 1 ? 's' : ''} to resolve`)
+            : (lang === 'ur-roman' ? `${totalFields} cheezein jaanchne ke liye` : `${totalFields} thing${totalFields !== 1 ? 's' : ''} to review`)}
         </span>
         {open ? (
           <ChevronUp size={13} color={hasErrors ? '#dc2626' : '#d97706'} />
@@ -913,17 +915,17 @@ export default function ConfirmationCard({
                   marginBottom: 4,
                 }}
               >
-                <AlertCircle size={14} color="#dc2626" /> Apply Blocked — {isAnalystView ? 'BPMN Validation Errors:' : 'Process Diagram Issues:'}
+                <AlertCircle size={14} color="#dc2626" /> {lang === 'ur-roman' ? 'Chalane se pehle ek cheez batani baqi hai:' : (isAnalystView ? 'Validation checks:' : 'One thing is missing before we can run this:')}
               </div>
               <ul style={{ margin: 0, paddingLeft: 16 }}>
                 {validationErrors.map((err, i) => (
                   <li key={i} style={{ marginBottom: 2 }}>
-                    {err}
+                    {isAnalystView ? (err.message || err) : friendlyError(err, lang, diagram)}
                   </li>
                 ))}
               </ul>
               <div style={{ fontSize: 10.5, color: '#991b1b', marginTop: 4 }}>
-                Please review or fix the errors above before applying to canvas.
+                {lang === 'ur-roman' ? 'Barahe karam aage barhne se pehle upar diye gaye sawal ka jawab dein.' : 'Please answer the question above before proceeding.'}
               </div>
             </div>
           )}
@@ -1119,7 +1121,9 @@ export default function ConfirmationCard({
               title={hasErrors ? (isAnalystView ? 'BPMN validation errors must be resolved to apply' : 'Process checks must be resolved to apply') : 'Apply to canvas'}
             >
               <CheckCircle size={13} />
-              {hasErrors ? `Apply Blocked (${validationErrors.length} Errors)` : 'Confirm & Apply'}
+              {hasErrors
+                ? (lang === 'ur-roman' ? 'Pehle upar wala sawal bharein' : 'Answer question above first')
+                : (lang === 'ur-roman' ? 'Confirm karein' : 'Confirm & Apply')}
             </button>
 
             {onOpenResourcePanel && (

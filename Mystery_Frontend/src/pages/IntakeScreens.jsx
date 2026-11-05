@@ -21,6 +21,7 @@ import {
   Users,
   Clock,
   AlertTriangle,
+  AlertCircle,
   Building,
   Flame,
   DollarSign,
@@ -40,6 +41,7 @@ import {
 } from 'lucide-react';
 import { parseTypedAnswer } from '../lib/apiService';
 import { useAuth } from '@/context/AuthContext';
+import { t, formatDurationHint, validateCustomRange } from '../lib/intake/i18n';
 
 /**
  * Filters active task nodes for intake screens.
@@ -191,8 +193,17 @@ export function initializeIntakeAnswers(rawDiagram, activeNodes) {
       existingRoles.push(n.data.resource);
     }
 
+    const defaultMin = n.data?.duration_min != null ? Number(n.data.duration_min) : SPEED_MAPPINGS[initialSpeed].duration_min;
+    const defaultMax = n.data?.duration_max != null ? Number(n.data.duration_max) : SPEED_MAPPINGS[initialSpeed].duration_max;
+    const defaultUnit = n.data?.duration_unit || SPEED_MAPPINGS[initialSpeed].duration_unit || 'minutes';
+
     steps[n.id] = {
-      speed: wrapValue(initialSpeed, isStatedDuration ? 'default' : 'default', !isStatedDuration),
+      speed: wrapValue(initialSpeed, isStatedDuration ? 'tap' : 'default', !isStatedDuration),
+      duration_min: defaultMin,
+      duration_max: defaultMax,
+      duration: defaultMin === defaultMax ? defaultMin : Math.round((defaultMin + defaultMax) / 2),
+      duration_unit: defaultUnit,
+      source: isStatedDuration ? 'bucket' : 'estimated',
       staffRoles: wrapValue(existingRoles, 'default', existingRoles.length === 0),
       kept: isKept || !isInferred,
     };
@@ -264,8 +275,39 @@ export function buildFinalAnswers(rawDiagram, answersState, activeNodes) {
     }
 
     const currentStep = answersState.steps?.[n.id];
+    const speedVal = currentStep?.speed?.value || DEFAULT_SPEED;
+    const isEstimated = Boolean(currentStep?.speed?.estimated || currentStep?.source === 'estimated');
+    const isCustom = speedVal === 'custom' || currentStep?.source === 'custom';
+
+    let min = currentStep?.duration_min;
+    let max = currentStep?.duration_max;
+    let unit = currentStep?.duration_unit || 'minutes';
+
+    if (min == null || max == null) {
+      const bucket = SPEED_MAPPINGS[speedVal] || SPEED_MAPPINGS[DEFAULT_SPEED];
+      min = bucket.duration_min;
+      max = bucket.duration_max;
+      unit = bucket.duration_unit;
+    }
+
+    const numMin = Number(min);
+    const numMax = Number(max);
+    let duration;
+    if (isCustom) {
+      duration = numMin === numMax ? numMin : (currentStep?.duration != null ? Number(currentStep.duration) : Math.round((numMin + numMax) / 2));
+    } else {
+      const bucket = SPEED_MAPPINGS[speedVal] || SPEED_MAPPINGS[DEFAULT_SPEED];
+      duration = bucket.duration;
+    }
+    const source = isEstimated ? 'estimated' : (isCustom ? 'custom' : 'bucket');
+
     finalSteps[n.id] = {
       speed: currentStep?.speed || wrapValue(DEFAULT_SPEED, 'default', true),
+      duration_min: numMin,
+      duration_max: numMax,
+      duration,
+      duration_unit: unit,
+      source,
       staffRoles: currentStep?.staffRoles || wrapValue([], 'default', true),
       kept: true,
     };
@@ -292,6 +334,7 @@ export default function IntakeScreens({
   onComplete,
   onBack,
   initialAnswers = null,
+  lang = 'en',
 }) {
   const auth = useAuth();
   const currencySymbol = auth?.user?.currency || 'Rs';
@@ -310,6 +353,9 @@ export default function IntakeScreens({
     if (initialAnswers) return initialAnswers;
     return initializeIntakeAnswers(rawDiagram, activeNodes);
   });
+
+  // Track which cards have custom duration editor opened
+  const [openCustomCards, setOpenCustomCards] = useState(() => new Set());
 
   // Local helper state for role/space creation
   const [customRoleInput, setCustomRoleInput] = useState('');
@@ -331,6 +377,21 @@ export default function IntakeScreens({
   // Current screen identifier (1..7)
   const currentScreenId = activeScreens[currentIndex] ?? null;
   const isLastScreen = currentIndex >= activeScreens.length - 1;
+
+  // Validation: Check if any card has invalid custom duration on Screen 2
+  const hasInvalidCustomDuration = useMemo(() => {
+    if (currentScreenId !== 2) return false;
+    return activeNodes.some((node) => {
+      const stepData = answers.steps?.[node.id];
+      const speedVal = stepData?.speed?.value;
+      const isOpen = speedVal === 'custom' || openCustomCards.has(node.id);
+      if (speedVal === 'custom' || isOpen) {
+        const err = validateCustomRange(stepData?.duration_min, stepData?.duration_max, lang);
+        return Boolean(err);
+      }
+      return false;
+    });
+  }, [currentScreenId, activeNodes, answers.steps, openCustomCards, lang]);
 
   // Reset typing state when switching screens
   React.useEffect(() => {
@@ -543,10 +604,16 @@ export default function IntakeScreens({
         case 2: {
           // Set all active tasks to normal speed marked estimated
           const updatedSteps = { ...next.steps };
+          const bucket = SPEED_MAPPINGS[DEFAULT_SPEED];
           activeNodes.forEach((n) => {
             updatedSteps[n.id] = {
               ...(updatedSteps[n.id] || {}),
               speed: wrapValue(DEFAULT_SPEED, 'tap', true),
+              duration_min: bucket.duration_min,
+              duration_max: bucket.duration_max,
+              duration: bucket.duration,
+              duration_unit: bucket.duration_unit,
+              source: 'estimated',
             };
           });
           next.steps = updatedSteps;
@@ -620,18 +687,109 @@ export default function IntakeScreens({
     setCustomRoleInput('');
   };
 
-  // --- Handlers for Screen 2: Speed per step ---
+  // --- Handlers for Screen 2: Speed per step & Custom Duration ---
   const handleSetSpeed = (nodeId, speed) => {
-    setAnswers((prev) => ({
-      ...prev,
-      steps: {
-        ...prev.steps,
-        [nodeId]: {
-          ...(prev.steps?.[nodeId] || {}),
-          speed: wrapValue(speed, 'tap', false),
+    const bucket = SPEED_MAPPINGS[speed] || SPEED_MAPPINGS.normal;
+    setAnswers((prev) => {
+      const current = prev.steps?.[nodeId] || {};
+      return {
+        ...prev,
+        steps: {
+          ...prev.steps,
+          [nodeId]: {
+            ...current,
+            speed: wrapValue(speed, 'tap', false),
+            duration_min: bucket.duration_min,
+            duration_max: bucket.duration_max,
+            duration: bucket.duration,
+            duration_unit: bucket.duration_unit || current.duration_unit || 'minutes',
+            source: 'bucket',
+          },
         },
-      },
-    }));
+      };
+    });
+  };
+
+  const handleSelectCustom = (nodeId) => {
+    setAnswers((prev) => {
+      const current = prev.steps?.[nodeId] || {};
+      const currentSpeed = current.speed?.value;
+      const bucket = SPEED_MAPPINGS[currentSpeed] || SPEED_MAPPINGS.normal;
+      const min = current.duration_min != null ? current.duration_min : bucket.duration_min;
+      const max = current.duration_max != null ? current.duration_max : bucket.duration_max;
+      const unit = current.duration_unit || bucket.duration_unit || 'minutes';
+      const numMin = Number(min);
+      const numMax = Number(max);
+
+      return {
+        ...prev,
+        steps: {
+          ...prev.steps,
+          [nodeId]: {
+            ...current,
+            speed: wrapValue('custom', 'typed', false),
+            duration_min: min,
+            duration_max: max,
+            duration: numMin === numMax ? numMin : Math.round((numMin + numMax) / 2),
+            duration_unit: unit,
+            source: 'custom',
+          },
+        },
+      };
+    });
+    setOpenCustomCards((prev) => new Set([...prev, nodeId]));
+  };
+
+  const handleCustomNumberChange = (nodeId, field, rawValue) => {
+    setAnswers((prev) => {
+      const current = prev.steps?.[nodeId] || {};
+      const currentMin = current.duration_min != null ? current.duration_min : 3;
+      const currentMax = current.duration_max != null ? current.duration_max : 8;
+      const newMin = field === 'min' ? rawValue : currentMin;
+      const newMax = field === 'max' ? rawValue : currentMax;
+      const unit = current.duration_unit || 'minutes';
+
+      const numMin = Number(newMin);
+      const numMax = Number(newMax);
+      const isFixed = !isNaN(numMin) && !isNaN(numMax) && numMin === numMax;
+      const durationVal = isFixed ? numMin : (!isNaN(numMin) && !isNaN(numMax) ? Math.round((numMin + numMax) / 2) : 0);
+
+      return {
+        ...prev,
+        steps: {
+          ...prev.steps,
+          [nodeId]: {
+            ...current,
+            speed: wrapValue('custom', 'typed', false),
+            duration_min: newMin === '' ? '' : (isNaN(numMin) ? newMin : numMin),
+            duration_max: newMax === '' ? '' : (isNaN(numMax) ? newMax : numMax),
+            duration: durationVal,
+            duration_unit: unit,
+            source: 'custom',
+          },
+        },
+      };
+    });
+    setOpenCustomCards((prev) => new Set([...prev, nodeId]));
+  };
+
+  const handleCustomUnitChange = (nodeId, newUnit) => {
+    setAnswers((prev) => {
+      const current = prev.steps?.[nodeId] || {};
+      return {
+        ...prev,
+        steps: {
+          ...prev.steps,
+          [nodeId]: {
+            ...current,
+            speed: wrapValue('custom', 'typed', false),
+            duration_unit: newUnit,
+            source: 'custom',
+          },
+        },
+      };
+    });
+    setOpenCustomCards((prev) => new Set([...prev, nodeId]));
   };
 
   // --- Handlers for Screen 3: Busyness ---
@@ -982,7 +1140,7 @@ export default function IntakeScreens({
         )}
 
         {/* ========================================================================= */}
-        {/* SCREEN 2: SPEED PER STEP */}
+        {/* SCREEN 2: SPEED PER STEP & CUSTOM DURATION */}
         {/* ========================================================================= */}
         {currentScreenId === 2 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -990,26 +1148,40 @@ export default function IntakeScreens({
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
                 <Clock size={16} color="#7c3aed" />
                 <h3 style={{ fontSize: 13.5, fontWeight: 700, color: '#111827', margin: 0 }}>
-                  How fast is each step?
+                  {t('howFastIsEachStep', lang)}
                 </h3>
               </div>
               <p style={{ fontSize: 11.5, color: '#6b7280', margin: 0, lineHeight: 1.4 }}>
-                Choose the typical speed taken to perform each activity.
+                {t('howFastHelp', lang)}
               </p>
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {activeNodes.map((node, idx) => {
                 const nodeLabel = node.data?.label || node.label || node.id;
-                const currentSpeed =
-                  answers.steps?.[node.id]?.speed?.value || DEFAULT_SPEED;
+                const stepData = answers.steps?.[node.id];
+                const currentSpeed = stepData?.speed?.value || DEFAULT_SPEED;
+                const isEstimated = Boolean(stepData?.speed?.estimated || stepData?.source === 'estimated');
+                const isCustom = currentSpeed === 'custom';
+                const isEditorOpen = isCustom || openCustomCards.has(node.id);
+
+                const minVal = stepData?.duration_min !== undefined ? stepData.duration_min : (SPEED_MAPPINGS[currentSpeed]?.duration_min ?? 3);
+                const maxVal = stepData?.duration_max !== undefined ? stepData.duration_max : (SPEED_MAPPINGS[currentSpeed]?.duration_max ?? 8);
+                const unitVal = stepData?.duration_unit || SPEED_MAPPINGS[currentSpeed]?.duration_unit || 'minutes';
+
+                const customError = isEditorOpen ? validateCustomRange(minVal, maxVal, lang) : null;
+                const unitDisplay = unitVal === 'seconds' ? t('unitDropdownSec', lang) : (unitVal === 'hours' ? t('unitDropdownHours', lang) : t('unitDropdownMin', lang));
+
+                const customSub = isCustom && minVal && maxVal && !customError
+                  ? (Number(minVal) === Number(maxVal) ? `${minVal} ${unitDisplay}` : `${minVal}–${maxVal} ${unitDisplay}`)
+                  : t('customSub', lang);
 
                 return (
                   <div
                     key={node.id}
                     style={{
                       background: '#fff',
-                      border: '1px solid #e5e7eb',
+                      border: customError ? '1.5px solid #fecaca' : '1px solid #e5e7eb',
                       borderRadius: 10,
                       padding: '10px 12px',
                       display: 'flex',
@@ -1017,44 +1189,82 @@ export default function IntakeScreens({
                       gap: 8,
                     }}
                   >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span
-                        style={{
-                          width: 18,
-                          height: 18,
-                          borderRadius: '50%',
-                          background: '#ede9fe',
-                          color: '#6d28d9',
-                          fontSize: 10,
-                          fontWeight: 700,
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                        }}
-                      >
-                        {idx + 1}
-                      </span>
-                      <span style={{ fontSize: 12.5, fontWeight: 600, color: '#1f2937' }}>
-                        {nodeLabel}
-                      </span>
+                    {/* Header: Number, Step Label, and Estimated Tag if applicable */}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                        <span
+                          style={{
+                            width: 18,
+                            height: 18,
+                            borderRadius: '50%',
+                            background: '#ede9fe',
+                            color: '#6d28d9',
+                            fontSize: 10,
+                            fontWeight: 700,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            flexShrink: 0,
+                          }}
+                        >
+                          {idx + 1}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: 12.5,
+                            fontWeight: 600,
+                            color: '#1f2937',
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}
+                          title={nodeLabel}
+                        >
+                          {nodeLabel}
+                        </span>
+                      </div>
+
+                      {isEstimated && (
+                        <span
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 600,
+                            color: '#6b7280',
+                            background: '#f3f4f6',
+                            border: '1px solid #e5e7eb',
+                            padding: '1px 6px',
+                            borderRadius: 4,
+                            flexShrink: 0,
+                          }}
+                        >
+                          {t('estimated', lang)}
+                        </span>
+                      )}
                     </div>
 
-                    {/* Speed 3-Tap Buttons */}
-                    <div style={{ display: 'flex', gap: 6 }}>
+                    {/* Speed 4-Tap Buttons */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6 }}>
                       {[
-                        { key: 'quick', label: 'Quick', sub: '1–2 min' },
-                        { key: 'normal', label: 'Normal', sub: '3–8 min' },
-                        { key: 'slow', label: 'Slow', sub: '10–25 min' },
+                        { key: 'quick', label: t('quick', lang), sub: t('quickSub', lang) },
+                        { key: 'normal', label: t('normal', lang), sub: t('normalSub', lang) },
+                        { key: 'slow', label: t('slow', lang), sub: t('slowSub', lang) },
+                        { key: 'custom', label: t('custom', lang), sub: customSub },
                       ].map((opt) => {
                         const isSelected = currentSpeed === opt.key;
                         return (
                           <button
                             key={opt.key}
                             type="button"
-                            onClick={() => handleSetSpeed(node.id, opt.key)}
+                            onClick={() => {
+                              if (opt.key === 'custom') {
+                                handleSelectCustom(node.id);
+                              } else {
+                                handleSetSpeed(node.id, opt.key);
+                              }
+                            }}
                             style={{
-                              flex: 1,
                               minHeight: 48,
+                              padding: '4px 2px',
                               borderRadius: 8,
                               border: isSelected
                                 ? '1.5px solid #7c3aed'
@@ -1076,9 +1286,28 @@ export default function IntakeScreens({
                               {opt.label}
                             </span>
                             <span
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (opt.key === 'custom') {
+                                  handleSelectCustom(node.id);
+                                } else {
+                                  handleSetSpeed(node.id, opt.key);
+                                  setOpenCustomCards((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(node.id) && currentSpeed === opt.key) {
+                                      next.delete(node.id);
+                                    } else {
+                                      next.add(node.id);
+                                    }
+                                    return next;
+                                  });
+                                }
+                              }}
+                              title={opt.key !== 'custom' ? (lang === 'ur-roman' ? 'Waqt customize karein' : 'Click to customize range') : ''}
                               style={{
                                 fontSize: 9.5,
                                 color: isSelected ? 'rgba(255,255,255,0.85)' : '#6b7280',
+                                textDecoration: opt.key !== 'custom' ? 'underline dotted' : 'none',
                               }}
                             >
                               {opt.sub}
@@ -1087,6 +1316,106 @@ export default function IntakeScreens({
                         );
                       })}
                     </div>
+
+                    {/* Inline Custom Duration Editor (Requirement 2 & 3) */}
+                    {isEditorOpen && (
+                      <div
+                        style={{
+                          marginTop: 4,
+                          padding: '8px 10px',
+                          background: '#faf5ff',
+                          border: customError ? '1.5px solid #fecaca' : '1px solid #ddd6fe',
+                          borderRadius: 8,
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 6,
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                          {/* Min */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <span style={{ fontSize: 11, fontWeight: 600, color: '#5b21b6' }}>
+                              {t('minLabel', lang)}:
+                            </span>
+                            <input
+                              type="number"
+                              min="1"
+                              value={minVal !== undefined && minVal !== null ? minVal : ''}
+                              onChange={(e) => handleCustomNumberChange(node.id, 'min', e.target.value)}
+                              style={{
+                                width: 54,
+                                padding: '3px 6px',
+                                fontSize: 12,
+                                fontWeight: 600,
+                                borderRadius: 6,
+                                border: '1px solid #c4b5fd',
+                                background: '#fff',
+                                textAlign: 'center',
+                                outline: 'none',
+                              }}
+                            />
+                          </div>
+
+                          {/* Max */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <span style={{ fontSize: 11, fontWeight: 600, color: '#5b21b6' }}>
+                              {t('maxLabel', lang)}:
+                            </span>
+                            <input
+                              type="number"
+                              min="1"
+                              value={maxVal !== undefined && maxVal !== null ? maxVal : ''}
+                              onChange={(e) => handleCustomNumberChange(node.id, 'max', e.target.value)}
+                              style={{
+                                width: 54,
+                                padding: '3px 6px',
+                                fontSize: 12,
+                                fontWeight: 600,
+                                borderRadius: 6,
+                                border: '1px solid #c4b5fd',
+                                background: '#fff',
+                                textAlign: 'center',
+                                outline: 'none',
+                              }}
+                            />
+                          </div>
+
+                          {/* Unit Dropdown */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <select
+                              value={unitVal || 'minutes'}
+                              onChange={(e) => handleCustomUnitChange(node.id, e.target.value)}
+                              style={{
+                                padding: '3px 8px',
+                                fontSize: 11.5,
+                                fontWeight: 600,
+                                borderRadius: 6,
+                                border: '1px solid #c4b5fd',
+                                background: '#fff',
+                                color: '#4c1d95',
+                                outline: 'none',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              <option value="seconds">{t('unitDropdownSec', lang)}</option>
+                              <option value="minutes">{t('unitDropdownMin', lang)}</option>
+                              <option value="hours">{t('unitDropdownHours', lang)}</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        {/* Validation message or friendly hint */}
+                        {customError ? (
+                          <div style={{ color: '#b91c1c', fontSize: 11, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <AlertCircle size={12} /> {customError}
+                          </div>
+                        ) : (
+                          <div style={{ color: '#6d28d9', fontSize: 11, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <Clock size={12} /> {formatDurationHint(minVal, maxVal, unitVal, lang)}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -1666,9 +1995,10 @@ export default function IntakeScreens({
         )}
 
         {/* ========================================================================= */}
-        {/* MODULE I4: "TYPE INSTEAD" SECTION (Available on all screens) */}
+        {/* MODULE I4: "TYPE INSTEAD" SECTION (Available on all screens except Screen 2) */}
         {/* ========================================================================= */}
-        <div style={{ marginTop: 6, borderTop: '1px dashed #ede9fe', paddingTop: 8 }}>
+        {currentScreenId !== 2 && (
+          <div style={{ marginTop: 6, borderTop: '1px dashed #ede9fe', paddingTop: 8 }}>
           {!isTyping ? (
             <button
               type="button"
@@ -1844,6 +2174,7 @@ export default function IntakeScreens({
             </div>
           )}
         </div>
+        )}
       </div>
 
       {/* Bottom Sticky Action Bar */}
@@ -1879,37 +2210,44 @@ export default function IntakeScreens({
               gap: 6,
             }}
           >
-            <HelpCircle size={14} /> Not sure
+            <HelpCircle size={14} /> {t('notSure', lang)}
           </button>
 
           {/* Continue / Finish Button */}
           <button
             type="button"
-            onClick={() => handleNext()}
+            disabled={hasInvalidCustomDuration}
+            onClick={() => {
+              if (!hasInvalidCustomDuration) handleNext();
+            }}
             style={{
               flex: 1.3,
               minHeight: 46,
               borderRadius: 8,
               border: 'none',
-              background: 'linear-gradient(135deg, #4f46e5, #7c3aed)',
-              color: '#fff',
+              background: hasInvalidCustomDuration
+                ? '#e5e7eb'
+                : 'linear-gradient(135deg, #4f46e5, #7c3aed)',
+              color: hasInvalidCustomDuration ? '#9ca3af' : '#fff',
               fontSize: 12.5,
               fontWeight: 600,
-              cursor: 'pointer',
+              cursor: hasInvalidCustomDuration ? 'not-allowed' : 'pointer',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               gap: 6,
-              boxShadow: '0 2px 6px rgba(79,70,229,0.25)',
+              boxShadow: hasInvalidCustomDuration ? 'none' : '0 2px 6px rgba(79,70,229,0.25)',
+              opacity: hasInvalidCustomDuration ? 0.7 : 1,
             }}
+            title={hasInvalidCustomDuration ? (lang === 'ur-roman' ? 'Pehle ghalati theek karein' : 'Please fix the errors above before continuing') : ''}
           >
             {isLastScreen ? (
               <>
-                <CheckCircle size={14} /> Finish & Apply
+                <CheckCircle size={14} /> {t('finishAndApply', lang)}
               </>
             ) : (
               <>
-                Continue <ArrowRight size={14} />
+                {t('continueBtn', lang)} <ArrowRight size={14} />
               </>
             )}
           </button>

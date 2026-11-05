@@ -133,27 +133,84 @@ export function applyIntakeToRawDiagram(rawDiagram, answers = {}) {
       return;
     }
 
-    // Apply speed mapping
+    // Apply speed mapping / custom duration (Module I3 & Requirement 8)
     const speedEntry = unwrapValue(stepAnswer?.speed, DEFAULT_SPEED);
-    let speedVal = speedEntry.value;
-    if (!SPEED_MAPPINGS[speedVal]) {
-      speedVal = DEFAULT_SPEED;
-      speedEntry.estimated = true;
-    }
+    const speedVal = speedEntry.value;
+    const isCustom =
+      speedVal === 'custom' ||
+      stepAnswer?.source === 'custom' ||
+      (stepAnswer?.duration_min != null && stepAnswer?.duration_max != null && !SPEED_MAPPINGS[speedVal]);
 
-    const speedMap = SPEED_MAPPINGS[speedVal];
-    node.data.duration_min = speedMap.duration_min;
-    node.data.duration = speedMap.duration;
-    node.data.duration_max = speedMap.duration_max;
-    node.data.duration_unit = speedMap.duration_unit;
-    node.data.duration_source = speedEntry.estimated ? 'assumed' : 'stated';
+    if (isCustom) {
+      const min = Number(stepAnswer?.duration_min ?? 3);
+      const max = Number(stepAnswer?.duration_max ?? Math.max(min, 8));
+      const isFixed = min === max;
+      const duration = isFixed ? min : Math.round((min + max) / 2);
+      const unit = stepAnswer?.duration_unit || 'minutes';
+      const isEstimated = Boolean(speedEntry.estimated || stepAnswer?.source === 'estimated');
+      const source = isEstimated ? 'estimated' : 'custom';
 
-    if (speedEntry.estimated) {
-      const stepLabel = node.data.label || node.label || node.id;
-      assumptions.push(new Assumption(
-        `Duration for step "${stepLabel}" is estimated as ${speedVal} (${speedMap.duration_min}-${speedMap.duration_max} min, avg ${speedMap.duration} min)`,
-        { field: `steps.${node.id}.speed`, nodeId: node.id, estimated: true, value: speedVal }
-      ));
+      node.data.duration_min = min;
+      node.data.duration_max = max;
+      node.data.duration = duration;
+      node.data.duration_unit = unit;
+      node.data.duration_source = isEstimated ? 'assumed' : 'stated';
+      node.data.source = source;
+      node.data.estimated = isEstimated;
+
+      node.duration_min = min;
+      node.duration_max = max;
+      node.duration = duration;
+      node.duration_unit = unit;
+      node.duration_source = node.data.duration_source;
+      node.source = source;
+      node.estimated = isEstimated;
+
+      if (isEstimated) {
+        const stepLabel = node.data.label || node.label || node.id;
+        assumptions.push(new Assumption(
+          `Duration for step "${stepLabel}" is estimated as custom (${min}-${max} ${unit}, avg ${duration} ${unit})`,
+          { field: `steps.${node.id}.speed`, nodeId: node.id, estimated: true, value: 'custom' }
+        ));
+      }
+    } else {
+      let bucketKey = speedVal;
+      let isEstimated = Boolean(speedEntry.estimated || stepAnswer?.source === 'estimated');
+      if (!SPEED_MAPPINGS[bucketKey]) {
+        bucketKey = DEFAULT_SPEED;
+        isEstimated = true;
+      }
+
+      const speedMap = SPEED_MAPPINGS[bucketKey];
+      const min = stepAnswer?.duration_min != null ? Number(stepAnswer.duration_min) : speedMap.duration_min;
+      const max = stepAnswer?.duration_max != null ? Number(stepAnswer.duration_max) : speedMap.duration_max;
+      const unit = stepAnswer?.duration_unit || speedMap.duration_unit;
+      const duration = speedMap.duration;
+      const source = isEstimated ? 'estimated' : 'bucket';
+
+      node.data.duration_min = min;
+      node.data.duration_max = max;
+      node.data.duration = duration;
+      node.data.duration_unit = unit;
+      node.data.duration_source = isEstimated ? 'assumed' : 'stated';
+      node.data.source = source;
+      node.data.estimated = isEstimated;
+
+      node.duration_min = min;
+      node.duration_max = max;
+      node.duration = duration;
+      node.duration_unit = unit;
+      node.duration_source = node.data.duration_source;
+      node.source = source;
+      node.estimated = isEstimated;
+
+      if (isEstimated) {
+        const stepLabel = node.data.label || node.label || node.id;
+        assumptions.push(new Assumption(
+          `Duration for step "${stepLabel}" is estimated as ${bucketKey} (${speedMap.duration_min}-${speedMap.duration_max} min, avg ${speedMap.duration} min)`,
+          { field: `steps.${node.id}.speed`, nodeId: node.id, estimated: true, value: bucketKey }
+        ));
+      }
     }
 
     // Apply staff roles
