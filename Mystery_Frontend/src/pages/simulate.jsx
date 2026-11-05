@@ -11,6 +11,8 @@ import { NW, NH, elCenter } from '../components/model/bpmnGeometry';
 import DiagramCanvas from '../components/model/DiagramCanvas';
 import { validateDurationRules, normalizeRanges } from '../lib/durationRules';
 import { useAnalystView, Hint, formatPlainLanguage, FriendlyErrorView, getLabel } from '../lib/labels';
+import { useLanguage } from '@/context/LanguageContext';
+import { t } from '../lib/intake/i18n';
 
 /* ═══════════════════════════════════════════════════════════════
    CONSTANTS & DEFAULTS
@@ -569,6 +571,11 @@ const selectStyle = {
 export default function SimulatePage() {
   const navigate = useNavigate();
   const location = useLocation();
+  let lang = 'en';
+  try {
+    const lCtx = useLanguage();
+    if (lCtx?.preferredLanguage) lang = lCtx.preferredLanguage;
+  } catch {}
 
   const [simulationMode,   setSimulationMode]   = useState('quick');
   const [isSimulating,     setIsSimulating]     = useState(false);
@@ -1410,12 +1417,12 @@ export default function SimulatePage() {
                   </div>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 2 }}>
-                      {formatPlainLanguage(err.isDurationError ? err.summary : err.title, { isAnalystView })}
+                      {formatPlainLanguage(err.isDurationError ? err.summary : err.title, { isAnalystView, lang })}
                     </div>
                     {err.isResourceError ? (
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 4 }}>
                         <span style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.4 }}>
-                          {formatPlainLanguage(err.message, { isAnalystView })}
+                          {formatPlainLanguage(err.message, { isAnalystView, lang })}
                         </span>
                         <button
                           type="button"
@@ -1449,7 +1456,7 @@ export default function SimulatePage() {
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
                         {err.items.map((item, idx) => (
                           <div key={idx} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 12, color: '#6b7280' }}>
-                            <span>{formatPlainLanguage(item.message, { isAnalystView })}</span>
+                            <span>{formatPlainLanguage(item.message, { isAnalystView, lang })}</span>
                             <button
                               type="button"
                               onClick={() => {
@@ -1478,7 +1485,7 @@ export default function SimulatePage() {
                       </div>
                     ) : (
                       <div style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.4 }}>
-                        {formatPlainLanguage(err.message, { isAnalystView })}
+                        {formatPlainLanguage(err.message, { isAnalystView, lang })}
                       </div>
                     )}
                   </div>
@@ -1505,6 +1512,7 @@ export default function SimulatePage() {
               <FriendlyErrorView
                 error={backendError}
                 onRetry={handleRun}
+                lang={lang}
               />
               <button
                 onClick={() => setBackendError(null)}
@@ -1519,7 +1527,7 @@ export default function SimulatePage() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, borderRadius: 8, border: '1px solid #6ee7b7', background: '#ecfdf5', padding: '10px 14px' }}>
               <CheckCircle2 size={14} style={{ color: '#10b981', flexShrink: 0 }}/>
               <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: '#065f46' }}>
-                {isAnalystView ? 'Simulation complete — starting animation…' : 'Test run complete — starting playback…'}
+                {isAnalystView ? t('sim_complete_analyst', lang) : t('sim_complete_playback', lang)}
               </p>
             </div>
           )}
@@ -2206,7 +2214,7 @@ export default function SimulatePage() {
                   <button
                     type="button"
                     onClick={handleZoomOut}
-                    title="Zoom Out"
+                    title={t('toolbar_zoomOut', lang)}
                     style={{
                       width: 24, height: 24, borderRadius: 6, border: 'none',
                       background: 'transparent', cursor: 'pointer', display: 'flex',
@@ -2224,7 +2232,7 @@ export default function SimulatePage() {
                   <button
                     type="button"
                     onClick={handleZoomIn}
-                    title="Zoom In"
+                    title={t('toolbar_zoomIn', lang)}
                     style={{
                       width: 24, height: 24, borderRadius: 6, border: 'none',
                       background: 'transparent', cursor: 'pointer', display: 'flex',
@@ -2240,7 +2248,7 @@ export default function SimulatePage() {
                   <button
                     type="button"
                     onClick={handleZoomAuto}
-                    title="Auto Fit Zoom"
+                    title={t('toolbar_autoFit', lang)}
                     style={{
                       padding: '0 6px', height: 24, borderRadius: 6, border: 'none',
                       background: 'transparent', cursor: 'pointer', display: 'flex',
@@ -2256,7 +2264,7 @@ export default function SimulatePage() {
                   <button
                     type="button"
                     onClick={handleZoom100}
-                    title="Zoom to 100%"
+                    title={t('toolbar_zoom100', lang)}
                     style={{
                       padding: '0 6px', height: 24, borderRadius: 6, border: 'none',
                       background: 'transparent', cursor: 'pointer', display: 'flex',
@@ -2272,7 +2280,7 @@ export default function SimulatePage() {
                   <button
                     type="button"
                     onClick={handleZoomFit}
-                    title="Fit to Screen"
+                    title={t('toolbar_fitScreen', lang)}
                     style={{
                       padding: '0 6px', height: 24, borderRadius: 6, border: 'none',
                       background: 'transparent', cursor: 'pointer', display: 'flex',
@@ -2350,7 +2358,7 @@ export default function SimulatePage() {
                     : (isAnalystView ? 'Task Setup' : 'Step Setup')}
                 </h3>
                 <p style={{ margin: '3px 0 0', fontSize: 11, color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 180 }}>
-                  {formatPlainLanguage(selectedTask.label || selectedTask.id, { isAnalystView })}
+                  {formatPlainLanguage(selectedTask.label || selectedTask.id, { isAnalystView, lang })}
                 </p>
               </div>
               <button onClick={() => { setSelectedTask(null); setDetailsOpen(false); }} style={{ padding: 6, background: 'transparent', border: 'none', cursor: 'pointer', borderRadius: 8 }}>
@@ -2379,7 +2387,7 @@ export default function SimulatePage() {
                       ) : (
                         connections.filter(c => (c.from ?? c.fromId) === selectedTask.id).map(conn => {
                           const targetNode = modelElements.find(n => n.id === (conn.to ?? conn.toId));
-                          const targetName = formatPlainLanguage(targetNode?.label || targetNode?.id || 'Unknown', { isAnalystView });
+                          const targetName = formatPlainLanguage(targetNode?.label || targetNode?.id || 'Unknown', { isAnalystView, lang });
                           return (
                             <div key={conn.id || `${conn.from ?? conn.fromId}-${conn.to ?? conn.toId}`} style={{ marginBottom: 12 }}>
                               <label style={{ fontSize: 11, fontWeight: 600, color: '#4b5563', marginBottom: 6, display: 'flex', justifyContent: 'space-between' }}>
@@ -2468,7 +2476,7 @@ export default function SimulatePage() {
                         type="button"
                         onClick={() => setEditingResource(resource)}
                         style={{ padding: 4, background: 'transparent', border: 'none', color: '#9ca3af', display: 'flex', alignItems: 'center', opacity: assignment.enabled ? 1 : 0.5, cursor: assignment.enabled ? 'pointer' : 'not-allowed' }}
-                        title="Edit Resource Properties"
+                        title={t('toolbar_editResourceProps', lang)}
                         disabled={!assignment.enabled}
                       >
                         <Settings size={14} />

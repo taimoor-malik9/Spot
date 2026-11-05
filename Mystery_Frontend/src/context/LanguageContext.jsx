@@ -2,8 +2,9 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 import { useAuth } from './AuthContext';
 import { updateProfile } from '../lib/apiService';
 import { t } from '../lib/intake/i18n';
+import { LanguageContext } from './LanguageContextDef.js';
 
-export const LanguageContext = createContext(null);
+export { LanguageContext };
 
 export const SUPPORTED_LANGUAGES = [
   { code: 'en', label: 'English', short: 'EN', dir: 'ltr' },

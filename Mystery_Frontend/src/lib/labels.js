@@ -1,14 +1,32 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useContext } from 'react';
+import { t } from './intake/i18n.js';
+import { LanguageContext } from '../context/LanguageContextDef.js';
 
 /**
  * labels.js - Plain-language dictionary and helpers for owner-facing views.
  *
  * Translates technical simulation and modeling jargon into plain business language.
+ * Localized across English (en), Roman Urdu (ur-roman), and Urdu script (ur).
  * Provides the <Hint> component for inline tooltips and the shared formatter for
  * replacing internal node/string IDs with user-facing labels.
  */
 
-export const LABELS = {
+function getActiveLanguage(explicitLang) {
+  if (explicitLang && ['en', 'ur-roman', 'ur'].includes(explicitLang)) {
+    return explicitLang;
+  }
+  try {
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('spot_preferredLanguage');
+      if (stored && ['en', 'ur-roman', 'ur'].includes(stored)) {
+        return stored;
+      }
+    }
+  } catch {}
+  return 'en';
+}
+
+const LABELS_FALLBACK = {
   cycle_time: {
     plain: 'Time from arrival to leaving',
     technical: 'Cycle Time',
@@ -94,11 +112,6 @@ export const LABELS = {
     technical: 'Pools',
     hint: 'Boundaries showing your business or outside partners such as suppliers or customers.',
   },
-  bpmn: {
-    plain: 'Process diagram',
-    technical: 'BPMN Diagram',
-    hint: 'Standard visual representation of steps, choices, and responsibilities.',
-  },
   replication: {
     plain: 'Repeated run',
     technical: 'Replication',
@@ -109,19 +122,14 @@ export const LABELS = {
     technical: 'Replications',
     hint: 'Repeating test runs multiple times to ensure reliable results.',
   },
-  seed: {
-    plain: 'Random variation key',
-    technical: 'Random Seed',
-    hint: 'A number that controls random arrival patterns so you can reproduce exact test conditions.',
-  },
-  iteration: {
-    plain: 'Test step',
-    technical: 'Iteration',
+  case: {
+    plain: 'Customer visit / Job',
+    technical: 'Instance (Token)',
     hint: 'A single complete run of an event or calculation during a test.',
   },
-  iterations: {
-    plain: 'Test steps',
-    technical: 'Iterations',
+  cases: {
+    plain: 'Customer visits / Jobs',
+    technical: 'Instances (Tokens)',
     hint: 'Complete runs of events or calculations during a test.',
   },
   arrival_rate: {
@@ -129,233 +137,156 @@ export const LABELS = {
     technical: 'Arrival Rate',
     hint: 'How often new customers or jobs arrive at your business.',
   },
+  arrival_rates: {
+    plain: 'Arrival frequency',
+    technical: 'Arrival Rates',
+    hint: 'How often new customers or jobs arrive at your business across different times.',
+  },
+  monte_carlo: {
+    plain: 'Reality-tested simulation',
+    technical: 'Monte Carlo Simulation',
+    hint: 'A method that runs your process with realistic real-world variation and random arrivals to show true performance.',
+  },
 };
 
-/**
- * Plain-language tooltips for the Elements Palette items
- */
-export const PALETTE_TOOLTIPS = {
-  // Events
-  'start-event': 'Start of the process: where customer or work arrives',
-  'message-start-event': 'External trigger: begins when a message, order, or email arrives',
-  'timer-start-event': 'Scheduled start: begins automatically at a specific time or day',
-  'conditional-start-event': 'Rule start: begins when a business condition is satisfied',
-  'signal-start-event': 'Broadcast start: begins when a system signal is received',
-  'intermediate-event': 'Milestone: an event that occurs midway through the process',
-  'message-intermediate-catch': 'Wait for message: pauses until external information arrives',
-  'message-intermediate-throw': 'Send message: notifies an outside party or system',
-  'timer-intermediate-catch': 'Delay / Wait: pauses for a fixed duration before continuing',
-  'conditional-intermediate-catch': 'Wait for condition: pauses until a rule is met',
-  'signal-intermediate-catch': 'Wait for signal: pauses until a broadcast is received',
-  'signal-intermediate-throw': 'Send signal: broadcasts an update across the process',
-  'end-event': 'End of the process: customer leaves or work is fully complete',
-  'message-end-event': 'End with message: finishes and sends final notification',
-  'error-end-event': 'End with problem: finishes due to an unrecoverable error',
-  'escalation-end-event': 'End with escalation: finishes by passing to higher management',
-  'signal-end-event': 'End with signal: finishes and alerts related systems',
-  'terminate-end-event': 'Immediate stop: stops all active parallel tasks immediately',
+export function getLabelEntry(key, lang = 'en') {
+  const normKey = String(key || '').toLowerCase();
+  const plain = t(`label_${normKey}_plain`, lang);
+  const technical = t(`label_${normKey}_technical`, lang);
+  const hint = t(`label_${normKey}_hint`, lang);
 
-  // Activities
-  'task': 'Task: a unit of work performed by staff or system',
-  'user-task': 'Staff task: work done manually by a team member',
-  'service-task': 'Automated step: work done automatically by software',
-  'script-task': 'Calculation / Script: automated data or formula step',
-  'manual-task': 'Physical task: work done by hand without software',
-  'send-task': 'Dispatch task: sends out an invoice, package, or notice',
-  'receive-task': 'Intake task: waits to accept a deliverable or request',
-  'business-rule-task': 'Policy check: validates against business rules',
-  'subprocess': 'Sub-workflow: a detailed multi-step process inside this step',
-  'call-activity': 'Reusable process: calls another standard business process',
-
-  // Gateways
-  'exclusive-gateway': 'Decision point: the process goes one way or another based on a choice',
-  'parallel-gateway': 'Split or join: tasks happen at the same time in parallel',
-  'inclusive-gateway': 'Flexible choice: one or more paths can be taken simultaneously',
-  'complex-gateway': 'Advanced decision: multiple conditions determine routing',
-  'event-based-gateway': 'Event choice: whichever customer response happens first decides the path',
-
-  // Flows
-  'sequence-flow': 'Next step arrow: directs the flow from one activity to the next',
-  'message-flow': 'Communication flow: exchanges messages across organizations',
-  'association': 'Connection: attaches notes or documents to steps',
-
-  // Swimlanes
-  'pool': 'Organization boundary: represents your entire company or an external party',
-  'lane': 'Role / Department: assigns steps to a specific person or team',
-
-  // Artifacts
-  'data-object': 'Document / Record: paperwork or digital file used in a step',
-  'data-store': 'Database / Storage: where files or records are saved',
-  'document': 'Paper or electronic form: paperwork filled or viewed',
-  'annotation': 'Note: explanatory comment explaining a step',
-  'group': 'Visual group: highlights related steps together',
-  'input': 'Input item: item required to start a step',
-  'output': 'Output item: item produced after a step finishes',
-};
-
-/**
- * Returns readable default name for a newly created process: "New process, <date>"
- */
-export function getDefaultProcessTitle() {
-  const dateStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  return `New process, ${dateStr}`;
-}
-
-/**
- * Reads Analyst View preference from localStorage per user
- */
-export function getAnalystView(userId) {
-  if (typeof window === 'undefined') return false;
-  try {
-    const key = userId ? `spot:analyst_view:${userId}` : 'spot:analyst_view';
-    const val = localStorage.getItem(key);
-    if (val !== null) return val === 'true';
-    return localStorage.getItem('spot:analyst_view') === 'true';
-  } catch {
-    return false;
+  if (plain && !plain.startsWith('⚠')) {
+    return { plain, technical, hint };
   }
+  if (LABELS_FALLBACK[normKey]) {
+    return LABELS_FALLBACK[normKey];
+  }
+  return { plain: key, technical: key, hint: '' };
 }
 
-/**
- * Stores Analyst View preference in localStorage per user and dispatches event
- */
-export function setAnalystView(value, userId) {
-  if (typeof window === 'undefined') return;
-  try {
-    const str = value ? 'true' : 'false';
-    if (userId) {
-      localStorage.setItem(`spot:analyst_view:${userId}`, str);
+export const LABELS = new Proxy(LABELS_FALLBACK, {
+  get(target, prop) {
+    if (typeof prop !== 'string') return undefined;
+    const lang = getActiveLanguage();
+    const entry = getLabelEntry(prop, lang);
+    return entry || target[prop];
+  }
+});
+
+const PALETTE_TOOLTIPS_FALLBACK = {
+  'task': 'Step: a piece of work done by a person or system',
+  'user-task': 'Staff Step: work done by a human team member',
+  'service-task': 'Automated Step: work completed automatically by software or equipment',
+  'start-event': 'Starting Point: where the customer arrives or the request begins',
+  'end-event': 'Finish Point: where work completes or the customer leaves',
+  'intermediate-event': 'Milestone: an event that occurs midway through the process',
+  'timer-intermediate-catch': 'Delay / Wait: pauses for a fixed duration before continuing',
+  'gateway': 'Decision Point: splits the path into options or recombines them',
+  'exclusive-gateway': 'Either / Or Choice: only one of the outgoing paths is taken',
+  'parallel-gateway': 'All at Once: all outgoing paths happen at the same time',
+  'inclusive-gateway': 'One or More: any combination of outgoing paths can be taken',
+  'data-object': 'Document / Info: an invoice, form, or document used during a step',
+  'data-store': 'Database / Records: stored customer, inventory, or financial data',
+  'pool': 'Organization boundary: represents your entire company or an external party',
+  'lane': 'Role lane: partitions a department by job title (e.g. Cashier, Chef)',
+  'group': 'Visual Group: highlights related steps without changing the flow',
+  'text-annotation': 'Note: an explanatory note attached to any step',
+};
+
+export function getPaletteTooltip(id, lang = 'en') {
+  const normKey = 'palette_' + String(id || '').replace(/-/g, '_');
+  const text = t(normKey, lang);
+  if (text && !text.startsWith('⚠')) return text;
+  return PALETTE_TOOLTIPS_FALLBACK[id] || '';
+}
+
+export const PALETTE_TOOLTIPS = new Proxy(PALETTE_TOOLTIPS_FALLBACK, {
+  get(target, prop) {
+    if (typeof prop !== 'string') return undefined;
+    const lang = getActiveLanguage();
+    const text = getPaletteTooltip(prop, lang);
+    return text || target[prop];
+  }
+});
+
+export function getDefaultProcessTitle(lang) {
+  const effectiveLang = getActiveLanguage(lang);
+  const now = new Date();
+  const dateStr = now.toLocaleDateString(effectiveLang === 'ur' ? 'ur-PK' : 'en-GB', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+  return t('newProcessDefaultTitle', effectiveLang, dateStr);
+}
+
+export function useAnalystView() {
+  const [isAnalystView, setIsAnalystView] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      const val = localStorage.getItem('spot:analyst_mode');
+      if (val !== null) return val === 'true';
+      return localStorage.getItem('spot:analyst_view') === 'true';
+    } catch {
+      return false;
     }
-    localStorage.setItem('spot:analyst_view', str);
-    window.dispatchEvent(new CustomEvent('spot:analyst_view_change', { detail: { isAnalystView: !!value } }));
-  } catch {}
-}
+  });
 
-/**
- * React hook to read and toggle Analyst View
- */
-export function useAnalystView(userId) {
-  const [isAnalystView, setIsAnalystViewState] = useState(() => getAnalystView(userId));
-
-  useEffect(() => {
-    setIsAnalystViewState(getAnalystView(userId));
-    const handleStorage = () => setIsAnalystViewState(getAnalystView(userId));
-    window.addEventListener('storage', handleStorage);
-    window.addEventListener('spot:analyst_view_change', handleStorage);
-    return () => {
-      window.removeEventListener('storage', handleStorage);
-      window.removeEventListener('spot:analyst_view_change', handleStorage);
-    };
-  }, [userId]);
-
-  const toggle = useCallback((val) => {
-    setIsAnalystViewState((prev) => {
-      const next = typeof val === 'boolean' ? val : !prev;
-      setAnalystView(next, userId);
+  const toggle = useCallback(() => {
+    setIsAnalystView((prev) => {
+      const next = !prev;
+      if (typeof window === 'undefined') return next;
+      try {
+        localStorage.setItem('spot:analyst_mode', String(next));
+        localStorage.setItem('spot:analyst_view', String(next));
+        window.dispatchEvent(
+          new CustomEvent('spot:analyst_mode_change', {
+            detail: { isAnalystView: next },
+          })
+        );
+      } catch {}
       return next;
     });
-  }, [userId]);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleStorage = (e) => {
+      if (e.key === 'spot:analyst_mode' || e.key === 'spot:analyst_view') {
+        setIsAnalystView(e.newValue === 'true');
+      }
+    };
+    const handleCustom = (e) => {
+      if (e.detail?.isAnalystView !== undefined) {
+        setIsAnalystView(e.detail.isAnalystView);
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+    window.addEventListener('spot:analyst_mode_change', handleCustom);
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+      window.removeEventListener('spot:analyst_mode_change', handleCustom);
+    };
+  }, []);
 
   return [isAnalystView, toggle];
 }
 
-/**
- * Get plain or technical wording for a dictionary key
- */
-export function getLabel(key, isAnalystView = false) {
-  const entry = LABELS[key];
+export function getLabel(key, isAnalystView = false, lang) {
+  const effectiveLang = getActiveLanguage(lang);
+  const entry = getLabelEntry(key, effectiveLang);
   if (!entry) return key;
   return isAnalystView ? entry.technical : entry.plain;
 }
 
-/**
- * Internal ID regex: matches tokens like task_1, start_event_2, receive_order, etc.
- */
-export const INTERNAL_ID_REGEX = /^[a-z]+(_[a-z0-9]+)+$/i;
-
-/**
- * Shared Formatter:
- * 1. Replaces known node IDs or tokens matching /^[a-z]+(_[a-z0-9]+)+$/ with the step's label.
- * 2. In simple view (!isAnalystView), replaces forbidden technical jargon with plain wording.
- */
-export function formatPlainLanguage(text, options = {}) {
-  if (text == null) return '';
-  let str = String(text);
-
-  const { isAnalystView = false, nodes = [], idToLabel = {} } = options;
-
-  // Build lookup map from elements
-  const nodeMap = { ...idToLabel };
-  if (Array.isArray(nodes)) {
-    for (const n of nodes) {
-      if (!n) continue;
-      const id = n.id || n._id;
-      const lbl = n.data?.label || n.label;
-      if (id && lbl && lbl.trim()) {
-        nodeMap[id] = lbl.trim();
-        nodeMap[String(id).toLowerCase()] = lbl.trim();
-      }
-    }
-  }
-
-  // Also check localStorage if available and nodes array was empty
-  if (Object.keys(nodeMap).length === 0 && typeof window !== 'undefined') {
-    try {
-      const raw = localStorage.getItem('spot:model:nodes');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        const list = parsed.nodes || (Array.isArray(parsed) ? parsed : []);
-        list.forEach(n => {
-          const id = n.id || n._id;
-          const lbl = n.data?.label || n.label;
-          if (id && lbl && lbl.trim()) {
-            nodeMap[id] = lbl.trim();
-            nodeMap[String(id).toLowerCase()] = lbl.trim();
-          }
-        });
-      }
-    } catch {}
-  }
-
-  // 1. Replace exact node ID occurrences
-  for (const [id, label] of Object.entries(nodeMap)) {
-    if (!id || !label || id === label) continue;
-    const escaped = id.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
-    str = str.replace(new RegExp(`\\b${escaped}\\b`, 'g'), label);
-  }
-
-  // 2. Replace any remaining snake_case internal IDs matching /^[a-z]+(_[a-z0-9]+)+$/i
-  str = str.replace(/\b([a-z]+(_[a-z0-9]+)+)\b/gi, (match) => {
-    if (nodeMap[match]) return nodeMap[match];
-    if (nodeMap[match.toLowerCase()]) return nodeMap[match.toLowerCase()];
-    // Humanize snake_case into Title Words (e.g. order_receive -> Order Receive)
-    return match
-      .split('_')
-      .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-      .join(' ');
-  });
-
-  // 3. In Simple view, replace forbidden technical jargon words with plain language
-  if (!isAnalystView) {
-    str = replaceForbiddenJargon(str);
-  }
-
-  return str;
-}
-
-/**
- * Replaces technical keywords when in simple view (case-preserving)
- */
-function replaceForbiddenJargon(text) {
-  let s = text;
-
-  const replacements = [
-    // Multi-word phrases first
+const JARGON_REPLACEMENTS = {
+  en: [
     [/\bresource utilization\b/gi, 'how busy staff are'],
     [/\bcycle time\b/gi, 'time from arrival to leaving'],
     [/\bthroughput rate\b/gi, 'customers served per hour'],
     [/\bthroughput\b/gi, 'customers served per hour'],
     [/\bidle cost\b/gi, 'paid time with no work'],
+    [/\bactive cost\b/gi, 'cost of active work'],
     [/\bbottleneck\b/gi, 'where customers wait'],
     [/\bwhat-if scenario\b/gi, 'idea to try'],
     [/\bwhat-if scenarios\b/gi, 'ideas to try'],
@@ -368,14 +299,14 @@ function replaceForbiddenJargon(text) {
     [/\bbaseline process\b/gi, 'current setup'],
     [/\bbaseline results\b/gi, 'current setup results'],
     [/\bbaseline\b/gi, 'current setup'],
-    [/\bexclusive gateway\b/gi, 'decision point'],
-    [/\bparallel gateway\b/gi, 'parallel branch'],
+    [/\bexclusive gateway\b/gi, 'either/or choice'],
+    [/\bparallel gateway\b/gi, 'all-at-once split'],
     [/\binclusive gateway\b/gi, 'choice point'],
     [/\bgateway routing\b/gi, 'decision routing'],
     [/\bgateway\b/gi, 'decision point'],
     [/\bgateways\b/gi, 'decision points'],
     [/\bswimlanes\b/gi, 'roles & lanes'],
-    [/\bswimlane\b/gi, 'role lane'],
+    [/\bswimlane\b/gi, 'role / lane'],
     [/\bpools\b/gi, 'organizations'],
     [/\bpool\b/gi, 'organization'],
     [/\bBPMN diagram\b/gi, 'process diagram'],
@@ -391,70 +322,162 @@ function replaceForbiddenJargon(text) {
     [/\butilization\b/gi, 'how busy staff are'],
     [/\biterations\b/gi, 'test steps'],
     [/\biteration\b/gi, 'test step'],
-  ];
+  ],
+  'ur-roman': [
+    [/\bexclusive gateway\b/gi, 'ya-yeh-ya-woh intikhab'],
+    [/\bparallel gateway\b/gi, 'yak-waqt marhale'],
+    [/\bresource utilization\b/gi, 'staff kitna masroof hai'],
+    [/\bcycle time\b/gi, 'aane se jane tak ka waqt'],
+    [/\bthroughput rate\b/gi, 'fi ghanta niptaye gaye customers'],
+    [/\bthroughput\b/gi, 'fi ghanta niptaye gaye customers'],
+    [/\bidle cost\b/gi, 'baghair kaam ke ada shuda waqt'],
+    [/\bactive cost\b/gi, "fa'al kaam ka kharcha"],
+    [/\bbottleneck\b/gi, 'jahan customers rukte hain'],
+    [/\bwhat-if scenario\b/gi, 'aazmane ka khayal'],
+    [/\bwhat-if scenarios\b/gi, 'aazmane ke khayalat'],
+    [/\bscenario\b/gi, 'aazmane ka khayal'],
+    [/\bscenarios\b/gi, 'aazmane ke khayalat'],
+    [/\bsimulation run\b/gi, 'test run'],
+    [/\bsimulation runs\b/gi, 'test runs'],
+    [/\bsimulation\b/gi, 'test run'],
+    [/\bsimulations\b/gi, 'test runs'],
+    [/\bbaseline process\b/gi, 'mojooda setup'],
+    [/\bbaseline results\b/gi, 'mojooda setup ke nataij'],
+    [/\bbaseline\b/gi, 'mojooda setup'],
+    [/\bgateway\b/gi, 'faislay ka muqam'],
+    [/\bgateways\b/gi, 'faislay ke muqamat'],
+    [/\bswimlane\b/gi, 'kirdar / lane'],
+    [/\bswimlanes\b/gi, 'kirdar / lanes'],
+    [/\bpool\b/gi, 'idara'],
+    [/\bpools\b/gi, 'idaray'],
+    [/\butilization\b/gi, 'staff kitna masroof hai'],
+  ],
+  ur: [
+    [/\bexclusive gateway\b/gi, 'یا یہ یا وہ انتخاب'],
+    [/\bparallel gateway\b/gi, 'یک وقتی مراحل'],
+    [/\bresource utilization\b/gi, 'عملہ کتنا مصروف ہے'],
+    [/\bcycle time\b/gi, 'آمد سے روانگی تک کا وقت'],
+    [/\bthroughput rate\b/gi, 'فی گھنٹہ نمٹائے گئے گاہک'],
+    [/\bthroughput\b/gi, 'فی گھنٹہ نمٹائے گئے گاہک'],
+    [/\bidle cost\b/gi, 'بغیر کام کے ادا شدہ وقت کی لاگت'],
+    [/\bactive cost\b/gi, 'فعال کام کی لاگت'],
+    [/\bbottleneck\b/gi, 'جہاں گاہک رکتے ہیں'],
+    [/\bwhat-if scenario\b/gi, 'آزمانے کا خیال'],
+    [/\bwhat-if scenarios\b/gi, 'آزمانے کے خیالات'],
+    [/\bscenario\b/gi, 'آزمانے کا خیال'],
+    [/\bscenarios\b/gi, 'آزمانے کے خیالات'],
+    [/\bsimulation run\b/gi, 'ٹیسٹ رن'],
+    [/\bsimulation runs\b/gi, 'ٹیسٹ رنز'],
+    [/\bsimulation\b/gi, 'ٹیسٹ رن'],
+    [/\bsimulations\b/gi, 'ٹیسٹ رنز'],
+    [/\bbaseline process\b/gi, 'موجودہ سیٹ اپ'],
+    [/\bbaseline results\b/gi, 'موجودہ سیٹ اپ کے نتائج'],
+    [/\bbaseline\b/gi, 'موجودہ سیٹ اپ'],
+    [/\bgateway\b/gi, 'فیصلے کا مقام'],
+    [/\bgateways\b/gi, 'فیصلے کے مقامات'],
+    [/\bswimlane\b/gi, 'کردار / لین'],
+    [/\bswimlanes\b/gi, 'کردار / لینز'],
+    [/\bpool\b/gi, 'شعبہ'],
+    [/\bpools\b/gi, 'شعبے'],
+    [/\butilization\b/gi, 'عملہ کتنا مصروف ہے'],
+  ],
+};
 
-  for (const [re, replacement] of replacements) {
-    s = s.replace(re, (match) => {
-      // Preserve first character capitalization
-      if (match.charAt(0) === match.charAt(0).toUpperCase()) {
-        return replacement.charAt(0).toUpperCase() + replacement.slice(1);
-      }
-      return replacement;
-    });
+export function formatPlainLanguage(text, options = {}, lang) {
+  if (text == null) return '';
+  let str = String(text);
+  const { nodeMap = {}, isAnalystView = false, lang: optionLang } =
+    typeof options === 'boolean' ? { isAnalystView: options } : options;
+
+  const effectiveLang = getActiveLanguage(lang || optionLang);
+
+  // 1. Replace exact node ID occurrences
+  const idRegex = /\b(?:node[-_][a-zA-Z0-9_-]+|task[-_][a-zA-Z0-9_-]+|step[-_][a-zA-Z0-9_-]+|[a-f0-9]{24})\b/g;
+  str = str.replace(idRegex, (match) => {
+    if (nodeMap[match]) return nodeMap[match];
+    if (nodeMap[match.toLowerCase()]) return nodeMap[match.toLowerCase()];
+    return match
+      .replace(/^node[-_]/i, 'Step ')
+      .replace(/^task[-_]/i, 'Task ')
+      .replace(/^step[-_]/i, 'Step ');
+  });
+
+  // 2. In Simple view, replace technical keywords with localized plain language
+  if (!isAnalystView) {
+    const list = JARGON_REPLACEMENTS[effectiveLang] || JARGON_REPLACEMENTS.en;
+    for (const [re, replacement] of list) {
+      str = str.replace(re, (match) => {
+        if (match.charAt(0) === match.charAt(0).toUpperCase()) {
+          return replacement.charAt(0).toUpperCase() + replacement.slice(1);
+        }
+        return replacement;
+      });
+    }
   }
 
-  return s;
+  return str;
 }
 
-/**
- * <Hint> Component:
- * Shows the technical name and a one-line meaning on hover/focus.
- * In Simple view: renders plain wording with hover hint.
- * In Analyst view: renders technical wording directly.
- */
 export function Hint({
   term,
   children,
-  isAnalystView = false,
-  technical: customTechnical,
-  meaning: customMeaning,
   className = '',
-  style = {},
+  isAnalystView: propAnalystView,
+  lang: propLang,
 }) {
   const [showTooltip, setShowTooltip] = useState(false);
-  const entry = LABELS[term] || {};
+  const [storedAnalystView] = useAnalystView();
+  const isAnalystView = propAnalystView !== undefined ? propAnalystView : storedAnalystView;
 
-  const technicalName = customTechnical || entry.technical || (term ? term.replace(/_/g, ' ') : '');
-  const meaningText = customMeaning || entry.hint || '';
-  const displayText = children || (isAnalystView ? entry.technical : entry.plain) || term;
+  let ctxLang = null;
+  try {
+    const ctx = useContext(LanguageContext);
+    if (ctx?.preferredLanguage) ctxLang = ctx.preferredLanguage;
+  } catch {}
+
+  const effectiveLang = getActiveLanguage(propLang || ctxLang);
+  const entry = getLabelEntry(term, effectiveLang);
+
+  const displayText = children || (isAnalystView ? entry.technical : entry.plain);
+  const hintText = entry.hint;
+
+  if (isAnalystView && !entry.hint) {
+    return React.createElement('span', { className }, displayText);
+  }
 
   const tooltipEl = showTooltip
     ? React.createElement(
         'span',
         {
-          className: 'spot-hint-bubble',
+          role: 'tooltip',
+          className:
+            'spot-hint-tooltip absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2.5 py-1.5 text-xs rounded-md shadow-lg pointer-events-none text-left min-w-[200px] max-w-[280px]',
           style: {
-            position: 'absolute',
-            bottom: 'calc(100% + 6px)',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            background: '#0f172a',
+            backgroundColor: '#0f172a',
             color: '#f8fafc',
-            padding: '6px 10px',
-            borderRadius: '6px',
+            lineHeight: 1.35,
             fontSize: '11px',
-            lineHeight: '1.4',
-            whiteSpace: 'normal',
-            minWidth: '180px',
-            maxWidth: '260px',
-            zIndex: 99999,
-            pointerEvents: 'none',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
-            textAlign: 'left',
+            borderRadius: '6px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
           },
         },
-        React.createElement('strong', { style: { color: '#38bdf8', display: 'block', fontSize: '11px', marginBottom: '2px' } }, technicalName),
-        React.createElement('span', { style: { color: '#e2e8f0', fontSize: '10px' } }, meaningText)
+        React.createElement(
+          'span',
+          { style: { display: 'block', fontWeight: 600, color: '#93c5fd', marginBottom: '2px' } },
+          isAnalystView ? entry.plain : entry.technical
+        ),
+        hintText,
+        React.createElement('span', {
+          className:
+            'spot-hint-arrow absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-[#0f172a]',
+          style: {
+            width: 0,
+            height: 0,
+            borderLeft: '4px solid transparent',
+            borderRight: '4px solid transparent',
+            borderTop: '4px solid #0f172a',
+          },
+        })
       )
     : null;
 
@@ -462,20 +485,20 @@ export function Hint({
     'span',
     {
       className: `spot-hint-wrap inline-flex items-center relative cursor-help ${className}`,
-      style: { display: 'inline-flex', position: 'relative', alignItems: 'center', ...style },
+      style: { display: 'inline-flex', verticalAlign: 'baseline' },
       onMouseEnter: () => setShowTooltip(true),
       onMouseLeave: () => setShowTooltip(false),
       onFocus: () => setShowTooltip(true),
       onBlur: () => setShowTooltip(false),
       tabIndex: 0,
-      role: 'tooltip',
-      'aria-label': `${technicalName}: ${meaningText}`,
+      'aria-label': `${typeof displayText === 'string' ? displayText : entry.plain}: ${hintText}`,
     },
     React.createElement(
       'span',
       {
+        className: 'spot-hint-term',
         style: {
-          borderBottom: !isAnalystView ? '1px dotted rgba(94, 67, 243, 0.4)' : '1px dotted rgba(100, 116, 139, 0.3)',
+          borderBottom: isAnalystView ? '1px dotted #94a3b8' : '1px dashed #64748b',
           transition: 'border-color 0.15s ease',
         },
       },
@@ -485,18 +508,15 @@ export function Hint({
   );
 }
 
-/**
- * Maps known failures to plain sentences with one fix action,
- * keeping technical details separate for a collapsed "Details" fold.
- */
-export function mapToPlainError(error) {
+export function mapToPlainError(error, lang) {
+  const effectiveLang = getActiveLanguage(lang);
   const raw = error?.message || String(error || '');
 
   // 1. Missing Staff
   if (/must be assigned to a swimlane|no staff assigned|unassigned task/i.test(raw)) {
     return {
-      message: 'A step has no staff assigned. Assign staff or mark it as customer time.',
-      fixAction: 'Click the step on the canvas and assign a staff role or lane.',
+      message: t('err_missing_staff', effectiveLang),
+      fixAction: t('err_missing_staff_fix', effectiveLang),
       details: raw,
     };
   }
@@ -504,8 +524,8 @@ export function mapToPlainError(error) {
   // 2. Missing Duration
   if (/Missing Task Duration|need a duration|needs a duration/i.test(raw)) {
     return {
-      message: 'Some steps are missing time estimates. Set a duration for each step before running.',
-      fixAction: 'Click the highlighted steps and enter how many minutes they take.',
+      message: t('err_missing_duration', effectiveLang),
+      fixAction: t('err_missing_duration_fix', effectiveLang),
       details: raw,
     };
   }
@@ -513,8 +533,8 @@ export function mapToPlainError(error) {
   // 3. Unconfigured Resource
   if (/Missing Resource Setup|isn't set up|is not set up/i.test(raw)) {
     return {
-      message: 'A step uses a staff member or resource that is not set up yet.',
-      fixAction: 'Open Setup to configure this staff role, or assign an existing person.',
+      message: t('err_missing_resource_setup', effectiveLang),
+      fixAction: t('err_missing_resource_setup_fix', effectiveLang),
       details: raw,
     };
   }
@@ -522,17 +542,17 @@ export function mapToPlainError(error) {
   // 4. Missing Start Event
   if (/at least one start event|no start event/i.test(raw)) {
     return {
-      message: 'Your process needs a starting point. Add a start event where the customer arrives.',
-      fixAction: 'Drag a Start Event from the Elements palette to begin the process.',
+      message: t('err_missing_start_event', effectiveLang),
+      fixAction: t('err_missing_start_event_fix', effectiveLang),
       details: raw,
     };
   }
 
   // 5. Missing End Event
-  if (/End event .* must have|no end event/i.test(raw)) {
+  if (/End event|no end event/i.test(raw)) {
     return {
-      message: 'Your process needs a finish point where customers leave or work completes.',
-      fixAction: 'Connect the final steps to an End Event.',
+      message: t('err_missing_end_event', effectiveLang),
+      fixAction: t('err_missing_end_event_fix', effectiveLang),
       details: raw,
     };
   }
@@ -540,8 +560,8 @@ export function mapToPlainError(error) {
   // 6. Missing Probabilities / Decision Split
   if (/How often does each path happen|missing probabilities|probabilities sum/i.test(raw)) {
     return {
-      message: 'A decision point needs path percentages so the test knows how often each branch happens.',
-      fixAction: 'Click the decision diamond and set the percentage for each outgoing path to add up to 100%.',
+      message: t('err_missing_probabilities', effectiveLang),
+      fixAction: t('err_missing_probabilities_fix', effectiveLang),
       details: raw,
     };
   }
@@ -549,8 +569,8 @@ export function mapToPlainError(error) {
   // 7. Disconnected step
   if (/not reachable from any start event|disconnected/i.test(raw)) {
     return {
-      message: 'A step is disconnected from the process flow.',
-      fixAction: 'Draw sequence arrows connecting this step into the customer journey.',
+      message: t('err_disconnected_step', effectiveLang),
+      fixAction: t('err_disconnected_step_fix', effectiveLang),
       details: raw,
     };
   }
@@ -558,30 +578,44 @@ export function mapToPlainError(error) {
   // 8. Service / Engine down
   if (/ECONNREFUSED|simulation engine isn't reachable/i.test(raw)) {
     return {
-      message: 'The test service is not reachable right now. Please try again in a few moments.',
-      fixAction: 'Wait a moment and click Retry.',
+      message: t('err_service_down', effectiveLang),
+      fixAction: t('err_service_down_fix', effectiveLang),
       details: raw,
     };
   }
 
   // Fallback
+  const plainMsg = formatPlainLanguage(raw, { isAnalystView: false, lang: effectiveLang }, effectiveLang);
+  const isRawEnglish = plainMsg === raw && /^[a-zA-Z0-9\s.,!?:;'"_()-]+$/.test(raw);
+  const message = (effectiveLang !== 'en' && isRawEnglish)
+    ? t('err_fallback_message', effectiveLang)
+    : plainMsg;
+
   return {
-    message: formatPlainLanguage(raw, { isAnalystView: false }),
-    fixAction: 'Check your steps and connections, then try again.',
+    message,
+    fixAction: t('err_fallback_fix', effectiveLang),
     details: raw,
   };
 }
 
-/**
- * <FriendlyErrorView>
- * Renders a plain-language error banner with fix action and collapsed "Details" fold.
- */
-export function FriendlyErrorView({ error, onRetry }) {
-  const err = mapToPlainError(error);
+export function FriendlyErrorView({ error, onRetry, lang: propLang }) {
+  let ctxLang = null;
+  try {
+    const ctx = useContext(LanguageContext);
+    if (ctx?.preferredLanguage) ctxLang = ctx.preferredLanguage;
+  } catch {}
+
+  const effectiveLang = getActiveLanguage(propLang || ctxLang);
+  const err = mapToPlainError(error, effectiveLang);
+
+  const suggestedFixText = t('suggestedFix', effectiveLang);
+  const technicalDetailsText = t('technicalDetails', effectiveLang);
+  const tryAgainText = t('tryAgain', effectiveLang);
+
   const children = [
     React.createElement('div', { key: 'msg', style: { fontWeight: 600, marginBottom: '4px' } }, err.message),
     React.createElement('div', { key: 'fix', style: { color: '#b91c1c', fontSize: '12px', marginBottom: '8px' } },
-      React.createElement('strong', null, 'Suggested fix: '),
+      React.createElement('strong', null, `${suggestedFixText} `),
       err.fixAction
     )
   ];
@@ -589,7 +623,7 @@ export function FriendlyErrorView({ error, onRetry }) {
   if (err.details) {
     children.push(
       React.createElement('details', { key: 'details', style: { marginTop: '6px', fontSize: '11px', color: '#64748b' } },
-        React.createElement('summary', { style: { cursor: 'pointer', fontWeight: 500, color: '#475569' } }, 'Technical Details'),
+        React.createElement('summary', { style: { cursor: 'pointer', fontWeight: 500, color: '#475569' } }, technicalDetailsText),
         React.createElement('pre', {
           style: {
             marginTop: '4px',
@@ -623,7 +657,7 @@ export function FriendlyErrorView({ error, onRetry }) {
           cursor: 'pointer',
           fontWeight: 500,
         }
-      }, 'Try Again')
+      }, tryAgainText)
     );
   }
 
