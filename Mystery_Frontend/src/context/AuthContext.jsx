@@ -3,6 +3,65 @@ import { request } from '@/lib/apiService';
 
 export const AuthContext = createContext(null);
 
+const WORKSPACE_KEYS = [
+  'spot:processId',
+  'spot:processTitle',
+  'spot:model:nodes',
+  'spot:model:viewport',
+  'spot:globalResources',
+  'spot:activeScenarioId',
+  'spot:simulationConfig',
+  'spot:simulationResults',
+  'spot:baselineResults',
+  'spot:hasWhatIfResults',
+];
+
+function userIdOf(user) {
+  return user?.id || user?._id || null;
+}
+
+function namespacedKey(userId, key) {
+  return `spot:workspace:${String(userId)}:${key.replace(/^spot:/, '')}`;
+}
+
+function clearActiveWorkspace() {
+  WORKSPACE_KEYS.forEach((key) => localStorage.removeItem(key));
+  Object.keys(localStorage)
+    .filter((key) => key.startsWith('spot:solveProblemThread:'))
+    .forEach((key) => localStorage.removeItem(key));
+}
+
+function saveWorkspaceForUser(userId) {
+  if (!userId) return;
+  WORKSPACE_KEYS.forEach((key) => {
+    const value = localStorage.getItem(key);
+    const target = namespacedKey(userId, key);
+    if (value === null) localStorage.removeItem(target);
+    else localStorage.setItem(target, value);
+  });
+}
+
+function restoreWorkspaceForUser(userId) {
+  clearActiveWorkspace();
+  if (!userId) return;
+
+  WORKSPACE_KEYS.forEach((key) => {
+    const value = localStorage.getItem(namespacedKey(userId, key));
+    if (value !== null) localStorage.setItem(key, value);
+  });
+}
+
+function switchWorkspace(user) {
+  const nextUserId = userIdOf(user);
+  const previousUserId = localStorage.getItem('spot:workspaceUserId');
+  if (previousUserId && previousUserId !== String(nextUserId)) {
+    saveWorkspaceForUser(previousUserId);
+  }
+  restoreWorkspaceForUser(nextUserId);
+  if (nextUserId) localStorage.setItem('spot:workspaceUserId', String(nextUserId));
+  else localStorage.removeItem('spot:workspaceUserId');
+}
+
 export const getStoredToken = () => {
   return localStorage.getItem('spot_token') || sessionStorage.getItem('spot_token') || null;
 };
@@ -14,6 +73,10 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   const logout = useCallback(() => {
+    const activeUserId = localStorage.getItem('spot:workspaceUserId');
+    saveWorkspaceForUser(activeUserId);
+    clearActiveWorkspace();
+    localStorage.removeItem('spot:workspaceUserId');
     localStorage.removeItem('spot_token');
     sessionStorage.removeItem('spot_token');
     sessionStorage.removeItem('spot_guest');
@@ -41,6 +104,7 @@ export function AuthProvider({ children }) {
         });
 
         if (isMounted) {
+          switchWorkspace(data.user);
           setUser(data.user);
           setToken(currentToken);
           setIsGuest(false);
@@ -72,6 +136,7 @@ export function AuthProvider({ children }) {
   }, [logout]);
 
   const saveAuthSuccess = (newToken, newUser, rememberMe = true) => {
+    switchWorkspace(newUser);
     sessionStorage.removeItem('spot_guest');
     if (rememberMe) {
       localStorage.setItem('spot_token', newToken);
@@ -124,6 +189,10 @@ export function AuthProvider({ children }) {
   };
 
   const continueAsGuest = () => {
+    const activeUserId = localStorage.getItem('spot:workspaceUserId');
+    saveWorkspaceForUser(activeUserId);
+    clearActiveWorkspace();
+    localStorage.removeItem('spot:workspaceUserId');
     localStorage.removeItem('spot_token');
     sessionStorage.removeItem('spot_token');
     sessionStorage.setItem('spot_guest', 'true');

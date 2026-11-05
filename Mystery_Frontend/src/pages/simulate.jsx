@@ -935,11 +935,21 @@ export default function SimulatePage() {
       // were built against the previous process ID, which is why What-If
       // comparisons on the Results page would go missing after re-running here.
       const existingProcessId = localStorage.getItem('spot:processId');
-      const saved = existingProcessId
-        ? await updateProcess(existingProcessId, elementsToSave, connections, title, effectiveResources)
-        : await saveProcess(elementsToSave, connections, title, effectiveResources);
+      let saved;
+      if (existingProcessId) {
+        try {
+          saved = await updateProcess(existingProcessId, elementsToSave, connections, title, effectiveResources);
+        } catch (err) {
+          const missingProcess = err?.status === 404 || /Process not found/i.test(err?.message || '');
+          if (!missingProcess) throw err;
+          localStorage.removeItem('spot:processId');
+          saved = await saveProcess(elementsToSave, connections, title, effectiveResources);
+        }
+      } else {
+        saved = await saveProcess(elementsToSave, connections, title, effectiveResources);
+      }
 
-      const processId = saved?.process?._id || saved?.process?.id || saved?._id || saved?.id || existingProcessId;
+      const processId = saved?.process?._id || saved?.process?.id || saved?._id || saved?.id;
       if (!processId) { setBackendError('Saved but no process ID returned.'); setBackendRunning(false); return; }
       localStorage.setItem('spot:processId', processId);
 
