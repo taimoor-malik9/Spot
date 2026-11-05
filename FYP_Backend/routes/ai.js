@@ -1,10 +1,36 @@
 // FYP_Backend/routes/ai.js
 const express = require('express');
 const router = express.Router();
+const rateLimit = require('express-rate-limit');
 const Process = require('../models/Process');
 const Scenario = require('../models/Scenario');
 const { processForSimulation } = require('../utils/processForSimulation');
 const { cloneProcessToScenario } = require('../utils/cloneProcessToScenario');
+
+// AI Rate Limiter: 30 requests per 15 minutes per user id (falls back to IP)
+const aiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { keyGeneratorIpFallback: false },
+  keyGenerator: (req) => {
+    if (req.user?._id) return String(req.user._id);
+    if (req.user?.id) return String(req.user.id);
+    return req.ip || 'anonymous';
+  },
+  handler: (req, res) => {
+    const lang = req.body?.preferredLanguage || req.body?.intakeLanguage || req.query?.language || req.user?.preferredLanguage || 'en';
+    const message = lang === 'ur-roman'
+      ? 'Aapne 15 minute mein bohot zyada AI requests bhej di hain. Baraye meherbani thori der baad dobara koshish karein.'
+      : (lang === 'ur'
+        ? 'آپ نے 15 منٹ میں بہت زیادہ AI درخواستیں بھیجی ہیں۔ براہ کرم کچھ دیر بعد دوبارہ کوشش کریں۔'
+        : 'You have reached the limit of 30 AI requests per 15 minutes. Please wait a few minutes before trying again.');
+    return res.status(429).json({ error: message, rateLimited: true });
+  }
+});
+
+router.use(aiLimiter);
 
 let generateProcess, AiValidationError;
 try {
@@ -45,7 +71,7 @@ router.post('/generate-process', async (req, res) => {
       console.error('⚠️ Gemini API Rate Limit / Quota Exceeded:', err.message);
       return res.status(429).json({ 
         error: 'Gemini API Rate Limit / Quota Exceeded (429)', 
-        detail: 'The daily free quota for the Gemini API Key was reached. Please try again in a few minutes or add a new API Key in .env' 
+        detail: 'The AI service quota was reached. Please try again in a few minutes.' 
       });
     }
     if (err instanceof AiValidationError) {

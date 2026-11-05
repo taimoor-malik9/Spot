@@ -1,5 +1,5 @@
 // FYP_Backend/utils/requestParser.js
-const { callGemini } = require('../services/resultsAiService');
+const resultsAiService = require('../services/resultsAiService');
 
 /**
  * Parse user improvement request into:
@@ -76,18 +76,31 @@ async function parseImprovementRequest(text, contextGoal = null) {
   // Gemini JSON Fallback
   try {
     const prompt = `You parse an operational process improvement request into a JSON object.\nUser text: "${text}"\nReturn ONLY a raw JSON object with:\n{\n  "metric": "cycle_time" | "waiting" | "throughput" | "cost" | null,\n  "direction": "decrease" | "increase" | null,\n  "target_pct": number | null\n}\nIf no explicit percentage, fraction, or ratio target was stated, target_pct MUST be null (never guess 20%).`;
-    const response = await callGemini({
+    const response = await resultsAiService.callGemini({
       systemPrompt: 'You extract goal metrics and numeric targets from process questions.',
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       expectJson: true,
     });
+
+    let parsed = null;
     if (response && typeof response === 'object') {
-      const metric = ['cycle_time', 'waiting', 'throughput', 'cost'].includes(response.metric)
-        ? response.metric
+      parsed = response;
+    } else if (typeof response === 'string') {
+      try {
+        const cleaned = response.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
+        parsed = JSON.parse(cleaned);
+      } catch (parseErr) {
+        console.warn('Failed to parse Gemini request parsing JSON:', parseErr.message);
+      }
+    }
+
+    if (parsed && typeof parsed === 'object') {
+      const metric = ['cycle_time', 'waiting', 'throughput', 'cost'].includes(parsed.metric)
+        ? parsed.metric
         : (contextGoal || 'cycle_time');
-      const direction = response.direction === 'increase' ? 'increase' : 'decrease';
-      const target_pct = typeof response.target_pct === 'number' && !isNaN(response.target_pct)
-        ? response.target_pct
+      const direction = parsed.direction === 'increase' ? 'increase' : 'decrease';
+      const target_pct = typeof parsed.target_pct === 'number' && !isNaN(parsed.target_pct)
+        ? parsed.target_pct
         : (regexResult?.target_pct ?? null);
       return { metric, direction, target_pct };
     }

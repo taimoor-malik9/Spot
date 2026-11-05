@@ -33,7 +33,9 @@ export async function request(path, options = {}) {
       ...options,
     });
 
-    console.log(`[API] ${options.method || 'GET'} ${path} -> HTTP ${res.status}`);
+    if (import.meta.env?.DEV || import.meta.env?.VITE_DEBUG === 'true') {
+      console.log(`[API] ${options.method || 'GET'} ${path} -> HTTP ${res.status}`);
+    }
 
     const contentType = res.headers.get('content-type');
     let data = {};

@@ -2,6 +2,7 @@
  * i18n.js - Language detection and translations for Guided Intake
  * Supports 'en' (English), 'ur-roman' (Roman Urdu), and 'ur' (Urdu script).
  */
+import { LABEL_STRINGS } from './labelsI18n.js';
 
 const ROMAN_URDU_MARKERS = new Set([
   'hai', 'hain', 'ho', 'hoga', 'hogi', 'hoge', 'hote', 'hota', 'hoti', 'hua', 'hue', 'hui',
@@ -425,6 +426,7 @@ export const STRINGS = {
     aiInsights_implement: 'Implement Suggestion',
     aiInsights_implementing: 'Implementing…',
     aiInsights_noChangeWorth: 'No change worth making at this load',
+    ...LABEL_STRINGS.en,
   },
 
   'ur-roman': {
@@ -743,6 +745,7 @@ export const STRINGS = {
     aiInsights_implement: 'Tajweez laagu karein',
     aiInsights_implementing: 'Laagu ho raha hai…',
     aiInsights_noChangeWorth: 'Is load par kisi tabdeeli ki zaroorat nahi',
+    ...LABEL_STRINGS['ur-roman'],
   },
 
   ur: {
@@ -1061,6 +1064,7 @@ export const STRINGS = {
     aiInsights_implement: 'تجویز لاگو کریں',
     aiInsights_implementing: 'لاگو ہو رہا ہے…',
     aiInsights_noChangeWorth: 'اس بوجھ پر کسی تبدیلی کی ضرورت نہیں',
+    ...LABEL_STRINGS.ur,
   },
 };
 

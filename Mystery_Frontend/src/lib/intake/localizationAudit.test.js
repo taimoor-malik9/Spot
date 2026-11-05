@@ -13,6 +13,14 @@ import {
 } from './i18n.js';
 import { applyIntakeToRawDiagram } from './applyIntake.js';
 import { buildBpmnFromDraft, ensureSingleStartAndEndEvents } from './deterministicNormalizer.js';
+import {
+  getPaletteTooltip,
+  getDefaultProcessTitle,
+  mapToPlainError,
+  formatPlainLanguage,
+  LABELS,
+  PALETTE_TOOLTIPS,
+} from '../labels.js';
 
 describe('Guided Intake: Full Localization Audit & i18n Lint Tests', () => {
   it('1. Dictionary parity: all keys in en table must exist in ur-roman and ur tables', () => {
@@ -466,5 +474,241 @@ describe('Guided Intake: Full Localization Audit & i18n Lint Tests', () => {
       );
       assert.doesNotMatch(urText, /\.$/, `Key ${k} must not end with Latin period: "${urText}"`);
     }
+  });
+
+  it('18. Model and Simulate Toolbar Tooltips Audit: all toolbar buttons localized in en, ur-roman, and ur', () => {
+    const toolbarKeys = [
+      'toolbar_newModel',
+      'toolbar_undo',
+      'toolbar_redo',
+      'toolbar_selectAll',
+      'toolbar_zoomOut',
+      'toolbar_zoomIn',
+      'toolbar_fitView',
+      'toolbar_copy',
+      'toolbar_paste',
+      'toolbar_cut',
+      'toolbar_loadFromFile',
+      'toolbar_exportJSON',
+      'toolbar_exportSVG',
+      'toolbar_runSim',
+      'toolbar_save',
+      'toolbar_closePalette',
+      'toolbar_autoFit',
+      'toolbar_zoom100',
+      'toolbar_fitScreen',
+      'toolbar_editResourceProps',
+      'toolbar_processTitlePlaceholder',
+      'toolbar_new',
+      'toolbar_selectAllBtn',
+      'toolbar_runSimulationBtn',
+      'toolbar_saving',
+      'toolbar_guestLocked',
+      'toolbar_gridNone',
+      'toolbar_gridDots',
+      'toolbar_gridLines',
+    ];
+
+    for (const key of toolbarKeys) {
+      const enVal = t(key, 'en');
+      const ruVal = t(key, 'ur-roman');
+      const urVal = t(key, 'ur');
+
+      assert.ok(enVal && !enVal.startsWith('⚠'), `Missing English string for ${key}`);
+      assert.ok(ruVal && !ruVal.startsWith('⚠'), `Missing Roman Urdu string for ${key}`);
+      assert.ok(urVal && !urVal.startsWith('⚠'), `Missing Urdu script string for ${key}`);
+
+      // In Urdu script, assert characters belong to Urdu / Arabic block
+      assert.match(
+        urVal,
+        /[\u0600-\u06FF]/,
+        `Key "${key}" in ur should contain Urdu script characters, got: "${urVal}"`
+      );
+    }
+  });
+
+  it('19. Canvas Palette Tooltips Audit (model.jsx): all elements translated with zero English leaks', () => {
+    const paletteIds = [
+      'task',
+      'user-task',
+      'service-task',
+      'start-event',
+      'end-event',
+      'intermediate-event',
+      'timer-intermediate-catch',
+      'gateway',
+      'exclusive-gateway',
+      'parallel-gateway',
+      'inclusive-gateway',
+      'data-object',
+      'data-store',
+      'pool',
+      'lane',
+      'group',
+      'text-annotation',
+    ];
+
+    for (const id of paletteIds) {
+      const enTooltip = getPaletteTooltip(id, 'en');
+      const ruTooltip = getPaletteTooltip(id, 'ur-roman');
+      const urTooltip = getPaletteTooltip(id, 'ur');
+
+      assert.ok(enTooltip.length > 5, `Missing English palette tooltip for ${id}`);
+      assert.ok(ruTooltip.length > 5, `Missing Roman Urdu palette tooltip for ${id}`);
+      assert.ok(urTooltip.length > 5, `Missing Urdu palette tooltip for ${id}`);
+
+      // Check no English leak in Roman Urdu
+      assert.doesNotMatch(
+        ruTooltip,
+        /a piece of work|starting point|outgoing paths|boundary|document used/i,
+        `Roman Urdu palette tooltip for ${id} leaks English boilerplate: "${ruTooltip}"`
+      );
+
+      // Check Urdu script has Urdu characters
+      assert.match(
+        urTooltip,
+        /[\u0600-\u06FF]/,
+        `Urdu palette tooltip for ${id} should contain Urdu script, got: "${urTooltip}"`
+      );
+    }
+  });
+
+  it('20. Context Pad & Swimlane Actions Localization (model.jsx): pad actions localized', () => {
+    const padKeys = [
+      'pad_seqFlow',
+      'pad_msgFlow',
+      'pad_appendTask',
+      'pad_addDecision',
+      'pad_appendEnd',
+      'pad_delete',
+      'pad_rename',
+      'pad_addLaneAbove',
+      'pad_divideLanes',
+      'pad_addLaneBelow',
+      'pad_deletePool',
+      'pad_deleteLane',
+    ];
+
+    for (const key of padKeys) {
+      const enVal = t(key, 'en');
+      const ruVal = t(key, 'ur-roman');
+      const urVal = t(key, 'ur');
+
+      assert.ok(enVal && !enVal.startsWith('⚠'), `Missing English string for ${key}`);
+      assert.ok(ruVal && !ruVal.startsWith('⚠'), `Missing Roman Urdu string for ${key}`);
+      assert.ok(urVal && !urVal.startsWith('⚠'), `Missing Urdu script string for ${key}`);
+
+      assert.match(
+        urVal,
+        /[\u0600-\u06FF]/,
+        `Key "${key}" in ur should contain Urdu script characters, got: "${urVal}"`
+      );
+    }
+  });
+
+  it('21. FriendlyErrorView & mapToPlainError Audit (simulate.jsx / model.jsx): all technical errors translated', () => {
+    const testCases = [
+      {
+        raw: 'All activities must be assigned to a swimlane lane or pool',
+        expectedRuSnippet: 'kisi staff role ya swimlane lane ka hissa nahi',
+      },
+      {
+        raw: 'Missing Task Duration on task_1',
+        expectedRuSnippet: 'waqt ka andaza shamil nahi',
+      },
+      {
+        raw: 'Missing Resource Setup: Cashier is not set up',
+        expectedRuSnippet: 'staff ya waseela shamil hai jo abhi tayyar nahi',
+      },
+      {
+        raw: 'Process must have at least one start event',
+        expectedRuSnippet: 'shuruaati nuqta (Start Event) zaroori hai',
+      },
+      {
+        raw: 'End event required for process flow',
+        expectedRuSnippet: 'ikhtitami nuqta (End Event) zaroori hai',
+      },
+      {
+        raw: 'How often does each path happen? Probabilities must sum to 1.0',
+        expectedRuSnippet: 'faislay ke har raste ke feesad (percentage) ka taayun zaroori hai',
+      },
+      {
+        raw: 'Step task_2 is not reachable from any start event',
+        expectedRuSnippet: 'process ke bahao se juda nahi',
+      },
+      {
+        raw: 'ECONNREFUSED connect to simulation engine',
+        expectedRuSnippet: 'Test chalane wali service is waqt dastiyab nahi',
+      },
+      {
+        raw: 'Random unknown engine crash occurred',
+        expectedRuSnippet: 'Apne marhale aur connections check karein',
+      },
+    ];
+
+    for (const tc of testCases) {
+      // Roman Urdu check
+      const ruRes = mapToPlainError({ message: tc.raw }, 'ur-roman');
+      assert.ok(ruRes.message && ruRes.message.length > 5, `Missing Roman Urdu message for ${tc.raw}`);
+      assert.ok(ruRes.fixAction && ruRes.fixAction.length > 5, `Missing Roman Urdu fix action for ${tc.raw}`);
+      assert.doesNotMatch(ruRes.message, /must be assigned|missing task duration|at least one start/i);
+
+      // Urdu script check
+      const urRes = mapToPlainError({ message: tc.raw }, 'ur');
+      assert.match(
+        urRes.message,
+        /[\u0600-\u06FF]/,
+        `Urdu error message should contain Urdu script for ${tc.raw}: "${urRes.message}"`
+      );
+      assert.match(
+        urRes.fixAction,
+        /[\u0600-\u06FF]/,
+        `Urdu error fixAction should contain Urdu script for ${tc.raw}: "${urRes.fixAction}"`
+      );
+    }
+
+    // Verify UI frame labels (Suggested fix, Technical Details, Try Again)
+    assert.strictEqual(t('suggestedFix', 'en'), 'Suggested fix:');
+    assert.strictEqual(t('suggestedFix', 'ur-roman'), 'Tajweez karda hal:');
+    assert.strictEqual(t('suggestedFix', 'ur'), 'تجویز کردہ حل:');
+
+    assert.strictEqual(t('technicalDetails', 'en'), 'Technical Details');
+    assert.strictEqual(t('technicalDetails', 'ur-roman'), 'Technical Tafseelat');
+    assert.strictEqual(t('technicalDetails', 'ur'), 'تکنیکی تفصیلات');
+
+    assert.strictEqual(t('tryAgain', 'en'), 'Try again');
+    assert.strictEqual(t('tryAgain', 'ur-roman'), 'Dobara koshish karein');
+    assert.strictEqual(t('tryAgain', 'ur'), 'دوبارہ کوشش کریں');
+  });
+
+  it('22. Step & Jargon Localization Audit: formatPlainLanguage replaces technical jargon in simulate.jsx', () => {
+    // English
+    assert.strictEqual(formatPlainLanguage('exclusive gateway', { isAnalystView: false, lang: 'en' }), 'either/or choice');
+    assert.strictEqual(formatPlainLanguage('parallel gateway', { isAnalystView: false, lang: 'en' }), 'all-at-once split');
+    assert.strictEqual(formatPlainLanguage('swimlane', { isAnalystView: false, lang: 'en' }), 'role / lane');
+
+    // Roman Urdu
+    assert.strictEqual(formatPlainLanguage('exclusive gateway', { isAnalystView: false, lang: 'ur-roman' }), 'ya-yeh-ya-woh intikhab');
+    assert.strictEqual(formatPlainLanguage('parallel gateway', { isAnalystView: false, lang: 'ur-roman' }), 'yak-waqt marhale');
+    assert.strictEqual(formatPlainLanguage('swimlane', { isAnalystView: false, lang: 'ur-roman' }), 'kirdar / lane');
+
+    // Urdu script
+    assert.strictEqual(formatPlainLanguage('exclusive gateway', { isAnalystView: false, lang: 'ur' }), 'یا یہ یا وہ انتخاب');
+    assert.strictEqual(formatPlainLanguage('parallel gateway', { isAnalystView: false, lang: 'ur' }), 'یک وقتی مراحل');
+    assert.strictEqual(formatPlainLanguage('swimlane', { isAnalystView: false, lang: 'ur' }), 'کردار / لین');
+
+    // Analyst view preserves original technical terms
+    assert.strictEqual(formatPlainLanguage('exclusive gateway', { isAnalystView: true, lang: 'ur' }), 'exclusive gateway');
+  });
+
+  it('23. Process Title Default: getDefaultProcessTitle localized across locales', () => {
+    const enTitle = getDefaultProcessTitle('en');
+    const ruTitle = getDefaultProcessTitle('ur-roman');
+    const urTitle = getDefaultProcessTitle('ur');
+
+    assert.ok(enTitle.startsWith('New process,'), `Expected English default title, got: "${enTitle}"`);
+    assert.ok(ruTitle.startsWith('Naya process,'), `Expected Roman Urdu default title, got: "${ruTitle}"`);
+    assert.ok(urTitle.startsWith('نیا عمل،'), `Expected Urdu default title, got: "${urTitle}"`);
+    assert.match(urTitle, /[\u0600-\u06FF]/);
   });
 });

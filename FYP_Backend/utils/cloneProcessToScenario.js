@@ -21,7 +21,7 @@ const path = require('path');
 let validateBpmnFn = null;
 async function getValidateBpmn() {
   if (!validateBpmnFn) {
-    const validatorPath = path.resolve(__dirname, '../../Mystery_Frontend/src/lib/intake/validateBpmn.js');
+    const validatorPath = path.resolve(__dirname, '../shared/validateBpmn.js');
     const mod = await import(require('url').pathToFileURL(path.resolve(validatorPath)).href);
     validateBpmnFn = mod.validateBpmn;
   }

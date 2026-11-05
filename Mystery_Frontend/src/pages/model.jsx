@@ -9,6 +9,8 @@ import {
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
+import { useLanguage } from '@/context/LanguageContext';
+import { t } from '../lib/intake/i18n';
 import { GuestLockModal } from '@/components/auth/GuestLockModal';
 import { saveProcess, updateProcess, getAllProcesses, shapeBackendToFrontend } from '../lib/apiService';
 import { PALETTE_TOOLTIPS, getDefaultProcessTitle, useAnalystView } from '../lib/labels';
@@ -18,6 +20,7 @@ import { NW, NH, elCenter, bestPorts, isXorGateway, outlineAnchor } from '../com
 import { Shape } from '../components/model/BpmnShape';
 import { DiagramEdge as Edge, tempConnectionLine } from '../components/model/DiagramEdge';
 import DiagramCanvas from '../components/model/DiagramCanvas';
+import { getPoolForNode } from '../components/model/BpmnCanvasComponents';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const GRID = 8;
@@ -307,14 +310,20 @@ function ContextPad({ el, elements, connections, setElements, setConnections, se
   };
 
   const isEnd = isEndEvent(el);
+  let padLang = 'en';
+  try {
+    const lCtx = useLanguage();
+    if (lCtx?.preferredLanguage) padLang = lCtx.preferredLanguage;
+  } catch {}
+
   const allBtns = [
-    { angle: 0, key: 'seq', col: '#1e40af', bg: '#dbeafe', icon: '→', title: 'Sequence Flow', cb: () => handleConnect('sequence-flow') },
-    { angle: 50, key: 'msg', col: '#6b21a8', bg: '#f3e8ff', icon: '⇢', title: 'Message Flow', cb: () => handleConnect('message-flow') },
-    { angle: 100, key: 'task', col: '#065f46', bg: '#d1fae5', icon: '▭', title: 'Append Task', cb: () => handleAppend('task', 'Task') },
-    { angle: 150, key: 'gw', col: '#92400e', bg: '#fef3c7', icon: '◇', title: 'Add Decision Point', cb: () => handleAppend('exclusive-gateway', 'Decision Point') },
-    { angle: 200, key: 'end', col: '#991b1b', bg: '#fee2e2', icon: '◉', title: 'Append End', cb: () => handleAppend('end-event', 'End') },
-    { angle: 270, key: 'del', col: '#dc2626', bg: '#fee2e2', icon: '✕', title: 'Delete', cb: onDelete },
-    { angle: 320, key: 'ren', col: '#374151', bg: '#f3f4f6', icon: '✎', title: 'Rename', cb: onRename },
+    { angle: 0, key: 'seq', col: '#1e40af', bg: '#dbeafe', icon: '→', title: t('pad_seqFlow', padLang), cb: () => handleConnect('sequence-flow') },
+    { angle: 50, key: 'msg', col: '#6b21a8', bg: '#f3e8ff', icon: '⇢', title: t('pad_msgFlow', padLang), cb: () => handleConnect('message-flow') },
+    { angle: 100, key: 'task', col: '#065f46', bg: '#d1fae5', icon: '▭', title: t('pad_appendTask', padLang), cb: () => handleAppend('task', 'Task') },
+    { angle: 150, key: 'gw', col: '#92400e', bg: '#fef3c7', icon: '◇', title: t('pad_addDecision', padLang), cb: () => handleAppend('exclusive-gateway', 'Decision Point') },
+    { angle: 200, key: 'end', col: '#991b1b', bg: '#fee2e2', icon: '◉', title: t('pad_appendEnd', padLang), cb: () => handleAppend('end-event', 'End') },
+    { angle: 270, key: 'del', col: '#dc2626', bg: '#fee2e2', icon: '✕', title: t('pad_delete', padLang), cb: onDelete },
+    { angle: 320, key: 'ren', col: '#374151', bg: '#f3f4f6', icon: '✎', title: t('pad_rename', padLang), cb: onRename },
   ];
   const btns = isEnd ? allBtns.filter(b => b.key === 'del' || b.key === 'ren') : allBtns;
   return (
@@ -387,21 +396,27 @@ function SwimlanePadButton({ bx, by, title, glyph, onClick, accent = '#374151', 
 function SwimlaneContextPad({ ox, oy, variant, onAddAbove, onDivide, onAddBelow, onRename, onDelete }) {
   const gap = 5;
   const y = 0;
+  let sLang = 'en';
+  try {
+    const lCtx = useLanguage();
+    if (lCtx?.preferredLanguage) sLang = lCtx.preferredLanguage;
+  } catch {}
+
   const rows = [];
   if (variant === 'pool') {
-    rows.push({ key: 'ab', title: 'Add lane above', glyph: '▔', cb: onAddAbove });
-    rows.push({ key: 'dv', title: 'Divide into lanes', glyph: '═', cb: onDivide });
-    rows.push({ key: 'bl', title: 'Add lane below', glyph: '▁', cb: onAddBelow });
-    rows.push({ key: 'rn', title: 'Rename', glyph: '✎', cb: onRename });
-    rows.push({ key: 'dl', title: 'Delete pool', glyph: '✕', cb: onDelete, accent: '#b91c1c', bg: '#fef2f2' });
+    rows.push({ key: 'ab', title: t('pad_addLaneAbove', sLang), glyph: '▔', cb: onAddAbove });
+    rows.push({ key: 'dv', title: t('pad_divideLanes', sLang), glyph: '═', cb: onDivide });
+    rows.push({ key: 'bl', title: t('pad_addLaneBelow', sLang), glyph: '▁', cb: onAddBelow });
+    rows.push({ key: 'rn', title: t('pad_rename', sLang), glyph: '✎', cb: onRename });
+    rows.push({ key: 'dl', title: t('pad_deletePool', sLang), glyph: '✕', cb: onDelete, accent: '#b91c1c', bg: '#fef2f2' });
   } else if (variant === 'lane-in-pool') {
-    rows.push({ key: 'ab', title: 'Add lane above', glyph: '▔', cb: onAddAbove });
-    rows.push({ key: 'bl', title: 'Add lane below', glyph: '▁', cb: onAddBelow });
-    rows.push({ key: 'rn', title: 'Rename', glyph: '✎', cb: onRename });
-    rows.push({ key: 'dl', title: 'Delete lane', glyph: '✕', cb: onDelete, accent: '#b91c1c', bg: '#fef2f2' });
+    rows.push({ key: 'ab', title: t('pad_addLaneAbove', sLang), glyph: '▔', cb: onAddAbove });
+    rows.push({ key: 'bl', title: t('pad_addLaneBelow', sLang), glyph: '▁', cb: onAddBelow });
+    rows.push({ key: 'rn', title: t('pad_rename', sLang), glyph: '✎', cb: onRename });
+    rows.push({ key: 'dl', title: t('pad_deleteLane', sLang), glyph: '✕', cb: onDelete, accent: '#b91c1c', bg: '#fef2f2' });
   } else {
-    rows.push({ key: 'rn', title: 'Rename', glyph: '✎', cb: onRename });
-    rows.push({ key: 'dl', title: 'Delete', glyph: '✕', cb: onDelete, accent: '#b91c1c', bg: '#fef2f2' });
+    rows.push({ key: 'rn', title: t('pad_rename', sLang), glyph: '✎', cb: onRename });
+    rows.push({ key: 'dl', title: t('pad_delete', sLang), glyph: '✕', cb: onDelete, accent: '#b91c1c', bg: '#fef2f2' });
   }
   const uniqRows = Array.from(new Map(rows.map(r => [r.key, r])).values());
   return (
@@ -1111,6 +1126,11 @@ function TDivider() {
 export default function ModelPage() {
   const navigate = useNavigate();
   const { isGuest } = useAuth();
+  let lang = 'en';
+  try {
+    const lCtx = useLanguage();
+    if (lCtx?.preferredLanguage) lang = lCtx.preferredLanguage;
+  } catch {}
   const [guestModalOpen, setGuestModalOpen] = useState(false);
 
   const newModel = () => {
@@ -1118,7 +1138,7 @@ export default function ModelPage() {
     localStorage.removeItem('spot:processId');
     localStorage.removeItem('spot:processTitle');
     setSavedProcessId(null);
-    const defTitle = getDefaultProcessTitle();
+    const defTitle = getDefaultProcessTitle(lang);
     setProcessTitle(defTitle);
     setElements([]);
     setConnections([]);
@@ -1130,7 +1150,7 @@ export default function ModelPage() {
   const [connections, setConnections] = useState([]);
 
   // ── Backend integration state ────────────────────────────────────────────────
-  const [processTitle, setProcessTitle] = useState(() => localStorage.getItem('spot:processTitle') || getDefaultProcessTitle());
+  const [processTitle, setProcessTitle] = useState(() => localStorage.getItem('spot:processTitle') || getDefaultProcessTitle(lang));
   const [savedProcessId, setSavedProcessId] = useState(() => localStorage.getItem('spot:processId') || null);
   const [backendSaving, setBackendSaving] = useState(false);
   const [backendLoading, setBackendLoading] = useState(false);
@@ -2365,7 +2385,7 @@ export default function ModelPage() {
             value={processTitle}
             onChange={e => setProcessTitle(e.target.value)}
             onBlur={e => localStorage.setItem('spot:processTitle', e.target.value)}
-            placeholder="Process title…"
+            placeholder={t('toolbar_processTitlePlaceholder', lang)}
             className="text-sm font-semibold bg-transparent border-none outline-none focus:ring-0 text-gray-800 w-48 px-2 py-1 placeholder-gray-400"
           />
         </div>
@@ -2373,41 +2393,41 @@ export default function ModelPage() {
         {/* Middle Section: Buttons */}
         <div className="flex items-center gap-3 justify-center shrink-0">
           {/* New */}
-          <TBtn onClick={newModel} title="New model" variant="default" className="text-gray-600 bg-white border border-gray-200">
-            <Plus size={14} /> New
+          <TBtn onClick={newModel} title={t('toolbar_newModel', lang)} variant="default" className="text-gray-600 bg-white border border-gray-200">
+            <Plus size={14} /> {t('toolbar_new', lang)}
           </TBtn>
 
           <div className="h-6 w-px bg-gray-200 mx-1" />
 
-          <TBtn onClick={() => { undo(); forceRender(n => n + 1); }} disabled={!canUndo} title="Undo (Ctrl+Z)" variant="icon">
+          <TBtn onClick={() => { undo(); forceRender(n => n + 1); }} disabled={!canUndo} title={t('toolbar_undo', lang)} variant="icon">
             <RotateCcw size={16} className="text-gray-500" />
           </TBtn>
-          <TBtn onClick={() => { redo(); forceRender(n => n + 1); }} disabled={!canRedo} title="Redo (Ctrl+Y)" variant="icon">
+          <TBtn onClick={() => { redo(); forceRender(n => n + 1); }} disabled={!canRedo} title={t('toolbar_redo', lang)} variant="icon">
             <RotateCw size={16} className="text-gray-500" />
           </TBtn>
 
           <div className="h-6 w-px bg-gray-200 mx-1" />
 
-          <TBtn onClick={selectAllCanvas} title="Select all (Ctrl+A)" variant={allSelected ? 'active' : 'default'} className="border border-gray-200">
-            <div className="w-3 h-3 border border-gray-400 rounded-sm mr-1" /> Select All
+          <TBtn onClick={selectAllCanvas} title={t('toolbar_selectAll', lang)} variant={allSelected ? 'active' : 'default'} className="border border-gray-200">
+            <div className="w-3 h-3 border border-gray-400 rounded-sm mr-1" /> {t('toolbar_selectAllBtn', lang)}
           </TBtn>
 
           <div className="h-6 w-px bg-gray-200 mx-1" />
 
-          <TBtn onClick={() => zoomToCenter(1 / 1.2)} title="Zoom Out" variant="icon">
+          <TBtn onClick={() => zoomToCenter(1 / 1.2)} title={t('toolbar_zoomOut', lang)} variant="icon">
             <span className="font-bold text-gray-500 text-lg leading-none mb-1">−</span>
           </TBtn>
-          <TBtn onClick={() => zoomToCenter(1.2)} title="Zoom In" variant="icon">
+          <TBtn onClick={() => zoomToCenter(1.2)} title={t('toolbar_zoomIn', lang)} variant="icon">
             <span className="font-bold text-gray-500 text-lg leading-none mb-1">+</span>
           </TBtn>
-          <TBtn onClick={fitView} title="Fit to view" variant="icon">
+          <TBtn onClick={fitView} title={t('toolbar_fitView', lang)} variant="icon">
             <Maximize2 size={16} className="text-gray-500" />
           </TBtn>
 
           <div className="h-6 w-px bg-gray-200 mx-1" />
 
           <TBtn onClick={() => setGridType(g => g === 'none' ? 'dots' : g === 'dots' ? 'lines' : 'none')}
-            title={gridType === 'none' ? 'Show Dotted Grid' : gridType === 'dots' ? 'Show Lined Grid' : 'Hide Grid'}
+            title={gridType === 'none' ? t('toolbar_gridDots', lang) : gridType === 'dots' ? t('toolbar_gridLines', lang) : t('toolbar_gridNone', lang)}
             variant={gridType !== 'none' ? 'active' : 'icon'}
             className={gridType !== 'none' ? "bg-[#5E43F3] text-white border-none" : ""}>
             <Grid3x3 size={16} />
@@ -2415,7 +2435,7 @@ export default function ModelPage() {
 
           <div className="h-6 w-px bg-gray-200 mx-1" />
 
-          <TBtn onClick={() => { if (selId) setClipboard(elements.find(n => n.id === selId)); }} title="Copy (Ctrl+C)" variant="icon">
+          <TBtn onClick={() => { if (selId) setClipboard(elements.find(n => n.id === selId)); }} title={t('toolbar_copy', lang)} variant="icon">
             <Copy size={16} className="text-gray-500" />
           </TBtn>
           <TBtn onClick={() => {
@@ -2423,7 +2443,7 @@ export default function ModelPage() {
               const n = { ...clipboard, id: makeId(clipboard.type), position: { x: clipboard.position.x + 40, y: clipboard.position.y + 40 } };
               setElements(p => [...p, n]);
             }
-          }} title="Paste (Ctrl+V)" variant="icon">
+          }} title={t('toolbar_paste', lang)} variant="icon">
             <ClipboardPaste size={16} className="text-gray-500" />
           </TBtn>
           <TBtn onClick={() => {
@@ -2432,19 +2452,19 @@ export default function ModelPage() {
               setElements(p => p.filter(n => n.id !== selId));
               setSelId(null);
             }
-          }} title="Cut (Ctrl+X)" variant="icon">
+          }} title={t('toolbar_cut', lang)} variant="icon">
             <Scissors size={16} className="text-gray-500" />
           </TBtn>
 
           <div className="h-6 w-px bg-gray-200 mx-1" />
 
-          <TBtn onClick={loadFromFile} title="Load from file" variant="icon">
+          <TBtn onClick={loadFromFile} title={t('toolbar_loadFromFile', lang)} variant="icon">
             <FolderOpen size={16} className="text-gray-500" />
           </TBtn>
-          <TBtn onClick={saveToFile} title="Export as JSON" variant="icon">
+          <TBtn onClick={saveToFile} title={t('toolbar_exportJSON', lang)} variant="icon">
             <Download size={16} className="text-gray-500" />
           </TBtn>
-          <TBtn onClick={exportSVG} title="Export as SVG" variant="icon">
+          <TBtn onClick={exportSVG} title={t('toolbar_exportSVG', lang)} variant="icon">
             <FileDown size={16} className="text-gray-500" />
           </TBtn>
         </div>
@@ -2457,7 +2477,7 @@ export default function ModelPage() {
               handleRunSimulation();
             }}
             disabled={backendSaving}
-            title={isGuest ? "Sign up to use this" : "Run simulation for this model"}
+            title={isGuest ? t('toolbar_guestLocked', lang) : t('toolbar_runSim', lang)}
             className={`text-gray-600 bg-white border border-gray-200 hover:bg-slate-50 px-4 ${isGuest ? 'opacity-60' : ''}`}
           >
             {isGuest ? (
@@ -2465,7 +2485,7 @@ export default function ModelPage() {
             ) : (
               <Play size={16} className="mr-1 text-emerald-600 fill-emerald-600" />
             )}
-            Run Simulation
+            {t('toolbar_runSimulationBtn', lang)}
           </TBtn>
           <TBtn
             onClick={() => {
@@ -2473,7 +2493,7 @@ export default function ModelPage() {
               saveToBackend();
             }}
             disabled={backendSaving}
-            title={isGuest ? "Sign up to use this" : "Save"}
+            title={isGuest ? t('toolbar_guestLocked', lang) : t('toolbar_save', lang)}
             variant="primary"
             className={`bg-[#5E43F3] text-white hover:bg-[#4c35db] border-none px-4 ${isGuest ? 'opacity-60' : ''}`}
           >
@@ -2484,7 +2504,7 @@ export default function ModelPage() {
             ) : (
               <Check size={16} className="mr-1" />
             )}
-            {backendSaving ? 'Saving…' : 'Save'}
+            {backendSaving ? t('toolbar_saving', lang) : t('toolbar_save', lang)}
           </TBtn>
         </div>
       </div>
@@ -2597,7 +2617,7 @@ export default function ModelPage() {
                     type="button"
                     onClick={() => setPaletteOpen(false)}
                     className="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
-                    title="Close palette"
+                    title={t('toolbar_closePalette', lang)}
                   >
                     <X size={15} />
                   </button>

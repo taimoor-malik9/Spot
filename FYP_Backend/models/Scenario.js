@@ -56,12 +56,12 @@ const ScenarioSchema = new mongoose.Schema({
         ref: 'User',
         index: true,
         default: null
-    },
-    createdAt: {
-        type: Date,
-        default: Date.now
     }
+}, {
+    timestamps: true
 });
+
+ScenarioSchema.index({ userId: 1, baseProcessId: 1, createdAt: -1 });
 
 function normalizeEdgeData(data) {
   if (!data) return {};

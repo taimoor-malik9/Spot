@@ -24,9 +24,9 @@ const {
 } = require('../services/testedSuggestionsService');
 
 async function getFrontendTools() {
-  const compilerPath = path.resolve(__dirname, '../../Mystery_Frontend/src/lib/intake/compileBpmn.js');
-  const layoutPath = path.resolve(__dirname, '../../Mystery_Frontend/src/lib/aiDiagramLayout.js');
-  const validatorPath = path.resolve(__dirname, '../../Mystery_Frontend/src/lib/intake/validateBpmn.js');
+  const compilerPath = path.resolve(__dirname, '../shared/compileBpmn.js');
+  const layoutPath = path.resolve(__dirname, '../shared/aiDiagramLayout.js');
+  const validatorPath = path.resolve(__dirname, '../shared/validateBpmn.js');
 
   const { compileBpmn } = await import(compilerPath);
   const { layoutAiDiagram } = await import(layoutPath);

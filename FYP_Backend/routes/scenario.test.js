@@ -17,11 +17,11 @@ const mongoose = require('mongoose');
 
 const { cloneProcessToScenario, normalizeEdges, normalizeEdgeData } = require('../utils/cloneProcessToScenario');
 
-// Dynamically import compileBpmn and layoutAiDiagram from frontend
+// Dynamically import compileBpmn, layoutAiDiagram and validateBpmn from shared
 async function getFrontendTools() {
-  const compilerPath = path.resolve(__dirname, '../../Mystery_Frontend/src/lib/intake/compileBpmn.js');
-  const layoutPath = path.resolve(__dirname, '../../Mystery_Frontend/src/lib/aiDiagramLayout.js');
-  const validatorPath = path.resolve(__dirname, '../../Mystery_Frontend/src/lib/intake/validateBpmn.js');
+  const compilerPath = path.resolve(__dirname, '../shared/compileBpmn.js');
+  const layoutPath = path.resolve(__dirname, '../shared/aiDiagramLayout.js');
+  const validatorPath = path.resolve(__dirname, '../shared/validateBpmn.js');
 
   const { compileBpmn } = await import(compilerPath);
   const { layoutAiDiagram } = await import(layoutPath);
@@ -477,7 +477,7 @@ describe('MODULE S1: Process & Scenario Cloning & Isolation Tests', async () => 
   });
 
   it('8. What-If Comparison Fairness & Narrative: 16m vs 16m (-2.2%), 6.2 vs 5.3/hr (-14.9%), "None" bottleneck', async () => {
-    const whatIfPath = path.resolve(__dirname, '../../Mystery_Frontend/src/lib/whatIfComparison.js');
+    const whatIfPath = path.resolve(__dirname, '../shared/whatIfComparison.js');
     const { computeComparisonMetrics } = await import(whatIfPath);
 
     const baselineResults = {

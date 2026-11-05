@@ -227,6 +227,11 @@ export default function DiagramPreview({
           const y = ty(n.position?.y ?? 0);
 
           const rawLabel = n.data?.label || n.label || '';
+          const label = isFullView
+            ? rawLabel
+            : rawLabel.length > 10
+            ? rawLabel.slice(0, 9) + '…'
+            : rawLabel;
           const isGateway = n.type?.includes('gateway');
           const isMergeGw = isGateway && (/^(rejoin|merge)$/i.test(rawLabel) || n.gateway_role === 'merge' || n.data?.gateway_role === 'merge');
 
