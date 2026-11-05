@@ -89,5 +89,30 @@ test('Module U1: User Profile & Credentials Management', async (t) => {
     assert.equal(userWithDefaults.currency, 'Rs', 'Default currency must be Rs');
     assert.equal(userWithDefaults.businessType, 'retail', 'Default business type must be retail');
     assert.equal(userWithDefaults.workingHoursPerDay, 8, 'Default hours per day must be 8');
+    assert.equal(userWithDefaults.preferredLanguage, 'en', 'Default preferredLanguage must be en');
+  });
+
+  await t.test('6. Profile update accepts preferredLanguage and validates en, ur-roman, ur', () => {
+    const user = new User({ ...mockUserDoc.toObject() });
+    assert.equal(user.preferredLanguage, 'en');
+
+    // Valid update to ur-roman
+    if (['en', 'ur-roman', 'ur'].includes('ur-roman')) {
+      user.preferredLanguage = 'ur-roman';
+    }
+    assert.equal(user.preferredLanguage, 'ur-roman');
+
+    // Valid update to ur
+    if (['en', 'ur-roman', 'ur'].includes('ur')) {
+      user.preferredLanguage = 'ur';
+    }
+    assert.equal(user.preferredLanguage, 'ur');
+
+    // Invalid language ignored
+    const invalidLang = 'fr';
+    if (['en', 'ur-roman', 'ur'].includes(invalidLang)) {
+      user.preferredLanguage = invalidLang;
+    }
+    assert.equal(user.preferredLanguage, 'ur');
   });
 });

@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation, Link, useNavigate } from 'react-router-dom';
-import { Shuffle, Play, BarChart2, Grid2X2, Lock, LayoutDashboard, User, LogOut, ChevronDown, Sliders } from 'lucide-react';
+import { Shuffle, Play, BarChart2, Grid2X2, Lock, LayoutDashboard, User, LogOut, ChevronDown, Sliders, Globe } from 'lucide-react';
 import { SpotLogo } from '../SpotLogo';
 import { useAuth } from '@/context/AuthContext';
+import { useLanguage } from '@/context/LanguageContext';
 import { GuestLockModal } from '../auth/GuestLockModal';
 import { useAnalystView } from '@/lib/labels';
 import '../../styles/account-pages.css';
@@ -26,6 +27,7 @@ export function AppLayout({ children }) {
   const navigate = useNavigate();
   const pathname = location.pathname;
   const { user, isGuest, logout } = useAuth();
+  const { preferredLanguage, setLanguage, supportedLanguages } = useLanguage();
   const [isAnalystView, toggleAnalystView] = useAnalystView(user?.id || user?._id);
 
   const [lockModalOpen, setLockModalOpen] = useState(false);
@@ -130,7 +132,28 @@ export function AppLayout({ children }) {
         </nav>
 
         {/* Right: User area & Analyst View Switch */}
-        <div className="flex items-center justify-end min-w-[200px] gap-4">
+        <div className="flex items-center justify-end min-w-[200px] gap-3">
+          {/* Header Language Switcher */}
+          <div
+            dir="ltr"
+            className="flex items-center gap-1.5 bg-slate-100/90 px-2.5 py-1 rounded-lg border border-slate-200 text-slate-700"
+            style={{ direction: 'ltr' }}
+            title="Switch application language (changes apply instantly)"
+          >
+            <Globe size={13} className="text-slate-500 shrink-0" />
+            <select
+              dir="ltr"
+              value={preferredLanguage}
+              onChange={(e) => setLanguage(e.target.value)}
+              className="bg-transparent text-xs font-semibold text-slate-700 cursor-pointer outline-none border-none py-0.5"
+              style={{ direction: 'ltr' }}
+            >
+              <option value="en">English</option>
+              <option value="ur-roman">Roman Urdu</option>
+              <option value="ur">اردو</option>
+            </select>
+          </div>
+
           {/* Analyst View Switch (stored per user in localStorage, default off) */}
           <div className="flex items-center gap-2" title="Toggle technical simulation analyst terms versus plain business language">
             <span className="text-xs font-semibold text-slate-500 hidden sm:inline select-none">
@@ -244,6 +267,24 @@ export function AppLayout({ children }) {
                           {isAnalystView ? 'ON' : 'OFF'}
                         </span>
                       </button>
+
+                      <div className="px-3 py-1.5 border-t border-slate-100 flex items-center justify-between text-xs text-slate-600" dir="ltr" style={{ direction: 'ltr' }}>
+                        <div className="flex items-center gap-2">
+                          <Globe size={14} className="text-slate-400" />
+                          <span>Language</span>
+                        </div>
+                        <select
+                          dir="ltr"
+                          value={preferredLanguage}
+                          onChange={(e) => setLanguage(e.target.value)}
+                          className="bg-slate-50 border border-slate-200 rounded px-2 py-0.5 text-xs font-semibold text-slate-700 cursor-pointer outline-none"
+                          style={{ direction: 'ltr' }}
+                        >
+                          <option value="en">English</option>
+                          <option value="ur-roman">Roman Urdu</option>
+                          <option value="ur">اردو</option>
+                        </select>
+                      </div>
                     </div>
 
                     <div className="spot-menu-footer">

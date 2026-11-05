@@ -2,7 +2,7 @@
  * apiService.js - Clean version with proxy support
  */
 
-import { getDefaultProcessTitle } from './labels';
+import { getDefaultProcessTitle } from './labels.js';
 
 const configuredBaseUrl = (import.meta.env?.VITE_API_URL || '/api').trim().replace(/\/+$/, '');
 const BASE_URL = configuredBaseUrl === '' || configuredBaseUrl === '/api'
@@ -351,10 +351,15 @@ function backendTypeToFrontend(type) {
   return 'task';
 }
 // ─── AI API ────────────────────────────────────────────────────────────────
-export async function generateAIProcess(description, history = []) {
+export async function generateAIProcess(description, history = [], preferredLanguage = 'en') {
   return request('/api/ai/generate-process', {
     method: 'POST',
-    body: JSON.stringify({ description, history }),
+    body: JSON.stringify({
+      description,
+      history,
+      preferredLanguage,
+      intakeLanguage: preferredLanguage,
+    }),
   });
 }
 // ─── Process API ──────────────────────────────────────────────────────────

@@ -9,6 +9,15 @@ import IntakeScreens from './IntakeScreens';
 import { applyIntakeToRawDiagram } from '../lib/intake/applyIntake';
 import ConfirmationCard from './ConfirmationCard';
 import { useAuth } from '@/context/AuthContext';
+import { useLanguage } from '@/context/LanguageContext';
+import { detectLanguageWithConfidence, getSuggestionBanner, t } from '../lib/intake/i18n';
+import {
+  friendlyError,
+  ensureDefaultBranchProbabilities,
+  findHiddenStructuralIssues,
+} from '../lib/intake/friendlyErrors';
+import { normalizeAndRepairBpmn } from '../lib/intake/deterministicNormalizer';
+import { stripTrailingPunctuation } from '../lib/intake/stepListHelper';
 import {
   Sparkles,
   Wand2,
@@ -29,6 +38,8 @@ import {
   Building,
   Target,
   Sliders,
+  Edit3,
+  Info,
 } from 'lucide-react';
 
 const EXAMPLE_DESCRIPTIONS = [
@@ -85,6 +96,9 @@ export default function IntakeFlow({
   const intakeAnswers = state?.answers !== undefined ? state.answers : localAnswers;
   const validationErrors = state?.validationResult?.errors || localValidation?.errors || [];
   const assumptions = state?.validationResult?.repairs || localValidation?.repairs || [];
+  const { preferredLanguage, setLanguage } = useLanguage();
+  const [suggestedLanguage, setSuggestedLanguage] = useState(null);
+  const intakeLanguage = preferredLanguage;
 
   const updateGuided = useCallback((patchOrFn) => {
     if (updateState) {
@@ -118,6 +132,148 @@ export default function IntakeFlow({
       }
     }
   }, [updateState, localStep, localDescription, localRawDiagram, localVersion, localKeptSteps, localAnswers, localValidation]);
+
+  const [branchProbs, setBranchProbs] = useState({});
+  const [editedBranches, setEditedBranches] = useState(new Set());
+  const [autoBalance, setAutoBalance] = useState(true);
+
+  // Auto-prefill any exclusive split gateways without probabilities with 50/50 (or equal share) estimated defaults
+  useEffect(() => {
+    if (!rawDiagram || !Array.isArray(rawDiagram.nodes) || !Array.isArray(rawDiagram.edges)) return;
+    const patched = ensureDefaultBranchProbabilities(rawDiagram);
+    if (patched !== rawDiagram) {
+      const val = validateBpmn(patched);
+      updateGuided((prev) => ({
+        ...prev,
+        rawDiagram: patched,
+        validationResult: val,
+      }));
+    }
+  }, [rawDiagram, updateGuided]);
+
+  const activeDecisionGateway = useMemo(() => {
+    if (!rawDiagram?.nodes) return null;
+    const gw = rawDiagram.nodes.find((n) => {
+      const isGw = n.type?.includes('gateway');
+      if (!isGw) return false;
+      const outEdges = (rawDiagram.edges || []).filter((e) => e.source === n.id);
+      return outEdges.length >= 2;
+    });
+    if (gw) {
+      const outEdges = (rawDiagram.edges || []).filter((e) => e.source === gw.id);
+      return {
+        gatewayId: gw.id,
+        label: gw.data?.label || gw.label || gw.id,
+        branches: outEdges.map((e, idx) => ({
+          edgeId: e.id,
+          target: e.target,
+          label: e.label || e.data?.label || `Option ${idx + 1}`,
+          probability: e.data?.probability != null ? e.data.probability : e.probability,
+          isEstimated: e.data?.probabilityEstimated ?? e.probabilityEstimated ?? true,
+        })),
+      };
+    }
+    return null;
+  }, [rawDiagram]);
+
+  const unresolvedGateway = useMemo(() => {
+    if (state?.validationResult?.unresolvedGateways?.length > 0) {
+      return state.validationResult.unresolvedGateways[0];
+    }
+    if (rawDiagram?.unresolvedGateways?.length > 0) {
+      return rawDiagram.unresolvedGateways[0];
+    }
+    return activeDecisionGateway;
+  }, [state?.validationResult, rawDiagram, activeDecisionGateway]);
+
+  const currentBranchProbs = useMemo(() => {
+    if (!activeDecisionGateway) return [];
+    return activeDecisionGateway.branches.map((b, idx) => {
+      if (branchProbs[idx] !== undefined) {
+        return branchProbs[idx];
+      }
+      if (b.probability != null && !isNaN(Number(b.probability))) {
+        return Math.round(Number(b.probability) * 100);
+      }
+      return Math.round(100 / activeDecisionGateway.branches.length);
+    });
+  }, [activeDecisionGateway, branchProbs]);
+
+  const probSum = useMemo(() => {
+    if (!currentBranchProbs || currentBranchProbs.length === 0) return 100;
+    return currentBranchProbs.reduce((acc, v) => acc + (typeof v === 'number' ? v : 0), 0);
+  }, [currentBranchProbs]);
+
+  const hasInvalidBranchProb = useMemo(() => {
+    if (!activeDecisionGateway) return false;
+    return currentBranchProbs.some(
+      (v) => v === '' || typeof v !== 'number' || isNaN(v) || v < 0 || v > 100
+    );
+  }, [activeDecisionGateway, currentBranchProbs]);
+
+  const probSumError = useMemo(() => {
+    if (!activeDecisionGateway) return null;
+    if (hasInvalidBranchProb) {
+      return intakeLanguage === 'ur-roman'
+        ? 'Har branch ka percentage 0 se 100 ke darmiyan hona chahiye'
+        : 'Each branch percentage must be between 0 and 100';
+    }
+    if (probSum !== 100) {
+      return intakeLanguage === 'ur-roman'
+        ? `Total ${probSum}%, 100 hona zaroori hai`
+        : `Total ${probSum}%, must be 100`;
+    }
+    return null;
+  }, [activeDecisionGateway, hasInvalidBranchProb, probSum, intakeLanguage]);
+
+  const hiddenStructuralIssues = useMemo(() => {
+    if (!rawDiagram) return [];
+    return findHiddenStructuralIssues(rawDiagram);
+  }, [rawDiagram]);
+
+  const isConfirmBlocked = useMemo(() => {
+    return (
+      (validationErrors && validationErrors.length > 0) ||
+      Boolean(probSumError) ||
+      hiddenStructuralIssues.length > 0
+    );
+  }, [validationErrors, probSumError, hiddenStructuralIssues]);
+
+  const confirmBlockedReason = useMemo(() => {
+    // Priority order: structural first, then probabilities
+    if (hiddenStructuralIssues.length > 0) {
+      return intakeLanguage === 'ur-roman'
+        ? hiddenStructuralIssues[0].messageRu
+        : hiddenStructuralIssues[0].messageEn;
+    }
+    if (validationErrors && validationErrors.length > 0) {
+      return friendlyError(unresolvedGateway || validationErrors[0], intakeLanguage, rawDiagram);
+    }
+    if (probSumError) {
+      return probSumError;
+    }
+    return null;
+  }, [hiddenStructuralIssues, validationErrors, probSumError, intakeLanguage, unresolvedGateway, rawDiagram]);
+
+  const confirmButtonLabel = useMemo(() => {
+    if (!isConfirmBlocked) {
+      return t('confirm', intakeLanguage);
+    }
+    // Priority order: structural first, then probabilities
+    if (hiddenStructuralIssues.length > 0) {
+      return intakeLanguage === 'ur-roman'
+        ? 'Confirm (Quality check dobara jorain)'
+        : 'Confirm (Fix quality check loop)';
+    }
+    if (validationErrors && validationErrors.length > 0) {
+      const err = friendlyError(validationErrors[0], intakeLanguage, rawDiagram);
+      return `Confirm (${err.replace(/\.$/, '')})`;
+    }
+    if (probSumError) {
+      return `Confirm (${probSumError})`;
+    }
+    return t('confirmBlockedErrors', intakeLanguage);
+  }, [isConfirmBlocked, hiddenStructuralIssues, validationErrors, probSumError, intakeLanguage, rawDiagram]);
 
   const [loading, setLoading] = useState(false);
   const [loadingText, setLoadingText] = useState('Analyzing your process…');
@@ -157,13 +313,26 @@ export default function IntakeFlow({
       const prompt = textToSubmit || description;
       if (!prompt.trim() || loading) return;
 
+      // Detection is only a suggestion: if differs with confidence >= 0.8, suggest banner
+      const detected = detectLanguageWithConfidence(prompt);
+      if (detected.language !== preferredLanguage && detected.confidence >= 0.8) {
+        try {
+          const dismissedCount = Number(localStorage.getItem('spot_dismiss_lang_' + detected.language) || 0);
+          if (dismissedCount < 2) {
+            setSuggestedLanguage(detected.language);
+          }
+        } catch {
+          // ignore
+        }
+      }
+
       setLoading(true);
       setError(null);
       setClarification(null);
-      setLoadingText('Spot AI is mapping your process…');
+      setLoadingText(t('mappingProcess', preferredLanguage));
 
       try {
-        const result = await generateAIProcess(prompt.trim(), history);
+        const result = await generateAIProcess(prompt.trim(), history, preferredLanguage);
 
         if (result.type === 'clarification') {
           setClarification(result.question);
@@ -180,7 +349,9 @@ export default function IntakeFlow({
         if (raw && (raw.type === 'spec' || (!raw.nodes && raw.pools))) {
           raw = compileBpmn(raw);
         }
-        const validation = validateBpmn(raw);
+        raw = normalizeAndRepairBpmn(raw, { userDescription: prompt.trim(), lang: preferredLanguage });
+        raw = ensureDefaultBranchProbabilities(raw);
+        const validation = validateBpmn(raw, { allowUnresolved: true });
         const finalRaw = validation.repaired || raw;
 
         updateGuided((prev) => ({
@@ -197,7 +368,7 @@ export default function IntakeFlow({
         setLoading(false);
       }
     },
-    [description, loading, updateGuided]
+    [description, loading, preferredLanguage, updateGuided]
   );
 
   const handleClarificationSubmit = useCallback(async () => {
@@ -215,50 +386,153 @@ export default function IntakeFlow({
     await handleGenerate(combinedPrompt, updatedHistory);
   }, [clarificationAnswer, clarificationHistory, description, handleGenerate, loading]);
 
-  const handleInlineCorrectionSubmit = useCallback(async (customText) => {
-    const correction = (typeof customText === 'string' ? customText : inlineCorrection).trim();
-    if (!correction || loading || !rawDiagram) return;
+  const handleInlineCorrectionSubmit = useCallback(
+    async (customText) => {
+      const correction = (typeof customText === 'string' ? customText : inlineCorrection).trim();
+      if (!correction || loading || !rawDiagram) return;
 
-    setLoading(true);
-    setError(null);
-    setClarification(null);
-    setLoadingText('Updating your process with your changes…');
+      setLoading(true);
+      setError(null);
+      setClarification(null);
+      setLoadingText(t('updatingProcess', intakeLanguage));
 
-    try {
-      const correctionPrompt = `Current process diagram:\n${JSON.stringify(rawDiagram, null, 2)}\n\nWhat should change:\n${correction}`;
-      const result = await generateAIProcess(correctionPrompt, clarificationHistory);
+      try {
+        const correctionPrompt = `Current process diagram:\n${JSON.stringify(rawDiagram, null, 2)}\n\nWhat should change:\n${correction}`;
+        const result = await generateAIProcess(correctionPrompt, clarificationHistory, intakeLanguage);
 
-      if (result.type === 'clarification') {
-        setClarification(result.question);
-        setClarificationHistory((prev) => [
+        if (result.type === 'clarification') {
+          setClarification(result.question);
+          setClarificationHistory((prev) => [
+            ...prev,
+            { role: 'user', content: correction },
+            { role: 'assistant', content: result.question },
+          ]);
+          return;
+        }
+
+        let raw = result.type === 'needs_confirmation' ? result.diagram : result;
+        if (raw && (raw.type === 'spec' || (!raw.nodes && raw.pools))) {
+          raw = compileBpmn(raw);
+        }
+        raw = normalizeAndRepairBpmn(raw, { userDescription: `${description} ${correction}`, lang: intakeLanguage });
+        raw = ensureDefaultBranchProbabilities(raw);
+        const validation = validateBpmn(raw, { allowUnresolved: true });
+        const finalRaw = validation.repaired || raw;
+
+        updateGuided((prev) => ({
+          rawDiagram: finalRaw,
+          version: (prev.version || 1) + 1,
+          validationResult: validation,
+        }));
+
+        if (!customText) {
+          setInlineCorrection('');
+        }
+      } catch (err) {
+        console.error('Correction update error:', err);
+        setError(err.message || 'Unable to update process diagram.');
+      } finally {
+        setLoading(false);
+      }
+    },
+    [inlineCorrection, loading, rawDiagram, clarificationHistory, intakeLanguage, updateGuided]
+  );
+
+  const handleBranchProbChange = useCallback(
+    (changedIdx, rawVal, branches) => {
+      let val = rawVal === '' ? '' : parseInt(rawVal, 10);
+      if (isNaN(val)) val = '';
+      if (typeof val === 'number') {
+        val = Math.max(0, Math.min(100, val));
+      }
+
+      const newProbs = { ...branchProbs };
+      newProbs[changedIdx] = val;
+
+      if (branches.length === 2 && autoBalance && val !== '' && typeof val === 'number') {
+        const otherIdx = changedIdx === 0 ? 1 : 0;
+        newProbs[otherIdx] = Math.max(0, Math.min(100, 100 - val));
+      }
+
+      setBranchProbs(newProbs);
+      setEditedBranches((prev) => new Set([...prev, changedIdx]));
+
+      if (rawDiagram) {
+        const updatedEdges = (rawDiagram.edges || []).map((e) => {
+          const bIdx = branches.findIndex((b) => b.edgeId === e.id);
+          if (bIdx !== -1 && newProbs[bIdx] !== undefined && typeof newProbs[bIdx] === 'number') {
+            const probDecimal = Number((newProbs[bIdx] / 100).toFixed(4));
+            const wasManuallyEdited = editedBranches.has(bIdx) || bIdx === changedIdx;
+            return {
+              ...e,
+              probability: probDecimal,
+              data: {
+                ...(e.data || {}),
+                probability: probDecimal,
+                probabilityEstimated: !wasManuallyEdited,
+              },
+            };
+          }
+          return e;
+        });
+
+        const updatedDiagram = {
+          ...rawDiagram,
+          edges: updatedEdges,
+        };
+
+        const newValidation = validateBpmn(updatedDiagram);
+        updateGuided((prev) => ({
           ...prev,
-          { role: 'user', content: correction },
-          { role: 'assistant', content: result.question },
-        ]);
-        return;
+          rawDiagram: updatedDiagram,
+          version: (prev.version || 1) + 1,
+          validationResult: newValidation,
+        }));
       }
+    },
+    [branchProbs, autoBalance, rawDiagram, editedBranches, updateGuided]
+  );
 
-      let raw = result.type === 'needs_confirmation' ? result.diagram : result;
-      if (raw && (raw.type === 'spec' || (!raw.nodes && raw.pools))) {
-        raw = compileBpmn(raw);
+  const handleFixForMe = useCallback(() => {
+    if (!rawDiagram || loading) return;
+
+    let repairedDiagram = JSON.parse(JSON.stringify(rawDiagram));
+
+    // 1. If there's a hidden structural quality check dead end, wire it back to previous task
+    if (hiddenStructuralIssues.length > 0) {
+      const issue = hiddenStructuralIssues[0];
+      if (issue.loopBackTargetId) {
+        repairedDiagram.edges = (repairedDiagram.edges || []).map((e) => {
+          if (e.id === issue.edgeId) {
+            return {
+              ...e,
+              target: issue.loopBackTargetId,
+            };
+          }
+          return e;
+        });
       }
-      const validation = validateBpmn(raw);
-      const finalRaw = validation.repaired || raw;
-
-      updateGuided((prev) => ({
-        rawDiagram: finalRaw,
-        version: (prev.version || 1) + 1,
-        validationResult: validation,
-      }));
-
-      setInlineCorrection('');
-    } catch (err) {
-      console.error('Correction update error:', err);
-      setError(err.message || 'Unable to update process diagram.');
-    } finally {
-      setLoading(false);
     }
-  }, [inlineCorrection, loading, rawDiagram, clarificationHistory, updateGuided]);
+
+    // 2. Run deterministic normalizer (pure code, not an AI call)
+    repairedDiagram = normalizeAndRepairBpmn(repairedDiagram, {
+      userDescription: description,
+      lang: intakeLanguage,
+    });
+    repairedDiagram = ensureDefaultBranchProbabilities(repairedDiagram);
+
+    // 3. Re-validate
+    const val = validateBpmn(repairedDiagram, { allowUnresolved: true });
+    const finalClean = val.repaired || repairedDiagram;
+    const finalVal = validateBpmn(finalClean, { allowUnresolved: true });
+
+    updateGuided((prev) => ({
+      ...prev,
+      rawDiagram: finalClean,
+      version: (prev.version || 1) + 1,
+      validationResult: finalVal,
+    }));
+  }, [rawDiagram, loading, hiddenStructuralIssues, description, intakeLanguage, updateGuided]);
 
   const handleSwitchToChatClick = useCallback(() => {
     if (!onSwitchToChat) return;
@@ -344,7 +618,7 @@ export default function IntakeFlow({
   }, [rawDiagram, updateGuided]);
 
   const handleConfirm = useCallback(() => {
-    if (!rawDiagram) return;
+    if (!rawDiagram || isConfirmBlocked) return;
 
     // Validate BPMN before applying
     const validation = validateBpmn(rawDiagram);
@@ -374,7 +648,7 @@ export default function IntakeFlow({
       validationResult: validation,
       currentStep: 2,
     });
-  }, [rawDiagram, description, onApplyDiagram, updateGuided]);
+  }, [rawDiagram, isConfirmBlocked, description, onApplyDiagram, updateGuided]);
 
   const handleApplyAutoRepair = useCallback(() => {
     if (!rawDiagram) return;
@@ -463,6 +737,68 @@ export default function IntakeFlow({
     [confirmedData, rawDiagram, updateGuided]
   );
 
+  const summaryCounts = useMemo(() => {
+    const diag = simulationReadyData?.patched || confirmedData?.rawDiagram || rawDiagram;
+    if (!diag || !Array.isArray(diag.nodes)) {
+      return { steps: 0, decisions: 0, roles: 0, hasEstimated: false };
+    }
+    const nodes = diag.nodes;
+    const steps = nodes.filter((n) => n.type === 'task' || n.type?.endsWith('-task')).length;
+    const decisions = nodes.filter((n) => n.type?.includes('gateway')).length;
+
+    const laneRoles = new Set();
+    nodes.forEach((n) => {
+      const l = n.lane || n.data?.lane;
+      if (l && typeof l === 'string' && l.trim() !== '') {
+        laneRoles.add(l.trim());
+      }
+    });
+    const staffRes = (diag.resources || []).filter((r) => r.type === 'staff').length;
+    const roles = laneRoles.size > 0 ? laneRoles.size : (staffRes > 0 ? staffRes : 1);
+
+    const hasEstimated =
+      nodes.some(
+        (n) =>
+          n.data?.estimated === true ||
+          n.data?.duration_source === 'assumed' ||
+          n.estimated === true
+      ) ||
+      (diag.edges || []).some((e) => e.data?.probabilityEstimated === true) ||
+      (simulationReadyData?.assumptions || []).some((a) => a.estimated === true);
+
+    return { steps, decisions, roles, hasEstimated };
+  }, [simulationReadyData, confirmedData, rawDiagram]);
+
+  const handleRunSimulation = useCallback(() => {
+    const targetDiagram = simulationReadyData?.patched || confirmedData?.rawDiagram || rawDiagram;
+    const layout =
+      simulationReadyData?.layout ||
+      confirmedData?.layout ||
+      (targetDiagram ? layoutAiDiagram(targetDiagram) : null);
+
+    if (targetDiagram && layout) {
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem(
+            'spot:model:nodes',
+            JSON.stringify({ nodes: layout.elements, connections: layout.connections })
+          );
+        } catch (e) {
+          console.warn('Could not save model to localStorage:', e);
+        }
+      }
+      if (onConfirmApply) {
+        onConfirmApply(targetDiagram, simulationReadyData?.repairs || []);
+      } else if (onApplyDiagram) {
+        onApplyDiagram(layout.elements, layout.connections, layout.resources);
+      }
+    }
+
+    if (typeof window !== 'undefined') {
+      window.location.href = '/simulate';
+    }
+  }, [simulationReadyData, confirmedData, rawDiagram, onConfirmApply, onApplyDiagram]);
+
   const handleReset = useCallback(() => {
     if (onStartOver) {
       onStartOver();
@@ -527,16 +863,86 @@ export default function IntakeFlow({
           </div>
           <span style={{ fontSize: 12, fontWeight: 600, color: '#111827' }}>
             {step === 1
-              ? 'Step 1: Your Process'
+              ? t('step1Title', intakeLanguage)
               : step === 2
-              ? 'Step 2: Business Questions'
-              : 'Step 3: Ready to Simulate'}
+              ? t('step2Title', intakeLanguage)
+              : t('step3Title', intakeLanguage)}
           </span>
         </div>
         <span style={{ fontSize: 11, color: '#6b7280', fontWeight: 500 }}>
-          {step === 1 ? '1 of 3' : step === 2 ? '2 of 3' : '3 of 3'}
+          {t('stepOf', intakeLanguage, step, 3)}
         </span>
       </div>
+
+      {/* Language Suggestion Banner */}
+      {suggestedLanguage && (
+        <div style={{
+          margin: '10px 16px 0',
+          padding: '10px 14px',
+          background: '#fffbeb',
+          border: '1px solid #fde68a',
+          borderRadius: 12,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          fontSize: 12,
+          color: '#92400e',
+          boxShadow: '0 1px 2px rgba(0,0,0,0.04)'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <AlertCircle size={15} color="#d97706" style={{ flexShrink: 0 }} />
+            <span style={{ fontWeight: 500 }}>
+              {getSuggestionBanner(suggestedLanguage, preferredLanguage).message}
+            </span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+            <button
+              type="button"
+              onClick={() => {
+                setLanguage(suggestedLanguage);
+                setSuggestedLanguage(null);
+              }}
+              style={{
+                padding: '4px 10px',
+                background: '#5E43F3',
+                color: '#fff',
+                borderRadius: 6,
+                fontWeight: 600,
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: 11
+              }}
+            >
+              {getSuggestionBanner(suggestedLanguage, preferredLanguage).yes}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                try {
+                  const count = Number(localStorage.getItem('spot_dismiss_lang_' + suggestedLanguage) || 0) + 1;
+                  localStorage.setItem('spot_dismiss_lang_' + suggestedLanguage, String(count));
+                } catch {
+                  // ignore
+                }
+                setSuggestedLanguage(null);
+              }}
+              style={{
+                padding: '4px 8px',
+                background: 'transparent',
+                color: '#92400e',
+                borderRadius: 6,
+                fontWeight: 500,
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: 11
+              }}
+            >
+              {getSuggestionBanner(suggestedLanguage, preferredLanguage).no}
+            </button>
+          </div>
+        </div>
+      )}
 
       {step === 2 ? (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -544,6 +950,7 @@ export default function IntakeFlow({
             rawDiagram={confirmedData?.rawDiagram || rawDiagram}
             onComplete={handleIntakeComplete}
             onBack={() => updateGuided({ currentStep: 1 })}
+            lang={intakeLanguage}
           />
         </div>
       ) : (
@@ -553,10 +960,10 @@ export default function IntakeFlow({
             {/* Step 1 Introduction */}
             <div>
               <h3 style={{ fontSize: 13.5, fontWeight: 700, color: '#111827', margin: '0 0 4px' }}>
-                Describe your {user?.businessType ? `${user.businessType} ` : ''}business process
+                {t('describeProcess', intakeLanguage, user?.businessType)}
               </h3>
               <p style={{ fontSize: 12, color: '#6b7280', margin: 0, lineHeight: 1.5 }}>
-                In plain words, tell us what steps take place from the moment a customer arrives until they leave.
+                {t('describeProcessHelp', intakeLanguage)}
               </p>
             </div>
 
@@ -582,11 +989,7 @@ export default function IntakeFlow({
                 <textarea
                   value={description}
                   onChange={(e) => updateGuided({ flowText: e.target.value })}
-                  placeholder={
-                    user?.businessType
-                      ? `Describe what happens in your ${user.businessType} business from customer arrival to exit…`
-                      : 'Describe what happens from the moment a customer arrives until they leave…'
-                  }
+                  placeholder={t('placeholder', intakeLanguage, user?.businessType)}
                   rows={4}
                   disabled={loading}
                   style={{
@@ -609,7 +1012,7 @@ export default function IntakeFlow({
               {!rawDiagram && !loading && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 2 }}>
                   <span style={{ fontSize: 10.5, color: '#9ca3af', alignSelf: 'center', marginRight: 2 }}>
-                    Try:
+                    {t('tryLabel', intakeLanguage)}
                   </span>
                   {EXAMPLE_DESCRIPTIONS.map((ex) => (
                     <button
@@ -658,7 +1061,7 @@ export default function IntakeFlow({
                   transition: 'all 0.15s ease',
                 }}
               >
-                <Wand2 size={15} /> Show me my process
+                <Wand2 size={15} /> {t('showProcessBtn', intakeLanguage)}
               </button>
             )}
 
@@ -685,10 +1088,10 @@ export default function IntakeFlow({
                 />
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 600, color: '#5b21b6' }}>
-                    {loadingText}
+                    {loadingText || t('mappingProcess', intakeLanguage)}
                   </div>
                   <div style={{ fontSize: 11, color: '#7c3aed', marginTop: 3 }}>
-                    Identifying activities, events, and flow connections…
+                    {t('identifyingSteps', intakeLanguage)}
                   </div>
                 </div>
               </div>
@@ -711,7 +1114,7 @@ export default function IntakeFlow({
               >
                 <AlertCircle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 600, marginBottom: 2 }}>Generation issue</div>
+                  <div style={{ fontWeight: 600, marginBottom: 2 }}>{t('generationIssue', intakeLanguage)}</div>
                   <div style={{ lineHeight: 1.4 }}>{error}</div>
                   <button
                     onClick={() => handleGenerate(description)}
@@ -727,7 +1130,7 @@ export default function IntakeFlow({
                       cursor: 'pointer',
                     }}
                   >
-                    Try again
+                    {t('tryAgain', intakeLanguage)}
                   </button>
                 </div>
               </div>
@@ -756,7 +1159,7 @@ export default function IntakeFlow({
                 >
                   <Sparkles size={13} color="#6d28d9" />
                   <span style={{ fontSize: 12, fontWeight: 600, color: '#5b21b6' }}>
-                    One quick detail needed
+                    {t('oneDetailNeeded', intakeLanguage)}
                   </span>
                 </div>
 
@@ -779,7 +1182,7 @@ export default function IntakeFlow({
                       type="text"
                       value={clarificationAnswer}
                       onChange={(e) => setClarificationAnswer(e.target.value)}
-                      placeholder="Type your answer…"
+                      placeholder={t('typeYourAnswer', intakeLanguage)}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') handleClarificationSubmit();
                       }}
@@ -809,7 +1212,7 @@ export default function IntakeFlow({
                         fontWeight: 600,
                       }}
                     >
-                      Answer
+                      {t('answerBtn', intakeLanguage)}
                     </button>
                   </div>
                 </div>
@@ -852,7 +1255,7 @@ export default function IntakeFlow({
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       <Wand2 size={13} color="#6d28d9" />
                       <span style={{ fontSize: 12, fontWeight: 600, color: '#5b21b6' }}>
-                        Generated process · {layout.elements?.filter((n) => n.type === 'task').length || 0} steps
+                        {t('generatedProcessHeader', intakeLanguage, layout.elements?.filter((n) => n.type === 'task').length || 0)}
                       </span>
                     </div>
                     <button
@@ -884,7 +1287,7 @@ export default function IntakeFlow({
                       justifyContent: 'space-between',
                     }}
                   >
-                    <span>You described {statedCount} steps. AI added {inferredCount}.</span>
+                    <span>{t('stepsSummary', intakeLanguage, statedCount, inferredCount)}</span>
                   </div>
 
                   {/* Readable Process Steps List (Module I2e) — side-by-side with preview when expanded */}
@@ -903,6 +1306,7 @@ export default function IntakeFlow({
                         version={version}
                         onKeepInferred={handleKeepInferred}
                         onRemoveInferred={handleRemoveInferred}
+                        lang={intakeLanguage}
                       />
                     </div>
                     {isExpanded && layout && (
@@ -968,7 +1372,7 @@ export default function IntakeFlow({
                     >
                       <div style={{ fontSize: 11.5, fontWeight: 700, color: '#6d28d9', display: 'flex', alignItems: 'center', gap: 5 }}>
                         <Sparkles size={13} />
-                        AI added steps (no time counted):
+                        {t('aiAddedNoTime', intakeLanguage)}
                       </div>
                       {inferredTasks.map((task) => {
                         const isKept = task.kept || task.data?.kept;
@@ -992,7 +1396,7 @@ export default function IntakeFlow({
                                 {taskLabel}
                               </div>
                               <div style={{ fontSize: 10.5, color: '#7c3aed', marginTop: 1 }}>
-                                {isKept ? 'Kept · 0 min until configured' : 'AI added, no time counted'}
+                                {isKept ? `${t('kept', intakeLanguage)} · 0 min` : t('aiAddedNoTime', intakeLanguage)}
                               </div>
                             </div>
 
@@ -1014,7 +1418,7 @@ export default function IntakeFlow({
                                   gap: 3,
                                 }}
                               >
-                                <Check size={11} /> {isKept ? 'Kept' : 'Keep'}
+                                <Check size={11} /> {isKept ? t('kept', intakeLanguage) : t('keep', intakeLanguage)}
                               </button>
 
                               <button
@@ -1034,7 +1438,7 @@ export default function IntakeFlow({
                                   gap: 3,
                                 }}
                               >
-                                <Trash2 size={11} /> Remove
+                                <Trash2 size={11} /> {t('remove', intakeLanguage)}
                               </button>
                             </div>
                           </div>
@@ -1055,7 +1459,7 @@ export default function IntakeFlow({
                       }}
                     >
                       <div style={{ fontWeight: 700, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 5 }}>
-                        <CheckCircle size={13} /> Assumptions & Auto-repairs:
+                        <CheckCircle size={13} /> {t('assumptionsHeader', intakeLanguage)}
                       </div>
                       <ul style={{ margin: 0, paddingLeft: 16 }}>
                         {assumptions.map((r, i) => (
@@ -1065,79 +1469,242 @@ export default function IntakeFlow({
                     </div>
                   )}
 
-                  {/* Validation Errors Block */}
-                  {validationErrors.length > 0 && (
+                  {/* Validation Errors Block: friendly error, inline probability input, Fix for me button */}
+                  {isConfirmBlocked && (
+                    <div
+                      style={{
+                        padding: '12px 14px',
+                        background: '#fef2f2',
+                        borderTop: '1px solid #fecaca',
+                        fontSize: 12,
+                        color: '#b91c1c',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 10,
+                      }}
+                    >
+                      <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6, color: '#991b1b', fontSize: 12.5 }}>
+                        <AlertCircle size={15} /> {t('processNeedsAdjustment', intakeLanguage)}
+                      </div>
+
+                      {/* Single friendly error message: structural first, then probabilities */}
+                      <div style={{ fontSize: 12, lineHeight: 1.45, color: '#7f1d1d', fontWeight: 500 }}>
+                        {hiddenStructuralIssues.length > 0
+                          ? (intakeLanguage === 'ur-roman' ? hiddenStructuralIssues[0].messageRu : hiddenStructuralIssues[0].messageEn)
+                          : validationErrors.length > 0
+                          ? friendlyError(validationErrors[0], intakeLanguage, rawDiagram)
+                          : probSumError
+                          ? friendlyError({ type: 'probability-sum', sum: probSum }, intakeLanguage, rawDiagram)
+                          : friendlyError(unresolvedGateway || validationErrors[0], intakeLanguage, rawDiagram)}
+                      </div>
+
+                      {/* Structural error primary button: Fix for me */}
+                      {(hiddenStructuralIssues.length > 0 || (validationErrors.length > 0 && !probSumError && !unresolvedGateway)) && (
+                        <button
+                          type="button"
+                          onClick={handleFixForMe}
+                          disabled={loading}
+                          style={{
+                            alignSelf: 'flex-start',
+                            marginTop: 2,
+                            padding: '6px 12px',
+                            borderRadius: 6,
+                            border: 'none',
+                            background: 'linear-gradient(135deg, #4f46e5, #7c3aed)',
+                            color: '#fff',
+                            fontSize: 12,
+                            fontWeight: 600,
+                            cursor: loading ? 'not-allowed' : 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 5,
+                            boxShadow: '0 1px 3px rgba(79, 70, 229, 0.25)',
+                          }}
+                        >
+                          {loading ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Wand2 size={13} />}
+                          {t('fixForMe', intakeLanguage)}
+                        </button>
+                      )}
+
+                      {/* Inline percentage inputs inside error card when probability error exists */}
+                      {activeDecisionGateway && Array.isArray(activeDecisionGateway.branches) && activeDecisionGateway.branches.length > 0 && (
+                        <div
+                          style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 8,
+                            marginTop: 2,
+                            background: '#fff',
+                            padding: '10px 12px',
+                            borderRadius: 8,
+                            border: '1px solid #fecaca',
+                          }}
+                        >
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'center' }}>
+                            {activeDecisionGateway.branches.map((branch, bIdx) => {
+                              const currentVal = currentBranchProbs[bIdx] !== undefined ? currentBranchProbs[bIdx] : '';
+                              const branchLabel = stripTrailingPunctuation(branch.label || `Branch ${bIdx + 1}`);
+                              const isEstimated = !editedBranches.has(bIdx) && (branch.isEstimated !== false);
+
+                              return (
+                                <div key={branch.edgeId || bIdx} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>
+                                    {branchLabel}:
+                                  </span>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      max="100"
+                                      value={currentVal}
+                                      onChange={(e) =>
+                                        handleBranchProbChange(bIdx, e.target.value, activeDecisionGateway.branches)
+                                      }
+                                      style={{
+                                        width: 54,
+                                        padding: '4px 6px',
+                                        fontSize: 12,
+                                        fontWeight: 600,
+                                        borderRadius: 6,
+                                        border: '1px solid #d1d5db',
+                                        textAlign: 'center',
+                                        outline: 'none',
+                                        color: '#111827',
+                                      }}
+                                    />
+                                    <span style={{ fontSize: 12, fontWeight: 600, color: '#4b5563' }}>%</span>
+                                    {isEstimated && (
+                                      <span
+                                        style={{
+                                          fontSize: 10,
+                                          fontWeight: 500,
+                                          color: '#6b7280',
+                                          background: '#f3f4f6',
+                                          padding: '1px 5px',
+                                          borderRadius: 4,
+                                        }}
+                                      >
+                                        {t('estimated', intakeLanguage)}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
+                            {/* Total indicator */}
+                            <span
+                              style={{
+                                fontSize: 11.5,
+                                fontWeight: 700,
+                                color: probSum === 100 ? '#059669' : '#dc2626',
+                              }}
+                            >
+                              {t('totalIndicator', intakeLanguage, probSum)}
+                            </span>
+
+                            {activeDecisionGateway.branches.length === 2 && (
+                              <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#6b7280', cursor: 'pointer' }}>
+                                <input
+                                  type="checkbox"
+                                  checked={autoBalance}
+                                  onChange={(e) => setAutoBalance(e.target.checked)}
+                                />
+                                {t('autoBalance', intakeLanguage)}
+                              </label>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Clean Decision Branches Card when valid & no error */}
+                  {!isConfirmBlocked && activeDecisionGateway && Array.isArray(activeDecisionGateway.branches) && activeDecisionGateway.branches.length > 0 && (
                     <div
                       style={{
                         padding: '10px 12px',
-                        background: '#fef2f2',
-                        borderTop: '1px solid #fecaca',
-                        fontSize: 11.5,
-                        color: '#b91c1c',
+                        background: '#f8fafc',
+                        borderTop: '1px solid #e2e8f0',
+                        fontSize: 12,
                         display: 'flex',
                         flexDirection: 'column',
                         gap: 6,
                       }}
                     >
-                      <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 5 }}>
-                        <AlertCircle size={13} /> Process needs adjustment before proceeding:
+                      <div style={{ fontSize: 11.5, fontWeight: 700, color: '#475569', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <Sliders size={13} color="#6366f1" />
+                        <span>{stripTrailingPunctuation(activeDecisionGateway.label)}?</span>
                       </div>
-                      <ul style={{ margin: 0, paddingLeft: 16 }}>
-                        {validationErrors.map((err, i) => (
-                          <li key={i} style={{ marginBottom: 2 }}>{err}</li>
-                        ))}
-                      </ul>
-                      {(assumptions.length > 0 || (state?.validationResult?.repairs && state.validationResult.repairs.length > 0)) && (
-                        <button
-                          type="button"
-                          onClick={handleApplyAutoRepair}
-                          style={{
-                            alignSelf: 'flex-start',
-                            marginTop: 4,
-                            padding: '5px 10px',
-                            borderRadius: 6,
-                            border: '1px solid #bfdbfe',
-                            background: '#eff6ff',
-                            color: '#1e40af',
-                            fontSize: 11.5,
-                            fontWeight: 600,
-                            cursor: 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 4,
-                          }}
-                        >
-                          <CheckCircle size={12} /> Apply Auto-repairs & Proceed
-                        </button>
-                      )}
 
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setInlineCorrection(
-                            'Assign all tasks to either Customer or Store swimlanes, and ensure every task and intermediate event has valid incoming and outgoing sequence flows within its lane.'
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'center' }}>
+                        {activeDecisionGateway.branches.map((branch, bIdx) => {
+                          const currentVal = currentBranchProbs[bIdx] !== undefined ? currentBranchProbs[bIdx] : '';
+                          const branchLabel = stripTrailingPunctuation(branch.label || `Branch ${bIdx + 1}`);
+                          const isEstimated = !editedBranches.has(bIdx) && (branch.isEstimated !== false);
+
+                          return (
+                            <div key={branch.edgeId || bIdx} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>
+                                {branchLabel}:
+                              </span>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="100"
+                                  value={currentVal}
+                                  onChange={(e) =>
+                                    handleBranchProbChange(bIdx, e.target.value, activeDecisionGateway.branches)
+                                  }
+                                  style={{
+                                    width: 54,
+                                    padding: '3px 6px',
+                                    fontSize: 12,
+                                    fontWeight: 600,
+                                    borderRadius: 6,
+                                    border: '1px solid #cbd5e1',
+                                    textAlign: 'center',
+                                    outline: 'none',
+                                    color: '#111827',
+                                    background: '#fff',
+                                  }}
+                                />
+                                <span style={{ fontSize: 12, fontWeight: 600, color: '#64748b' }}>%</span>
+                                {isEstimated && (
+                                  <span
+                                    style={{
+                                      fontSize: 10,
+                                      fontWeight: 500,
+                                      color: '#6b7280',
+                                      background: '#e2e8f0',
+                                      padding: '1px 5px',
+                                      borderRadius: 4,
+                                    }}
+                                  >
+                                    {t('estimated', intakeLanguage)}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
                           );
-                          const inputEl = document.getElementById('inline-change-input');
-                          if (inputEl) inputEl.focus();
-                        }}
-                        style={{
-                          alignSelf: 'flex-start',
-                          marginTop: 2,
-                          padding: '5px 10px',
-                          borderRadius: 6,
-                          border: '1px solid #ddd6fe',
-                          background: '#f5f3ff',
-                          color: '#6d28d9',
-                          fontSize: 11.5,
-                          fontWeight: 600,
-                          cursor: 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 4,
-                        }}
-                      >
-                        <Wand2 size={12} /> Autofill fix into "What should change?"
-                      </button>
+                        })}
+                      </div>
+
+                      {activeDecisionGateway.branches.length === 2 && (
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 2 }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10.5, color: '#64748b', cursor: 'pointer' }}>
+                            <input
+                              type="checkbox"
+                              checked={autoBalance}
+                              onChange={(e) => setAutoBalance(e.target.checked)}
+                            />
+                            {t('autoBalance', intakeLanguage)}
+                          </label>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -1153,14 +1720,14 @@ export default function IntakeFlow({
                     }}
                   >
                     <div style={{ fontSize: 12.5, fontWeight: 700, color: '#111827', textAlign: 'center' }}>
-                      Is this right?
+                      {t('isThisRight', intakeLanguage)}
                     </div>
 
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                       {/* Confirm Button */}
                       <button
                         onClick={handleConfirm}
-                        disabled={validationErrors.length > 0}
+                        disabled={isConfirmBlocked}
                         style={{
                           width: '100%',
                           display: 'flex',
@@ -1169,41 +1736,21 @@ export default function IntakeFlow({
                           gap: 6,
                           padding: '9px 0',
                           borderRadius: 8,
-                          border: validationErrors.length > 0 ? '1px solid #d1d5db' : 'none',
-                          cursor: validationErrors.length > 0 ? 'not-allowed' : 'pointer',
-                          background: validationErrors.length > 0
+                          border: isConfirmBlocked ? '1px solid #d1d5db' : 'none',
+                          cursor: isConfirmBlocked ? 'not-allowed' : 'pointer',
+                          background: isConfirmBlocked
                             ? '#f3f4f6'
                             : 'linear-gradient(135deg, #10b981, #059669)',
-                          color: validationErrors.length > 0 ? '#9ca3af' : '#fff',
+                          color: isConfirmBlocked ? '#9ca3af' : '#fff',
                           fontSize: 12.5,
                           fontWeight: 600,
-                          boxShadow: validationErrors.length > 0 ? 'none' : '0 1px 4px rgba(16,185,129,0.25)',
+                          boxShadow: isConfirmBlocked ? 'none' : '0 1px 4px rgba(16,185,129,0.25)',
                         }}
-                        title={
-                          validationErrors.length > 0
-                            ? "Confirm is blocked because of process validation errors above. Resolve them below."
-                            : "Confirm process diagram and proceed to questions"
-                        }
+                        title={confirmButtonLabel}
                       >
                         <CheckCircle size={14} />
-                        {validationErrors.length > 0 ? 'Confirm (Blocked by errors)' : 'Confirm'}
+                        {confirmButtonLabel}
                       </button>
-
-                      {validationErrors.length > 0 && (
-                        <div
-                          style={{
-                            fontSize: 11,
-                            color: '#b91c1c',
-                            background: '#fef2f2',
-                            border: '1px solid #fecaca',
-                            borderRadius: 6,
-                            padding: '6px 8px',
-                            lineHeight: 1.35,
-                          }}
-                        >
-                          <strong>Why is Confirm blocked?</strong> The diagram has {validationErrors.length} BPMN structural errors (missing lanes or sequence flows) that would crash simulation. Use <em>"What should change?"</em> below to adjust it with AI.
-                        </div>
-                      )}
                     </div>
 
                     {/* Inline Box: "What should change?" (Module I2e) */}
@@ -1230,7 +1777,7 @@ export default function IntakeFlow({
                           gap: 5,
                         }}
                       >
-                        <Wand2 size={13} color="#7c3aed" /> What should change?
+                        <Wand2 size={13} color="#7c3aed" /> {t('whatShouldChange', intakeLanguage)}
                       </label>
                       <div style={{ display: 'flex', gap: 6 }}>
                         <input
@@ -1244,7 +1791,7 @@ export default function IntakeFlow({
                               handleInlineCorrectionSubmit();
                             }
                           }}
-                          placeholder="e.g. Add ID check step before payment, or change who handles packaging…"
+                          placeholder={t('whatShouldChangePlaceholder', intakeLanguage)}
                           disabled={loading}
                           style={{
                             flex: 1,
@@ -1279,7 +1826,7 @@ export default function IntakeFlow({
                           }}
                         >
                           {loading ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Sparkles size={12} />}
-                          Update
+                          {t('update', intakeLanguage)}
                         </button>
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: -2 }}>
@@ -1297,7 +1844,7 @@ export default function IntakeFlow({
                             cursor: 'pointer',
                           }}
                         >
-                          Continue in Chat →
+                          {t('continueInChat', intakeLanguage)}
                         </button>
                       </div>
                     </div>
@@ -1314,7 +1861,7 @@ export default function IntakeFlow({
                         padding: '4px 0',
                       }}
                     >
-                      Start over with a new description
+                      {t('startOver', intakeLanguage)}
                     </button>
                   </div>
                 </div>
@@ -1324,41 +1871,114 @@ export default function IntakeFlow({
         ) : (
           /* Step 3: Ready to Simulate */
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {/* Next-Step CTA Summary Card */}
             <div
               style={{
-                background: 'linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%)',
-                border: '1px solid #bbf7d0',
+                background: '#fff',
+                border: '1.5px solid #10b981',
                 borderRadius: 12,
-                padding: '14px 16px',
+                padding: '16px 16px',
                 display: 'flex',
-                alignItems: 'flex-start',
-                gap: 12,
-                boxShadow: '0 2px 8px rgba(16,185,129,0.08)',
+                flexDirection: 'column',
+                gap: 10,
+                boxShadow: '0 2px 8px rgba(16, 185, 129, 0.1)',
               }}
             >
-              <div
-                style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: '50%',
-                  background: '#10b981',
-                  color: '#fff',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  flexShrink: 0,
-                }}
-              >
-                <CheckCircle size={18} />
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13.5, fontWeight: 700, color: '#065f46' }}>
-                  Process Ready to Simulate!
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: '50%',
+                    background: '#10b981',
+                    color: '#fff',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0,
+                  }}
+                >
+                  <CheckCircle size={18} />
                 </div>
-                <div style={{ fontSize: 11.5, color: '#047857', marginTop: 2, lineHeight: 1.4 }}>
-                  All step speeds, staff responsibilities, arrival rates, and space constraints have been applied to your digital twin.
+                <div style={{ fontSize: 13.5, fontWeight: 700, color: '#065f46', lineHeight: 1.35 }}>
+                  {t('processReadySummary', intakeLanguage, summaryCounts.steps, summaryCounts.decisions, summaryCounts.roles)}
                 </div>
               </div>
+
+              {/* Action buttons: Run simulation & Edit process */}
+              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                <button
+                  type="button"
+                  onClick={handleRunSimulation}
+                  style={{
+                    flex: 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                    padding: '10px 14px',
+                    borderRadius: 8,
+                    border: 'none',
+                    background: 'linear-gradient(135deg, #10b981, #059669)',
+                    color: '#fff',
+                    fontSize: 13,
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    boxShadow: '0 2px 5px rgba(16, 185, 129, 0.25)',
+                  }}
+                >
+                  <Play size={14} fill="#fff" />
+                  {t('runSimulation', intakeLanguage)}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => updateGuided({ currentStep: 2 })}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 5,
+                    padding: '10px 14px',
+                    borderRadius: 8,
+                    border: '1px solid #d1d5db',
+                    background: '#fff',
+                    color: '#374151',
+                    fontSize: 12.5,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <Edit3 size={13} />
+                  {t('editProcess', intakeLanguage)}
+                </button>
+              </div>
+
+              {/* One-line hint */}
+              <div style={{ fontSize: 11.5, color: '#4b5563', lineHeight: 1.4 }}>
+                {t('runSimulationHint', intakeLanguage)}
+              </div>
+
+              {/* Small note if any step has an estimated value */}
+              {summaryCounts.hasEstimated && (
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: '#92400e',
+                    background: '#fef3c7',
+                    border: '1px solid #fde68a',
+                    padding: '6px 9px',
+                    borderRadius: 6,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    marginTop: 2,
+                  }}
+                >
+                  <Info size={13} color="#b45309" />
+                  <span>{t('estimatesNote', intakeLanguage)}</span>
+                </div>
+              )}
             </div>
 
             {/* Simulation Config Summary Grid */}
@@ -1376,13 +1996,13 @@ export default function IntakeFlow({
                 }}
               >
                 <span style={{ fontSize: 10.5, color: '#6b7280', textTransform: 'uppercase', fontWeight: 600 }}>
-                  Rush Hour Pace
+                  {t('rushHourPace', intakeLanguage)}
                 </span>
                 <span style={{ fontSize: 13, fontWeight: 700, color: '#111827', textTransform: 'capitalize' }}>
-                  {simulationReadyData?.simulationConfig?.busyness || 'Steady'}
+                  {t('busyness_' + (simulationReadyData?.simulationConfig?.busyness || 'steady'), intakeLanguage)}
                 </span>
                 <span style={{ fontSize: 10.5, color: '#7c3aed' }}>
-                  ~{simulationReadyData?.simulationConfig?.customers_per_hour || 20} arrivals/hr
+                  {t('arrivalsPerHour', intakeLanguage, simulationReadyData?.simulationConfig?.customers_per_hour || 20)}
                 </span>
               </div>
 
@@ -1399,17 +2019,17 @@ export default function IntakeFlow({
                 }}
               >
                 <span style={{ fontSize: 10.5, color: '#6b7280', textTransform: 'uppercase', fontWeight: 600 }}>
-                  Main Goal
+                  {t('mainGoal', intakeLanguage)}
                 </span>
                 <span style={{ fontSize: 13, fontWeight: 700, color: '#111827', textTransform: 'capitalize' }}>
-                  {simulationReadyData?.simulationConfig?.goal === 'waiting'
-                    ? 'Wait Times'
-                    : simulationReadyData?.simulationConfig?.goal === 'cost'
-                    ? 'Reduce Costs'
-                    : 'Throughput'}
+                  {simulationReadyData?.simulationConfig?.goal === 'cost'
+                    ? t('goalReduceCosts', intakeLanguage)
+                    : simulationReadyData?.simulationConfig?.goal === 'throughput'
+                    ? t('goalThroughput', intakeLanguage)
+                    : t('goalWaitTimes', intakeLanguage)}
                 </span>
                 <span style={{ fontSize: 10.5, color: '#059669' }}>
-                  Optimized for SPOT
+                  {t('optimizedForSpot', intakeLanguage)}
                 </span>
               </div>
             </div>
@@ -1437,8 +2057,8 @@ export default function IntakeFlow({
                     justifyContent: 'space-between',
                   }}
                 >
-                  <span>Patched Simulation Model</span>
-                  <span style={{ color: '#10b981', fontWeight: 700 }}>● Applied to Canvas</span>
+                  <span>{t('patchedSimulationModel', intakeLanguage)}</span>
+                  <span style={{ color: '#10b981', fontWeight: 700 }}>● {t('appliedToCanvas', intakeLanguage)}</span>
                 </div>
                 <DiagramPreview
                   key={`preview_step3_v${version}`}
@@ -1456,6 +2076,7 @@ export default function IntakeFlow({
               repairs={simulationReadyData?.repairs || []}
               initialValidationErrors={simulationReadyData?.validationErrors || validationErrors || []}
               simulationConfig={simulationReadyData?.simulationConfig}
+              lang={intakeLanguage}
               onWhatShouldChange={handleInlineCorrectionSubmit}
               onBackToQuestions={() => updateGuided({ currentStep: 2 })}
               onConfirm={(finalDiagram, finalRepairs) => {
@@ -1488,7 +2109,7 @@ export default function IntakeFlow({
                   cursor: 'pointer',
                 }}
               >
-                <ArrowLeft size={13} /> Edit Answers
+                <ArrowLeft size={13} /> {t('editAnswers', intakeLanguage)}
               </button>
 
               <button
@@ -1509,7 +2130,7 @@ export default function IntakeFlow({
                   cursor: 'pointer',
                 }}
               >
-                <RotateCcw size={13} /> Start Over
+                <RotateCcw size={13} /> {t('startOverBtn', intakeLanguage)}
               </button>
             </div>
           </div>

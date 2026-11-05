@@ -298,6 +298,7 @@ export default function AiPanel({ open, onClose, elements = [], connections = []
       answers: null,
       currentStep: 1,
       validationResult: { errors: [], repairs: [] },
+      intakeLanguage: 'en',
     });
 
     // Clear the sessionStorage copy

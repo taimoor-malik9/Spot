@@ -591,11 +591,12 @@ export function compileBpmn(spec) {
         nodes.push({
           id: joinId,
           type: 'exclusive-gateway',
-          label: 'Rejoin',
+          label: '',
+          gateway_role: 'merge',
           pool: poolId,
           lane: stepLane || poolName,
           origin: 'structural',
-          data: { label: 'Rejoin', gateway_type: 'exclusive', origin: 'structural' },
+          data: { label: '', gateway_type: 'exclusive', gateway_role: 'merge', origin: 'structural' },
         });
 
         rejoiningOptions.forEach((opt) => {

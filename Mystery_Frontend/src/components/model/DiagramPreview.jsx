@@ -227,11 +227,8 @@ export default function DiagramPreview({
           const y = ty(n.position?.y ?? 0);
 
           const rawLabel = n.data?.label || n.label || '';
-          const label = isFullView
-            ? rawLabel
-            : rawLabel.length > 10
-            ? rawLabel.slice(0, 9) + '…'
-            : rawLabel;
+          const isGateway = n.type?.includes('gateway');
+          const isMergeGw = isGateway && (/^(rejoin|merge)$/i.test(rawLabel) || n.gateway_role === 'merge' || n.data?.gateway_role === 'merge');
 
           // Event Nodes (Start / End / Intermediate)
           if (n.type?.includes('event')) {
@@ -243,6 +240,7 @@ export default function DiagramPreview({
             const strokeW = isFullView ? (isEnd ? 3.5 : isStart ? 1.8 : 1.5) : 1.5;
             return (
               <g key={n.id}>
+                <title>{rawLabel}</title>
                 <circle
                   cx={x + w / 2}
                   cy={y + r}
@@ -269,36 +267,39 @@ export default function DiagramPreview({
                   fontWeight={isFullView ? '600' : 'normal'}
                   fill="#1f2937"
                 >
-                  {label}
+                  {rawLabel}
                 </text>
               </g>
             );
           }
 
-          // Gateway Nodes (Exclusive / Parallel Split)
-          if (n.type?.includes('gateway')) {
+          // Gateway Nodes (Exclusive / Parallel Split / Merge)
+          if (isGateway) {
             const hw = w / 2;
             const hh = h / 2;
             const mx = x + hw;
             const my = y + hh;
             return (
               <g key={n.id}>
+                <title>{isMergeGw ? 'Dono raaste yahan milte hain' : rawLabel}</title>
                 <polygon
                   points={`${mx},${y} ${x + w},${my} ${mx},${y + h} ${x},${my}`}
                   fill={col.fill}
                   stroke={col.stroke}
                   strokeWidth={isFullView ? 2 : 1}
                 />
-                <text
-                  x={mx}
-                  y={y + h + (isFullView ? 14 : 9)}
-                  textAnchor="middle"
-                  fontSize={isFullView ? 11 : 8 * scale}
-                  fontWeight={isFullView ? '600' : 'normal'}
-                  fill="#1f2937"
-                >
-                  {label}
-                </text>
+                {!isMergeGw && rawLabel && (
+                  <text
+                    x={mx}
+                    y={y + h + (isFullView ? 14 : 9)}
+                    textAnchor="middle"
+                    fontSize={isFullView ? 11 : 8 * scale}
+                    fontWeight={isFullView ? '600' : 'normal'}
+                    fill="#1f2937"
+                  >
+                    {rawLabel}
+                  </text>
+                )}
               </g>
             );
           }

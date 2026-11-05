@@ -10,6 +10,7 @@
  */
 
 import {
+  SPEED_MAPPINGS,
   DEFAULT_SPEED,
   DEFAULT_BUSYNESS,
   DEFAULT_GOAL,
@@ -172,8 +173,17 @@ export function initializeIntakeAnswers(rawDiagram, activeNodes) {
       existingRoles.push(n.data.resource);
     }
 
+    const defaultMin = n.data?.duration_min != null ? Number(n.data.duration_min) : SPEED_MAPPINGS[initialSpeed].duration_min;
+    const defaultMax = n.data?.duration_max != null ? Number(n.data.duration_max) : SPEED_MAPPINGS[initialSpeed].duration_max;
+    const defaultUnit = n.data?.duration_unit || SPEED_MAPPINGS[initialSpeed].duration_unit || 'minutes';
+
     steps[n.id] = {
       speed: wrapValue(initialSpeed, isStatedDuration ? 'tap' : 'default', !isStatedDuration),
+      duration_min: defaultMin,
+      duration_max: defaultMax,
+      duration: defaultMin === defaultMax ? defaultMin : Math.round((defaultMin + defaultMax) / 2),
+      duration_unit: defaultUnit,
+      source: isStatedDuration ? 'bucket' : 'estimated',
       staffRoles: wrapValue(existingRoles, existingRoles.length > 0 ? 'tap' : 'default', existingRoles.length === 0),
       kept: isKept || !isInferred,
     };
@@ -245,8 +255,39 @@ export function buildFinalAnswers(rawDiagram, answersState, activeNodes) {
     }
 
     const currentStep = answersState.steps?.[n.id];
+    const speedVal = currentStep?.speed?.value || DEFAULT_SPEED;
+    const isEstimated = Boolean(currentStep?.speed?.estimated || currentStep?.source === 'estimated');
+    const isCustom = speedVal === 'custom' || currentStep?.source === 'custom';
+
+    let min = currentStep?.duration_min;
+    let max = currentStep?.duration_max;
+    let unit = currentStep?.duration_unit || 'minutes';
+
+    if (min == null || max == null) {
+      const bucket = SPEED_MAPPINGS[speedVal] || SPEED_MAPPINGS[DEFAULT_SPEED];
+      min = bucket.duration_min;
+      max = bucket.duration_max;
+      unit = bucket.duration_unit;
+    }
+
+    const numMin = Number(min);
+    const numMax = Number(max);
+    let duration;
+    if (isCustom) {
+      duration = numMin === numMax ? numMin : (currentStep?.duration != null ? Number(currentStep.duration) : Math.round((numMin + numMax) / 2));
+    } else {
+      const bucket = SPEED_MAPPINGS[speedVal] || SPEED_MAPPINGS[DEFAULT_SPEED];
+      duration = bucket.duration;
+    }
+    const source = isEstimated ? 'estimated' : (isCustom ? 'custom' : 'bucket');
+
     finalSteps[n.id] = {
       speed: currentStep?.speed || wrapValue(DEFAULT_SPEED, 'default', true),
+      duration_min: numMin,
+      duration_max: numMax,
+      duration,
+      duration_unit: unit,
+      source,
       staffRoles: currentStep?.staffRoles || wrapValue([], 'default', true),
       kept: true,
     };

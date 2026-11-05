@@ -51,6 +51,11 @@ const userSchema = new mongoose.Schema({
     type: Number,
     default: 8,
   },
+  preferredLanguage: {
+    type: String,
+    enum: ['en', 'ur-roman', 'ur'],
+    default: 'en',
+  },
   securityQuestions: [
     {
       questionId: {

@@ -654,18 +654,45 @@ export function DiagramCanvas({
                         </span>
                       </div>
                     </foreignObject>
+                  ) : (/^(rejoin|merge)$/i.test(el.label || el.data?.label || '') || el.gateway_role === 'merge' || el.data?.gateway_role === 'merge') ? (
+                    <title>Dono raaste yahan milte hain</title>
                   ) : (
-                    <text
-                      x={nodeW / 2}
-                      y={nodeH + 13}
-                      textAnchor="middle"
-                      fontSize="11"
-                      fill={isSel ? '#0284c7' : '#374151'}
-                      fontWeight={isSel ? '600' : '500'}
-                      style={{ pointerEvents: 'none', userSelect: 'none' }}
+                    <foreignObject
+                      x={-50}
+                      y={nodeH + 2}
+                      width={nodeW + 100}
+                      height={38}
                     >
-                      {(el.label || '').length > 15 ? el.label.slice(0, 14) + '…' : el.label}
-                    </text>
+                      <div
+                        style={{
+                          width: '100%',
+                          height: '100%',
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          justifyContent: 'center',
+                          fontSize: 10.5,
+                          fontWeight: isSel ? 600 : 500,
+                          color: isSel ? '#0284c7' : '#374151',
+                          textAlign: 'center',
+                          lineHeight: 1.15,
+                          pointerEvents: 'none',
+                          userSelect: 'none',
+                          overflow: 'hidden',
+                        }}
+                        title={el.label}
+                      >
+                        <span
+                          style={{
+                            display: '-webkit-box',
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: 'vertical',
+                            overflow: 'hidden',
+                          }}
+                        >
+                          {el.label}
+                        </span>
+                      </div>
+                    </foreignObject>
                   )
                 )}
 

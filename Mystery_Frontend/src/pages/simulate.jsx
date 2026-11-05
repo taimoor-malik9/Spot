@@ -785,7 +785,7 @@ export default function SimulatePage() {
 
   useEffect(() => {
     if (!modelElements.length) { setTaskAssignments({}); return; }
-    const tasks = modelElements.filter(el => el.type === 'task' || el.type === 'subprocess');
+    const tasks = modelElements.filter(el => (el.type === 'task' || el.type === 'subprocess') && el.origin !== 'structural' && el.data?.origin !== 'structural' && !el.data?.hidden);
     setTaskAssignments(prev => {
       const next = {};
       tasks.forEach(task => {
@@ -1142,7 +1142,7 @@ export default function SimulatePage() {
 
   // Live utilization estimate — warns when arrival rate exceeds resource capacity
   const utilizationWarning = useMemo(() => {
-    const tasks = modelElements.filter(el => el.type === 'task' || el.type === 'subprocess');
+    const tasks = modelElements.filter(el => (el.type === 'task' || el.type === 'subprocess') && el.origin !== 'structural' && el.data?.origin !== 'structural' && !el.data?.hidden);
     if (!tasks.length) return null;
     // Estimate average service time per case (sum of all task midpoints in minutes)
     let totalServiceMin = 0;

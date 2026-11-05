@@ -31,7 +31,7 @@ function looksActionable(text) {
   return ACTIONABLE_PATTERN.test(String(text || ''));
 }
 
-export default function AIChatWidget({ results, idToLabel, simMode }) {
+export default function AIChatWidget({ results, idToLabel, simMode, language = 'en' }) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState([]); // {role: 'user'|'assistant', content}
@@ -72,6 +72,7 @@ export default function AIChatWidget({ results, idToLabel, simMode }) {
           summary,
           message: trimmed,
           history: nextMessages.slice(0, -1), // everything before this turn
+          preferredLanguage: language,
         }),
       });
       const data = await res.json();

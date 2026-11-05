@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { Sparkles, RefreshCw, AlertTriangle, AlertCircle, CheckCircle, Info } from 'lucide-react';
 import { buildResultsSummary } from './aiSummary';
 import { useImplementSuggestion } from '../lib/useImplementSuggestion';
+import { t } from '../lib/intake/i18n';
 
 const AI_API_BASE = import.meta.env.VITE_AI_API_URL || '';
 
@@ -19,7 +20,7 @@ const ICONS = {
   success: { Icon: CheckCircle, color: '#10b981' },
 };
 
-export default function AIInsightsPanel({ results, idToLabel, simMode, idToResource = {}, processId: propProcessId }) {
+export default function AIInsightsPanel({ results, idToLabel, simMode, idToResource = {}, processId: propProcessId, language = 'en' }) {
   const navigate = useNavigate();
   const [insights, setInsights] = useState(null);
   const [noneReason, setNoneReason] = useState(null);
@@ -44,7 +45,7 @@ export default function AIInsightsPanel({ results, idToLabel, simMode, idToResou
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {})
         },
-        body: JSON.stringify({ processId }),
+        body: JSON.stringify({ processId, preferredLanguage: language }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -82,7 +83,7 @@ export default function AIInsightsPanel({ results, idToLabel, simMode, idToResou
           <div style={{ width: 30, height: 30, borderRadius: '50%', background: '#6b4de6', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
             <Sparkles size={15} color="#fff" />
           </div>
-          <h3 style={{ fontSize: 14, fontWeight: 800, color: '#0f172a', margin: 0 }}>AI Insights</h3>
+          <h3 style={{ fontSize: 14, fontWeight: 800, color: '#0f172a', margin: 0 }}>{t('aiInsights_title', language)}</h3>
         </div>
 
         {insights !== null && (
@@ -95,14 +96,14 @@ export default function AIInsightsPanel({ results, idToLabel, simMode, idToResou
             }}
           >
             <RefreshCw size={12} style={{ animation: loading ? 'spin 1s linear infinite' : 'none' }} />
-            Refresh
+            {t('aiInsights_refresh', language)}
           </button>
         )}
       </div>
 
       {insights === null && !loading && !error && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-          <p style={{ margin: 0, fontSize: 13, color: '#64748b' }}>Simulate tested changes to see measured improvements before applying them.</p>
+          <p style={{ margin: 0, fontSize: 13, color: '#64748b' }}>{t('aiInsights_simulatePrompt', language)}</p>
           <button
             onClick={fetchInsights}
             style={{
@@ -110,7 +111,7 @@ export default function AIInsightsPanel({ results, idToLabel, simMode, idToResou
               borderRadius: 8, border: 'none', cursor: 'pointer', color: '#fff', background: '#6b4de6', flexShrink: 0,
             }}
           >
-            <Sparkles size={13} /> Find improvements
+            <Sparkles size={13} /> {t('aiInsights_findImprovements', language)}
           </button>
         </div>
       )}
@@ -118,7 +119,7 @@ export default function AIInsightsPanel({ results, idToLabel, simMode, idToResou
       {loading && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
           <RefreshCw size={13} color="#6b4de6" style={{ animation: 'spin 1s linear infinite' }} />
-          <span style={{ fontSize: 13, color: '#64748b' }}>Testing candidate improvements in simulator…</span>
+          <span style={{ fontSize: 13, color: '#64748b' }}>{t('aiInsights_testing', language)}</span>
         </div>
       )}
 
@@ -185,12 +186,12 @@ export default function AIInsightsPanel({ results, idToLabel, simMode, idToResou
                     {implementingId === i ? (
                       <>
                         <RefreshCw size={11} style={{ animation: 'spin 1s linear infinite' }} />
-                        Implementing...
+                        {t('aiInsights_implementing', language)}
                       </>
                     ) : (
                       <>
                         <Sparkles size={11} />
-                        Implement Suggestion
+                        {t('aiInsights_implement', language)}
                       </>
                     )}
                   </button>
@@ -232,7 +233,7 @@ export default function AIInsightsPanel({ results, idToLabel, simMode, idToResou
 
       {insights && insights.length === 0 && !loading && (
         <p style={{ margin: 0, fontSize: 13, color: '#64748b', fontStyle: 'italic', padding: '6px 0' }}>
-          {noneReason || "No change worth making at this load"}
+          {noneReason || t('aiInsights_noChangeWorth', language)}
         </p>
       )}
 

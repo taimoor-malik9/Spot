@@ -233,6 +233,14 @@ export function validateBpmn(rawDiagram, options = {}) {
 
   // 3. Labels Non-empty Check (Rule 9)
   repaired.nodes.forEach((n) => {
+    // Merge / Join gateways have NO visible label in BPMN
+    const isJoinGateway = isGateway(n) && (
+      n.gateway_role === 'merge' ||
+      n.data?.gateway_role === 'merge' ||
+      repaired.edges.filter((e) => !isMessageFlow(e) && e.target === n.id).length >= 2
+    );
+    if (isJoinGateway) return;
+
     const lbl = n.data?.label !== undefined ? n.data.label : n.label;
     if (lbl == null || String(lbl).trim() === '') {
       errors.push(`Node "${n.id}" (${n.type}) has an empty label.`);
@@ -565,7 +573,7 @@ export function validateBpmn(rawDiagram, options = {}) {
   repaired.nodes.forEach((n) => {
     if (isGateway(n)) {
       const inSeq = currentSeqForJoins.filter((e) => e.target === n.id);
-      if (inSeq.length >= 2) {
+      if (inSeq.length >= 2 || n.gateway_role === 'merge' || n.data?.gateway_role === 'merge') {
         // Join gateway! Check outgoing sequence flows
         const outSeq = currentSeqForJoins.filter((e) => e.source === n.id);
         outSeq.forEach((outEdge) => {

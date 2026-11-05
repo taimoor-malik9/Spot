@@ -4,12 +4,27 @@
 // change here can never affect the (already working) diagram-generation flow.
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const CANDIDATE_MODELS = [
-  process.env.GEMINI_MODEL || 'gemini-flash-latest',
-  'gemini-flash-lite-latest',
-  'gemini-2.0-flash-lite',
-  'gemini-2.5-flash',
-];
+// Cache for AI explanations by (resultId, language)
+const explanationsCache = new Map();
+
+function getCachedExplanation(resultId, language = 'en') {
+  if (!resultId) return null;
+  return explanationsCache.get(`${resultId}:${language}`) || null;
+}
+
+function setCachedExplanation(resultId, language, value) {
+  if (!resultId) return;
+  explanationsCache.set(`${resultId}:${language}`, value);
+}
+
+function buildLanguagePrompt(language = 'en') {
+  const lang = language === 'ur-roman' ? 'Roman Urdu (Latin script)' : (language === 'ur' ? 'Urdu script (Arabic-based script)' : 'English');
+  return `\nLanguage requirement:
+- Write ALL user-facing text (suggestions, meanings, answers, guidance) strictly in ${lang}.
+- Roman Urdu MUST stay in Latin script. Urdu script MUST use Urdu Arabic script.
+- Keep user's own step names, activity names, and resource/worker names EXACTLY as they appear in the data (do not translate them).
+- Never use technical simulation jargon.`;
+}
 
 class ResultsAiError extends Error {
   constructor(message, detail) {
@@ -126,13 +141,21 @@ async function callGemini({ systemPrompt, contents, expectJson }) {
   return raw;
 }
 
-async function generateInsights(summary) {
+async function generateInsights(summary, language = 'en', resultId = null) {
   if (!summary) {
     throw new ResultsAiError('summary is required', null);
   }
 
+  // Check cache by (resultId, language)
+  if (resultId) {
+    const cached = getCachedExplanation(resultId, language);
+    if (cached) return cached;
+  }
+
+  const promptWithLang = `${INSIGHTS_SYSTEM_PROMPT}\n${buildLanguagePrompt(language)}`;
+
   const raw = await callGemini({
-    systemPrompt: INSIGHTS_SYSTEM_PROMPT,
+    systemPrompt: promptWithLang,
     contents: [{ role: 'user', parts: [{ text: JSON.stringify(summary) }] }],
     expectJson: true,
   });
@@ -148,14 +171,20 @@ async function generateInsights(summary) {
     throw new ResultsAiError('Malformed insights response', parsed);
   }
 
- return parsed.insights.slice(0, 4).map(ins => ({
-  type: ['alert', 'warn', 'info', 'success'].includes(ins?.type) ? ins.type : 'info',
-  text: String(ins?.text || '').trim(),
-  meaning: String(ins?.meaning || '').trim(),
-})).filter(ins => ins.text);
+  const formatted = parsed.insights.slice(0, 4).map(ins => ({
+    type: ['alert', 'warn', 'info', 'success'].includes(ins?.type) ? ins.type : 'info',
+    text: String(ins?.text || '').trim(),
+    meaning: String(ins?.meaning || '').trim(),
+  })).filter(ins => ins.text);
+
+  if (resultId) {
+    setCachedExplanation(resultId, language, formatted);
+  }
+
+  return formatted;
 }
 
-async function chatAboutResults(summary, message, history = []) {
+async function chatAboutResults(summary, message, history = [], language = 'en') {
   if (!summary) {
     throw new ResultsAiError('summary is required', null);
   }
@@ -183,8 +212,10 @@ async function chatAboutResults(summary, message, history = []) {
     { role: 'user', parts: [{ text: message }] },
   ];
 
+  const promptWithLang = `${CHAT_SYSTEM_PROMPT}\n${buildLanguagePrompt(language)}`;
+
   const raw = await callGemini({
-    systemPrompt: CHAT_SYSTEM_PROMPT,
+    systemPrompt: promptWithLang,
     contents,
     expectJson: false,
   });
@@ -303,4 +334,14 @@ async function implementSuggestion(nodes, resources, suggestion) {
   };
 }
 
-module.exports = { generateInsights, chatAboutResults, implementSuggestion, ResultsAiError, PLAIN_LANGUAGE_RULES, callGemini };
+module.exports = {
+  generateInsights,
+  chatAboutResults,
+  implementSuggestion,
+  ResultsAiError,
+  PLAIN_LANGUAGE_RULES,
+  callGemini,
+  getCachedExplanation,
+  setCachedExplanation,
+  explanationsCache,
+};

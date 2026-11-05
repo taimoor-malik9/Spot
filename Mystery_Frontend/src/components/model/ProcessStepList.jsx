@@ -16,13 +16,14 @@ import {
 import { layoutAiDiagram } from '../../lib/aiDiagramLayout';
 import DiagramPreview from './DiagramPreview';
 import { extractOrderedSteps } from '../../lib/intake/stepListHelper';
+import { t } from '../../lib/intake/i18n';
 
 export { extractOrderedSteps };
 
 /**
  * Readable Step List component (Module I2e)
  *
- * Displays numbered process steps grouped by actor (Customer / Store),
+ * Displays numbered process steps in flow order from start to end,
  * showing branch paths ("If <question> -> <step>"), tagging inferred steps
  * ("AI added, no time counted"), and providing an "Open larger view" modal.
  */
@@ -31,6 +32,7 @@ export default function ProcessStepList({
   version = 1,
   onKeepInferred,
   onRemoveInferred,
+  lang = 'en',
 }) {
   const [showModal, setShowModal] = useState(false);
   const [zoomScale, setZoomScale] = useState(1);
@@ -45,14 +47,17 @@ export default function ProcessStepList({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showModal]);
 
-  const steps = useMemo(() => extractOrderedSteps(rawDiagram), [rawDiagram, version]);
+  const steps = useMemo(
+    () => extractOrderedSteps(rawDiagram, { lang }),
+    [rawDiagram, version, lang]
+  );
 
   const layout = useMemo(
     () => (rawDiagram ? layoutAiDiagram(rawDiagram) : null),
     [rawDiagram, version]
   );
 
-  // Group steps by actor
+  // Kept for backward compatibility if needed by external consumers
   const groupedSteps = useMemo(() => {
     const customer = [];
     const store = [];
@@ -92,7 +97,7 @@ export default function ProcessStepList({
         }}
       >
         <span style={{ fontSize: 12, fontWeight: 700, color: '#4f46e5' }}>
-          Process Steps ({steps.length})
+          {t('processStepsCount', lang, steps.length)}
         </span>
 
         <button
@@ -115,57 +120,21 @@ export default function ProcessStepList({
             gap: 4,
           }}
         >
-          <Maximize2 size={12} /> Open larger view
+          <Maximize2 size={12} /> {t('openLargerView', lang)}
         </button>
       </div>
 
-      {/* Customer Steps Group */}
-      {groupedSteps.customer.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 2 }}>
-          <div
-            style={{
-              fontSize: 11,
-              fontWeight: 700,
-              color: '#0369a1',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 4,
-              textTransform: 'uppercase',
-              letterSpacing: 0.5,
-            }}
-          >
-            <User size={12} /> Customer
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-            {groupedSteps.customer.map((step) => renderStepItem(step, onKeepInferred, onRemoveInferred))}
-          </div>
-        </div>
-      )}
-
-      {/* Store / Staff Steps Group */}
-      {groupedSteps.store.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
-          <div
-            style={{
-              fontSize: 11,
-              fontWeight: 700,
-              color: '#059669',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 4,
-              textTransform: 'uppercase',
-              letterSpacing: 0.5,
-            }}
-          >
-            <Store size={12} /> Store / Staff
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-            {groupedSteps.store.map((step) => renderStepItem(step, onKeepInferred, onRemoveInferred))}
-          </div>
-        </div>
-      )}
+      {/* Steps rendered in flow order from start to end */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
+        {steps.map((step, idx) =>
+          renderStepItem(
+            { ...step, stepNumber: idx + 1 },
+            onKeepInferred,
+            onRemoveInferred,
+            lang
+          )
+        )}
+      </div>
 
       {/* ========================================================================= */}
       {/* LARGER VIEW MODAL (Zoomable & Readable size) */}
@@ -321,7 +290,25 @@ export default function ProcessStepList({
   );
 }
 
-function renderStepItem(step, onKeepInferred, onRemoveInferred) {
+function renderStepItem(step, onKeepInferred, onRemoveInferred, lang = 'en') {
+  const isCustomer = step.group === 'Customer';
+  const roleLabel = step.role || (isCustomer ? t('customer', lang) : t('storeStaff', lang));
+
+  let branchText = null;
+  if (step.branchCondition) {
+    const rawCond = step.branchCondition.trim();
+    if (
+      rawCond.toLowerCase().includes('rejoin') ||
+      rawCond === 'Both paths continue here' ||
+      rawCond === 'Dono raaste yahan milte hain'
+    ) {
+      branchText = t('bothPathsContinue', lang);
+    } else {
+      const ifWord = lang === 'ur-roman' ? 'Agar' : 'If';
+      branchText = `${ifWord} ${rawCond} -> ${step.label}`;
+    }
+  }
+
   return (
     <div
       key={step.id}
@@ -336,7 +323,7 @@ function renderStepItem(step, onKeepInferred, onRemoveInferred) {
       }}
     >
       {/* Branch indicator if this step branches from a gateway */}
-      {step.branchCondition && (
+      {branchText && (
         <div
           style={{
             fontSize: 10.5,
@@ -351,7 +338,7 @@ function renderStepItem(step, onKeepInferred, onRemoveInferred) {
             alignSelf: 'flex-start',
           }}
         >
-          <GitBranch size={11} /> If {step.branchCondition} {'->'} {step.label}
+          <GitBranch size={11} /> {branchText}
         </div>
       )}
 
@@ -374,6 +361,25 @@ function renderStepItem(step, onKeepInferred, onRemoveInferred) {
             }}
           >
             {step.stepNumber}
+          </span>
+
+          <span
+            style={{
+              fontSize: 9.5,
+              fontWeight: 600,
+              color: isCustomer ? '#0369a1' : '#047857',
+              background: isCustomer ? '#f0f9ff' : '#ecfdf5',
+              border: `1px solid ${isCustomer ? '#bae6fd' : '#a7f3d0'}`,
+              borderRadius: 4,
+              padding: '1px 5px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 3,
+              flexShrink: 0,
+            }}
+          >
+            {isCustomer ? <User size={9} /> : <Store size={9} />}
+            {roleLabel}
           </span>
 
           <span
@@ -408,7 +414,7 @@ function renderStepItem(step, onKeepInferred, onRemoveInferred) {
                 gap: 3,
               }}
             >
-              <Sparkles size={9} /> AI added, no time counted
+              <Sparkles size={9} /> {t('aiAddedNoTime', lang)}
             </span>
 
             {onKeepInferred && !step.isKept && (
@@ -430,7 +436,7 @@ function renderStepItem(step, onKeepInferred, onRemoveInferred) {
                 }}
                 title="Count time for this step"
               >
-                <Check size={9} /> Keep
+                <Check size={9} /> {t('keep', lang)}
               </button>
             )}
 
@@ -453,7 +459,7 @@ function renderStepItem(step, onKeepInferred, onRemoveInferred) {
                 }}
                 title="Remove this step"
               >
-                <Trash2 size={9} /> Remove
+                <Trash2 size={9} /> {t('remove', lang)}
               </button>
             )}
           </div>

@@ -5,25 +5,46 @@ import { createPortal } from 'react-dom';
 import {
   ArrowLeft, RefreshCw, Target, CheckCircle, AlertTriangle, 
   LayoutDashboard, Clock, Zap, ShieldAlert,
-  GitCompare, TrendingUp, TrendingDown, History, ChevronDown, Layers, Loader2, Trash2
+  GitCompare, TrendingUp, TrendingDown, History, ChevronDown, Layers, Loader2, Trash2,
+  Globe, Download
 } from 'lucide-react';
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend, LabelList
 } from 'recharts';
 import { useAuth } from '@/context/AuthContext';
+import { useLanguage } from '@/context/LanguageContext';
 import { getScenarios, listRuns, getRun, deleteRun, runSimulation, runScenarioSimulation } from '../lib/apiService';
 import AIInsightsPanel from './AIInsightsPanel';
 import AIChatWidget from './AIChatWidget';
 import { computeComparisonMetrics } from '../lib/whatIfComparison';
 import { useAnalystView, Hint, LABELS, formatPlainLanguage } from '../lib/labels';
+import { t, formatDuration, formatRate, formatCurrency } from '../lib/intake/i18n';
 
 /* ═══════════════════════════════════════════════════════════════
    UTILITIES
    ═══════════════════════════════════════════════════════════════ */
 
-function fmt(mins) {
+function fmt(mins, lang = 'en') {
   if (mins == null || isNaN(mins)) return '—';
+  if (lang === 'ur') {
+    if (mins < 1) return `${Math.round(mins * 60)} سیکنڈ`;
+    if (mins < 60) return `${mins < 10 ? mins.toFixed(1) : Math.round(mins)} منٹ`;
+    if (mins < 1440) {
+      const h = Math.floor(mins / 60), m = Math.round(mins % 60);
+      return m ? `${h} گھنٹے ${m} منٹ` : `${h} گھنٹے`;
+    }
+    return `${(mins / 1440).toFixed(1)} دن`;
+  }
+  if (lang === 'ur-roman') {
+    if (mins < 1) return `${Math.round(mins * 60)}s`;
+    if (mins < 60) return `${mins < 10 ? mins.toFixed(1) : Math.round(mins)}m`;
+    if (mins < 1440) {
+      const h = Math.floor(mins / 60), m = Math.round(mins % 60);
+      return m ? `${h}h ${m}m` : `${h}h`;
+    }
+    return `${(mins / 1440).toFixed(1)}d`;
+  }
   if (mins < 1) return `${Math.round(mins * 60)}s`;
   if (mins < 60) return `${Math.round(mins)}m`;
   if (mins < 1440) {
@@ -246,7 +267,7 @@ function InfoTip({ title, children, whole = true, corner = 'tr' }) {
   );
 }
 
-function verdict(results, idToLabel, simMode, currency = 'Rs', isAnalystView = false) {
+function verdict(results, idToLabel, simMode, currency = 'Rs', isAnalystView = false, lang = 'en') {
   const tis = results?.time_in_system || {};
   const avg = tis.avg ?? 0;
   const min = tis.min ?? 0;
@@ -259,56 +280,79 @@ function verdict(results, idToLabel, simMode, currency = 'Rs', isAnalystView = f
 
   const lines = [];
   if (simMode === 'quick') {
-    lines.push({ type: 'info', text: `Theoretical best-case duration is **${fmt(avg)}** per unit.` });
+    lines.push({ type: 'info', text: t('results_verdictBestCase', lang, fmt(avg, lang)) });
     lines.push({
       type: 'success',
-      text: isAnalystView
-        ? 'Optimal path baseline established. Run Deep Analysis for accurate constraints and throughput.'
-        : 'Optimal path benchmark established. Run Deep Analysis for accurate constraints and customer capacity.'
+      text: t('results_verdictOptimalBaseline', lang, isAnalystView)
     });
   } else {
     const ov = buildPlainSummary(results);
     if (ov.overloaded && ov.tight) {
-      lines.push({ type: 'warn', text: `Customers arrive faster than **${ov.tight.name}** can serve them, so a line keeps building up. That is why the average completion time (**${fmt(avg)}**) looks so large: one customer's real work takes only about **${fmt(ov.work)}**, and only about **${throughput.toFixed(2)} units/hr** get through.` });
+      lines.push({
+        type: 'warn',
+        text: t('results_verdictOverloaded', lang, ov.tight.name, fmt(avg, lang), fmt(ov.work, lang), throughput.toFixed(2))
+      });
     } else {
-      lines.push({ type: 'info', text: `Average completion time is **${fmt(avg)}**, delivering **${throughput.toFixed(2)} units/hr**.` });
-      if (spread / avg < 0.15) lines.push({ type: 'success', text: `Process is **Highly Reliable** under load. Variance is minimal.` });
-      else lines.push({ type: 'warn', text: `**High Risk Detected:** Completion times fluctuate drastically between ${fmt(min)} and ${fmt(max)}.` });
+      lines.push({
+        type: 'info',
+        text: t('results_verdictNormal', lang, fmt(avg, lang), throughput.toFixed(2))
+      });
+      if (spread / avg < 0.15) {
+        lines.push({ type: 'success', text: t('results_verdictReliable', lang) });
+      } else {
+        lines.push({
+          type: 'warn',
+          text: t('results_verdictHighRisk', lang, fmt(min, lang), fmt(max, lang))
+        });
+      }
     }
   }
-  
+
   if (bnLabel) {
     if (simMode === 'quick') {
-      lines.push({ type: 'alert', text: `**"${bnLabel}"** is the slowest step in your process.` });
+      lines.push({ type: 'alert', text: t('results_verdictSlowestStep', lang, bnLabel) });
     } else {
       lines.push({
         type: 'alert',
-        text: isAnalystView
-          ? `**"${bnLabel}"** is your primary bottleneck constraint.`
-          : `**"${bnLabel}"** is where customers wait the longest.`
+        text: t('results_verdictPrimaryBottleneck', lang, bnLabel, isAnalystView)
       });
     }
   }
-  if (criticalResource && simMode !== 'quick') lines.push({ type: 'alert', text: `**${criticalResource[0]}** is overloaded (${criticalResource[1].utilization_pct}% capacity).` });
+  if (criticalResource && simMode !== 'quick') {
+    lines.push({
+      type: 'alert',
+      text: t('results_verdictResourceOverloaded', lang, criticalResource[0], criticalResource[1].utilization_pct)
+    });
+  }
 
   if (simMode !== 'quick') {
     const fin = results?.financial_summary;
     if (fin && fin.total_cost > 0) {
-      const totalFmt = fin.total_cost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-      lines.push({ type: 'info', text: `Total operational cost for this ${isAnalystView ? 'simulation run' : 'test run'} was **${currency} ${totalFmt}**.` });
-      
+      const runType = isAnalystView ? (lang === 'ur' ? 'سمولیشن رن' : lang === 'ur-roman' ? 'simulation run' : 'simulation run') : (lang === 'ur' ? 'ٹیسٹ رن' : lang === 'ur-roman' ? 'test run' : 'test run');
+      const formattedCurrencyTotal = formatCurrency(fin.total_cost, lang, currency);
+      lines.push({
+        type: 'info',
+        text: t('results_verdictTotalCost', lang, runType, formattedCurrencyTotal)
+      });
+
       if (fin.total_active_cost === 0) {
         lines.push({
           type: 'warn',
-          text: `No staff time was recorded, so all cost shows as idle. Assign staff to steps in Task Details.`
+          text: t('results_verdictNoStaffTime', lang)
         });
       } else if (fin.total_idle_cost > 0) {
         const wastePct = (fin.total_idle_cost / fin.total_cost) * 100;
-        const idleFmt = fin.total_idle_cost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const idleFmt = formatCurrency(fin.total_idle_cost, lang, currency);
         if (wastePct >= 20) {
-          lines.push({ type: 'warn', text: `**High Financial Waste:** **${currency} ${idleFmt}** (${wastePct.toFixed(1)}% of total cost) was lost to idle resource wait times.` });
+          lines.push({
+            type: 'warn',
+            text: t('results_verdictHighWaste', lang, idleFmt, wastePct.toFixed(1))
+          });
         } else {
-          lines.push({ type: 'info', text: `**${currency} ${idleFmt}** (${wastePct.toFixed(1)}% of total cost) was spent on idle resources.` });
+          lines.push({
+            type: 'info',
+            text: t('results_verdictIdleSpent', lang, idleFmt, wastePct.toFixed(1))
+          });
         }
       }
     }
@@ -317,7 +361,7 @@ function verdict(results, idToLabel, simMode, currency = 'Rs', isAnalystView = f
   return lines;
 }
 
-function PlainSummaryCard({ plain, simMode, idToLabel = {}, isAnalystView = false }) {
+function PlainSummaryCard({ plain, simMode, idToLabel = {}, isAnalystView = false, lang = 'en' }) {
   if (!plain) return null;
   const { total, work, wait, min, max, perHour, perDay, dayHours, tight, arrivalPerHr, status, runs, steps } = plain;
   const isQuick = simMode === 'quick';
@@ -326,9 +370,9 @@ function PlainSummaryCard({ plain, simMode, idToLabel = {}, isAnalystView = fals
   const maxStep = Math.max(...steps.map(s => s.work + s.wait), 0.0001);
   const overloaded = !isQuick && status === 'overloaded';
   const chip = isQuick || !status ? null
-    : status === 'overloaded' ? { t: "Can't keep up", c: '#b91c1c', bg: '#fee2e2' }
-    : status === 'tight' ? { t: 'Close to the limit', c: '#92400e', bg: '#fef3c7' }
-    : { t: 'Running smoothly', c: '#15803d', bg: '#dcfce7' };
+    : status === 'overloaded' ? { t: t('results_cantKeepUp', lang), c: '#b91c1c', bg: '#fee2e2' }
+    : status === 'tight' ? { t: t('results_closeToLimit', lang), c: '#92400e', bg: '#fef3c7' }
+    : { t: t('results_runningSmoothly', lang), c: '#15803d', bg: '#dcfce7' };
 
   const section = { borderTop: '1px solid #f1f5f9', paddingTop: 22, marginTop: 24 };
   const dot = (c) => ({ display: 'inline-block', width: 8, height: 8, borderRadius: 4, background: c, marginRight: 6 });
@@ -358,24 +402,35 @@ function PlainSummaryCard({ plain, simMode, idToLabel = {}, isAnalystView = fals
     </div>
   );
 
-  const who = tight ? <strong>{tight.name}</strong> : null;
+  const who = tight ? <bdi dir="auto"><strong>{tight.name}</strong></bdi> : null;
   const callout = (() => {
     if (isQuick || !tight || !status) return null;
     if (status === 'overloaded') {
-      return { color: '#ef4444', text: <>Customers are arriving faster than {who} can serve them.{arrivalPerHr != null ? <> About <strong>{arrivalPerHr.toFixed(1)}</strong> arrive per hour, but {who} can handle about <strong>{tight.perHr.toFixed(1)}</strong>.</> : <> {who} is busy <strong>{tight.util.toFixed(0)}%</strong> of the time and can handle about <strong>{tight.perHr.toFixed(1)}</strong> per hour.</>} The line keeps growing, which is why the waiting time and cycle time look so big. Adding more {who}{arrivalPerHr != null ? <> or slowing arrivals to about <strong>{(tight.perHr * 0.8).toFixed(1)}</strong> per hour</> : null} should fix it.</> };
+      return {
+        color: '#ef4444',
+        text: arrivalPerHr != null
+          ? t('results_calloutOverloadedWithArrival', lang, who, <bdi dir="ltr">{arrivalPerHr.toFixed(1)}</bdi>, <bdi dir="ltr">{tight.perHr.toFixed(1)}</bdi>, <bdi dir="ltr">{(tight.perHr * 0.8).toFixed(1)}</bdi>)
+          : t('results_calloutOverloadedNoArrival', lang, who, <bdi dir="ltr">{tight.util.toFixed(0)}</bdi>, <bdi dir="ltr">{tight.perHr.toFixed(1)}</bdi>)
+      };
     }
     if (status === 'tight') {
-      return { color: '#f59e0b', text: <>{who} is almost at its limit ({tight.util.toFixed(0)}% busy, about <strong>{tight.perHr.toFixed(1)}</strong> customers per hour at most). A small rise in customers will start a queue.</> };
+      return {
+        color: '#f59e0b',
+        text: t('results_calloutTight', lang, who, <bdi dir="ltr">{tight.util.toFixed(0)}</bdi>, <bdi dir="ltr">{tight.perHr.toFixed(1)}</bdi>)
+      };
     }
-    return { color: '#10b981', text: <>Capacity looks fine. {who} can handle about <strong>{tight.perHr.toFixed(1)}</strong> customers per hour{arrivalPerHr != null ? <> and <strong>{arrivalPerHr.toFixed(1)}</strong> arrive</> : null}.</> };
+    return {
+      color: '#10b981',
+      text: t('results_calloutOk', lang, who, <bdi dir="ltr">{tight.perHr.toFixed(1)}</bdi>, arrivalPerHr != null ? <bdi dir="ltr">{arrivalPerHr.toFixed(1)}</bdi> : null)
+    };
   })();
 
   const top = tight ? (Math.max(arrivalPerHr ?? 0, tight.perHr) * 1.05 || 1) : 1;
   const bar = (name, val, color) => (
-    <div key={name}>
+    <div key={typeof name === 'string' ? name : 'bar'}>
       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 5 }}>
         <span style={{ color: '#475569' }}>{name}</span>
-        <span style={{ fontWeight: 700, color: '#0f172a' }}>{val.toFixed(1)} / hr</span>
+        <span style={{ fontWeight: 700, color: '#0f172a' }}><bdi dir="ltr">{formatRate(val, 'hr', lang)}</bdi></span>
       </div>
       <div style={{ height: 10, background: '#f1f5f9', borderRadius: 5, overflow: 'hidden' }}>
         <div style={{ height: '100%', width: `${Math.min(100, (val / top) * 100)}%`, background: color, borderRadius: 5 }} />
@@ -385,59 +440,90 @@ function PlainSummaryCard({ plain, simMode, idToLabel = {}, isAnalystView = fals
 
   return (
     <div style={{ position: 'relative', background: '#fff', borderRadius: 16, border: '1px solid #e2e8f0', padding: '28px' }}>
-<InfoTip title="Performance overview" whole={false}>A plain-language summary of the simulation: how long one customer needs, how many you can serve per hour and per day, and where the time is lost. Hover any box inside for its own explanation.</InfoTip>
+      <InfoTip title={t('results_perfOverview', lang)} whole={false}>
+        {t('results_perfOverviewTip', lang)}
+      </InfoTip>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 22 }}>
         <div style={{ width: 40, height: 40, borderRadius: 10, background: '#f5f3ff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
           <LayoutDashboard size={20} color="#6b4de6" />
         </div>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <h3 style={{ fontSize: 17, fontWeight: 800, color: '#0f172a', margin: 0 }}>Performance Overview</h3>
+            <h3 style={{ fontSize: 17, fontWeight: 800, color: '#0f172a', margin: 0 }}>{t('results_perfOverview', lang)}</h3>
             {chip && <span style={{ fontSize: 11, fontWeight: 700, color: chip.c, background: chip.bg, borderRadius: 999, padding: '3px 10px' }}>{chip.t}</span>}
           </div>
-          <p style={{ fontSize: 13, color: '#64748b', margin: '3px 0 0', lineHeight: 1.5, paddingRight: 28 }}>
-            A customer needs about <strong style={{ color: '#334155' }}>{fmt(work)}</strong> of actual work.
+          <p style={{ fontSize: 13, color: '#64748b', margin: '3px 0 0', lineHeight: 1.5, paddingRight: 28 }} dir="auto">
+            {t('results_customerNeedsWork', lang, <strong style={{ color: '#334155' }}><bdi dir="ltr">{fmt(work, lang)}</bdi></strong>)}
             {overloaded && tight
-              ? <> But customers arrive faster than <strong style={{ color: '#334155' }}>{tight.name}</strong> can serve them, so a line keeps building up.</>
-              : !isQuick && wait > 0 ? <> On average they also wait about <strong style={{ color: '#334155' }}>{fmt(wait)}</strong> in line.</> : null}
-            {isQuick ? ' This is the best case, with no waiting.' : ` Worked out from ${runs} simulated customers.`}
+              ? <> {t('results_customersArriveFaster', lang, <strong style={{ color: '#334155' }}><bdi dir="auto">{tight.name}</bdi></strong>)}</>
+              : !isQuick && wait > 0 ? <> {t('results_averageWaitInLine', lang, <strong style={{ color: '#334155' }}><bdi dir="ltr">{fmt(wait, lang)}</bdi></strong>)}</> : null}
+            {isQuick ? ` ${t('results_bestCaseNoWait', lang)}` : ` ${t('results_workedOutFromCustomers', lang, runs)}`}
           </p>
         </div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16 }}>
-        <Stat icon={<Clock size={22} color="#6b4de6" />} bg="#f5f3ff" title="Time per customer" badge={overloaded ? { t: 'Real time', c: '#15803d', bg: '#dcfce7' } : null} tip="How long one customer's own tasks take when added together, with no waiting counted. This is the best time your process can ever reach." val={fmt(work)}
-          text={isQuick ? 'of work, no waiting in this mode' : 'of work, not counting the wait'} />
+        <Stat
+          icon={<Clock size={22} color="#6b4de6" />}
+          bg="#f5f3ff"
+          title={t('results_timePerCustomer', lang)}
+          badge={overloaded ? { t: t('results_realTime', lang), c: '#15803d', bg: '#dcfce7' } : null}
+          tip={t('results_timePerCustomerTip', lang)}
+          val={<bdi dir="ltr">{fmt(work, lang)}</bdi>}
+          text={isQuick ? t('results_workNoWait', lang) : t('results_workNotCountingWait', lang)}
+        />
         {!isQuick && (
           <>
-            <Stat icon={<Zap size={22} color="#10b981" />} bg="#ecfdf5" title="Customers per hour" tip="How many customers get all the way through your process every hour, measured in this simulation." val={perHour.toFixed(1)} text="finished every hour" />
-            <Stat icon={<Layers size={22} color="#0ea5e9" />} bg="#f0f9ff" title="Customers per day" tip="Customers per hour multiplied by the working hours in a day. The hours come from your resource settings, or 8 hours if none are set." val={Math.round(perDay).toLocaleString()} text={`in a ${dayHours}-hour day`} />
+            <Stat
+              icon={<Zap size={22} color="#10b981" />}
+              bg="#ecfdf5"
+              title={t('results_customersPerHour', lang)}
+              tip={t('results_customersPerHourTip', lang)}
+              val={<bdi dir="ltr">{perHour.toFixed(1)}</bdi>}
+              text={t('results_finishedEveryHour', lang)}
+            />
+            <Stat
+              icon={<Layers size={22} color="#0ea5e9" />}
+              bg="#f0f9ff"
+              title={t('results_customersPerDay', lang)}
+              tip={t('results_customersPerDayTip', lang)}
+              val={<bdi dir="ltr">{Math.round(perDay).toLocaleString()}</bdi>}
+              text={t('results_inADayHours', lang, dayHours)}
+            />
           </>
         )}
-        <Stat icon={<Target size={22} color="#f59e0b" />} bg="#fffbeb" title={isAnalystView ? "Average cycle time" : <Hint term="cycle_time">Average completion time</Hint>} muted={overloaded} badge={overloaded ? { t: 'Inflated by the line', c: '#b91c1c', bg: '#fee2e2' } : null} tip="The average time from start to finish, waiting in line included. Customers keep arriving without a break, so if staff cannot keep up the line grows and this number climbs. A big gap from Time per customer means customers mostly wait." val={fmt(total)}
-          text={isQuick ? 'start to finish' : overloaded ? 'pushed up by the growing line, not one real customer\'s time' : `fastest ${fmt(min)}, slowest ${fmt(max)}`} />
+        <Stat
+          icon={<Target size={22} color="#f59e0b" />}
+          bg="#fffbeb"
+          title={isAnalystView ? t('results_avgCycleTime', lang) : <Hint term="cycle_time">{t('results_avgCompletionTime', lang)}</Hint>}
+          muted={overloaded}
+          badge={overloaded ? { t: t('results_inflatedByLine', lang), c: '#b91c1c', bg: '#fee2e2' } : null}
+          tip={t('results_avgCycleTimeTip', lang)}
+          val={<bdi dir="ltr">{fmt(total, lang)}</bdi>}
+          text={isQuick ? t('results_startToFinish', lang) : overloaded ? t('results_pushedUpByGrowingLine', lang) : t('results_fastestSlowest', lang, fmt(min, lang), fmt(max, lang))}
+        />
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 36, ...section }}>
         <div>
-          <Heading title="How a customer's time is spent" hint="Purple is real work, teal is time spent waiting in line." />
+          <Heading title={t('results_howTimeSpent', lang)} hint={t('results_howTimeSpentHint', lang)} />
           <div style={{ display: 'flex', height: 14, borderRadius: 7, overflow: 'hidden', background: '#f1f5f9' }}>
             <div style={{ flex: Math.max(workPct, 1), background: '#6b4de6' }} />
             {waitPct > 0 && <div style={{ flex: waitPct, background: '#06b6d4' }} />}
           </div>
           <p style={{ fontSize: 13, color: '#475569', margin: '12px 0 0' }}>
-            <span style={dot('#6b4de6')} />{fmt(work)} working ({workPct}%)
+            <span style={dot('#6b4de6')} /><bdi dir="ltr">{fmt(work, lang)}</bdi> {t('results_workingPct', lang, '', workPct)}
             <span style={{ margin: '0 10px', color: '#cbd5e1' }}>|</span>
-            <span style={dot('#06b6d4')} />{fmt(wait)} in line ({waitPct}%)
+            <span style={dot('#06b6d4')} /><bdi dir="ltr">{fmt(wait, lang)}</bdi> {t('results_inLinePct', lang, '', waitPct)}
           </p>
         </div>
 
         {!isQuick && tight && (
           <div>
-            <Heading title={`Arrivals vs. what ${tight.name} can handle`} hint="If customers arrive faster than this, a queue builds up." />
+            <Heading title={t('results_arrivalsVsRole', lang, tight.name)} hint={t('results_arrivalsVsRoleHint', lang)} />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              {arrivalPerHr != null && bar('Customers arriving', arrivalPerHr, arrivalPerHr > tight.perHr ? '#ef4444' : '#6b4de6')}
-              {bar(`${tight.name} can handle`, tight.perHr, '#10b981')}
+              {arrivalPerHr != null && bar(t('results_customersArriving', lang), arrivalPerHr, arrivalPerHr > tight.perHr ? '#ef4444' : '#6b4de6')}
+              {bar(t('results_roleCanHandle', lang, <bdi dir="auto">{tight.name}</bdi>), tight.perHr, '#10b981')}
             </div>
           </div>
         )}
@@ -445,13 +531,17 @@ function PlainSummaryCard({ plain, simMode, idToLabel = {}, isAnalystView = fals
 
       {steps.length > 0 && (
         <div style={section}>
-          <Heading title="Step by step" hint={`The longest steps come first.${isQuick ? '' : ' Teal shows how long customers wait before each step.'}`} />
+          <Heading title={t('results_stepByStep', lang)} hint={t('results_stepByStepHint', lang, isQuick)} />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             {steps.map(s => (
               <div key={s.id}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13, marginBottom: 5 }}>
-                  <span style={{ fontWeight: 600, color: '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{idToLabel[s.id] || s.id}</span>
-                  <span style={{ color: '#64748b', whiteSpace: 'nowrap' }}>{fmt(s.work)} work{!isQuick && <> · {fmt(s.wait)} wait</>}</span>
+                  <span style={{ fontWeight: 600, color: '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <bdi dir="auto">{idToLabel[s.id] || s.id}</bdi>
+                  </span>
+                  <span style={{ color: '#64748b', whiteSpace: 'nowrap' }}>
+                    <bdi dir="ltr">{fmt(s.work, lang)}</bdi> {t('results_stepWorkWait', lang, '', fmt(s.wait, lang), isQuick)}
+                  </span>
                 </div>
                 <div style={{ display: 'flex', height: 8, borderRadius: 4, overflow: 'hidden', background: '#f1f5f9' }}>
                   <div style={{ width: `${(s.work / maxStep) * 100}%`, minWidth: s.work > 0 ? 3 : 0, background: '#6b4de6' }} />
@@ -465,15 +555,15 @@ function PlainSummaryCard({ plain, simMode, idToLabel = {}, isAnalystView = fals
 
       {callout && (
         <div style={{ marginTop: 24 }}>
-          <div style={{ background: '#fafbff', borderLeft: `4px solid ${callout.color}`, borderRadius: '0 8px 8px 0', padding: '14px 18px', fontSize: 14, color: '#334155', lineHeight: 1.6 }}>
+          <div style={{ background: '#fafbff', borderLeft: `4px solid ${callout.color}`, borderRadius: '0 8px 8px 0', padding: '14px 18px', fontSize: 14, color: '#334155', lineHeight: 1.6 }} dir="auto">
             {callout.text}
           </div>
         </div>
       )}
 
       {!isQuick && (
-        <p style={{ fontSize: 12, color: '#94a3b8', margin: '16px 0 0', lineHeight: 1.5 }}>
-          {isAnalystView ? 'Cycle time' : 'Time from arrival to leaving'} is an average over all {runs} customers, so a growing queue pushes it up. "Time per customer" shows the work itself.
+        <p style={{ fontSize: 12, color: '#94a3b8', margin: '16px 0 0', lineHeight: 1.5 }} dir="auto">
+          {t('results_cycleTimeFooter', lang, runs, isAnalystView)}
         </p>
       )}
     </div>
@@ -500,13 +590,13 @@ function SectionHeader({ icon, bg, title, subtitle }) {
   );
 }
 
-function ResourceUtilizationSection({ results, isAnalystView = false }) {
+function ResourceUtilizationSection({ results, isAnalystView = false, lang = 'en' }) {
   const entries = Object.entries(results?.resource_utilization || {});
   if (entries.length === 0) return null;
   const R = 22, CIRC = 2 * Math.PI * R;
   return (
     <div style={{ position: 'relative', background: '#fff', borderRadius: 16, border: '1px solid #e2e8f0', padding: '24px' }}>
-      <InfoTip title={isAnalystView ? "Resource utilization" : "Staff activity"}>
+      <InfoTip title={isAnalystView ? t('results_tabResources', lang) : t('results_tabStaffActivity', lang)}>
         {isAnalystView
           ? "How much of the time each resource was busy. Above 85% (Overloaded) it cannot keep up and queues form. Below 30% (Underused) it is mostly idle. In between is healthy."
           : "How much of the time each team member was busy. Above 85% (Overloaded) they cannot keep up and lines form. Below 30% (Underused) they are mostly idle. In between is healthy."}
@@ -514,17 +604,17 @@ function ResourceUtilizationSection({ results, isAnalystView = false }) {
       <SectionHeader
         icon={<Zap size={20} color="#10b981" />}
         bg="#ecfdf5"
-        title={isAnalystView ? "Resource Utilization" : <Hint term="utilization">How Busy Staff Are</Hint>}
-        subtitle={isAnalystView ? "How busy each resource was during the simulation" : "How busy each team member was during the test run"}
+        title={isAnalystView ? t('results_resourceUtilization', lang) : <Hint term="utilization">{t('results_howBusyStaffAre', lang)}</Hint>}
+        subtitle={isAnalystView ? t('results_howBusySimSubtitle', lang) : t('results_howBusySubtitle', lang)}
       />
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 16 }}>
         {entries.map(([name, u]) => {
           const pct = Math.max(0, Math.min(100, u?.utilization_pct || 0));
           const st = pct >= 85
-            ? { label: 'Overloaded', color: '#ef4444', text: '#b91c1c', bg: '#fee2e2' }
+            ? { label: t('results_badgeOverloaded', lang), color: '#ef4444', text: '#b91c1c', bg: '#fee2e2' }
             : pct < 30
-              ? { label: 'Underused', color: '#06b6d4', text: '#0e7490', bg: '#cffafe' }
-              : { label: 'Healthy', color: '#10b981', text: '#15803d', bg: '#dcfce7' };
+              ? { label: t('results_badgeUnderused', lang), color: '#06b6d4', text: '#0e7490', bg: '#cffafe' }
+              : { label: t('results_badgeHealthy', lang), color: '#10b981', text: '#15803d', bg: '#dcfce7' };
           return (
             <div key={name} style={{ background: '#fafbff', border: '1px solid #eef0f6', borderRadius: 12, padding: '16px 18px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
@@ -537,12 +627,14 @@ function ResourceUtilizationSection({ results, isAnalystView = false }) {
                   <span style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 800, color: '#0f172a' }}>{pct.toFixed(0)}</span>
                 </div>
                 <div style={{ minWidth: 0 }}>
-                  <p style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', margin: '0 0 6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</p>
+                  <p style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', margin: '0 0 6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <bdi dir="auto">{name}</bdi>
+                  </p>
                   <span style={{ fontSize: 11, fontWeight: 700, color: st.text, background: st.bg, borderRadius: 6, padding: '3px 8px' }}>{st.label}</span>
                 </div>
               </div>
               <p style={{ fontSize: 12, color: '#94a3b8', margin: '12px 0 0' }}>
-                {pct.toFixed(0)}% busy <span style={{ margin: '0 6px' }}>·</span> {(100 - pct).toFixed(0)}% idle
+                <bdi dir="ltr">{pct.toFixed(0)}%</bdi> {t('results_busyIdleStat', lang, '', (100 - pct).toFixed(0))}
               </p>
             </div>
           );
@@ -552,7 +644,7 @@ function ResourceUtilizationSection({ results, isAnalystView = false }) {
   );
 }
 
-function KeyTakeaways({ lines, isAnalystView = false }) {
+function KeyTakeaways({ lines, isAnalystView = false, lang = 'en' }) {
   if (!lines || lines.length === 0) return null;
   const look = {
     info:    { bg: '#f5f3ff', border: '#e9e5ff', color: '#334155', icon: <InfoIcon color="#6b4de6" /> },
@@ -562,7 +654,7 @@ function KeyTakeaways({ lines, isAnalystView = false }) {
   };
   return (
     <div style={{ position: 'relative', background: '#fff', borderRadius: 16, border: '1px solid #e2e8f0', padding: '24px' }}>
-      <InfoTip title="Key takeaways">
+      <InfoTip title={t('results_keyTakeaways', lang)}>
         {isAnalystView
           ? "The most important findings from this simulation, written in plain sentences. Red points need attention, yellow are warnings, blue are information."
           : "The most important findings from this test, written in plain sentences. Red points need attention, yellow are warnings, blue are information."}
@@ -570,8 +662,8 @@ function KeyTakeaways({ lines, isAnalystView = false }) {
       <SectionHeader
         icon={<CheckCircle size={20} color="#6b4de6" />}
         bg="#f5f3ff"
-        title="Key Takeaways"
-        subtitle={isAnalystView ? "The main points from this simulation" : "The main points from this test run"}
+        title={t('results_keyTakeaways', lang)}
+        subtitle={t('results_keyTakeawaysSubtitle', lang, isAnalystView)}
       />
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {lines.map((l, i) => {
@@ -622,6 +714,9 @@ function SpotButton({ onClick, children, size = 'md', variant = 'primary' }) {
 export default function ResultsPage() {
   const navigate = useNavigate();
   const { user } = useAuth() || {};
+  const { preferredLanguage } = useLanguage();
+  const [viewLanguageOverride, setViewLanguageOverride] = useState(null);
+  const effectiveLanguage = viewLanguageOverride || preferredLanguage;
   const [isAnalystView] = useAnalystView(user?.id || user?._id);
   const currency = user?.currency || localStorage.getItem('spot:profile:currency') || 'Rs';
   const [results, setResults] = useState(() => {
@@ -666,6 +761,33 @@ export default function ResultsPage() {
   const [runsError, setRunsError] = useState(null);
   const [selectedRun, setSelectedRun] = useState(null);
   const [reRunning, setReRunning] = useState(false);
+
+  const handleExportReport = useCallback(() => {
+    const lang = effectiveLanguage;
+    const isUr = lang === 'ur-roman' || lang === 'ur';
+    const sum = selectedRun?.summary || results?.metrics || results || {};
+    const reportLines = [
+      `SPOT SIMULATION REPORT (${lang.toUpperCase()})`,
+      `Generated on: ${new Date().toLocaleString()}`,
+      `----------------------------------------`,
+      `${isUr ? 'Kul waqt (Cycle time)' : 'Average Cycle Time'}: ${fmt(sum.avg_cycle_time)}`,
+      `${isUr ? 'Intezar ka waqt (Wait time)' : 'Average Wait Time'}: ${fmt(sum.avg_wait_time)}`,
+      `${isUr ? 'Kharcha (Total cost)' : 'Total Cost'}: Rs ${sum.total_cost || results?.financial?.total_cost || 0}`,
+      `----------------------------------------`,
+      `Account preferredLanguage: ${preferredLanguage}`,
+      `Export view language: ${lang}`,
+    ];
+
+    const blob = new Blob([reportLines.join('\n')], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `spot-simulation-report-${lang}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [effectiveLanguage, preferredLanguage, selectedRun, results]);
 
   const fetchRuns = useCallback(async (cursor = null) => {
     const processId = localStorage.getItem('spot:processId');
@@ -946,7 +1068,7 @@ export default function ResultsPage() {
   }, [queuesObj, results, idToLabel]);
 
   const maxWait = useMemo(() => Math.max(...queueRows.map(q => q.avgWait), 1), [queueRows]);
-  const summaryLines = useMemo(() => results ? verdict(results, idToLabel, simMode, currency, isAnalystView) : [], [results, idToLabel, simMode, currency, isAnalystView]);
+  const summaryLines = useMemo(() => results ? verdict(results, idToLabel, simMode, currency, isAnalystView, effectiveLanguage) : [], [results, idToLabel, simMode, currency, isAnalystView, effectiveLanguage]);
   const plain = useMemo(() => results ? buildPlainSummary(results) : null, [results]);
   const fade = (i) => ({ opacity: ready ? 1 : 0, transform: ready ? 'translateY(0)' : 'translateY(15px)', transition: `all 0.5s ease ${i * 0.07}s` });
 
@@ -959,14 +1081,16 @@ export default function ResultsPage() {
           <div style={{ width: 80, height: 80, background: '#f5f3ff', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 24px' }}>
             <LayoutDashboard size={40} color="#6b4de6" />
           </div>
-          <h2 style={{ fontSize: 24, fontWeight: 700, color: '#0f172a', marginBottom: 12 }}>No Results to Display</h2>
+          <h2 style={{ fontSize: 24, fontWeight: 700, color: '#0f172a', marginBottom: 12 }}>
+            {t('results_noResultsTitle', effectiveLanguage)}
+          </h2>
           <p style={{ fontSize: 15, color: '#64748b', lineHeight: 1.6, marginBottom: 32 }}>
             {!hasNodes 
-              ? "You haven't built a process model yet. Create a model and run a test to see your analytics here."
-              : "You need to run a test first to view the analytics dashboard."}
+              ? t('results_noResultsDescNoNodes', effectiveLanguage)
+              : t('results_noResultsDescNeedRun', effectiveLanguage)}
           </p>
           <SpotButton onClick={() => navigate(!hasNodes ? '/model' : '/simulate')} size="md">
-            {!hasNodes ? "Build a Model" : (isAnalystView ? "Run Simulation" : "Run Test")}
+            {!hasNodes ? t('results_buildModel', effectiveLanguage) : (isAnalystView ? t('results_rerunSim', effectiveLanguage) : t('results_runTest', effectiveLanguage))}
           </SpotButton>
         </div>
       </div>
@@ -974,19 +1098,19 @@ export default function ResultsPage() {
   }
 
   const tabs = [
-    { id: 'overview', label: 'Overview', icon: <LayoutDashboard size={15} /> },
-    { id: 'bottlenecks', label: isAnalystView ? 'Bottlenecks & Queues' : 'Where Customers Wait', icon: <Target size={15} /> },
-    ...(simMode !== 'quick' && Object.keys(results?.resource_utilization || {}).length > 0 ? [{ id: 'resources', label: isAnalystView ? 'Resources' : 'Staff Activity', icon: <Zap size={15} /> }] : []),
-    ...(simMode !== 'quick' ? [{ id: 'financial', label: 'Financial', icon: <span style={{ fontSize: 13, fontWeight: 700, lineHeight: 1 }}>{currency}</span> }] : []),
-    ...(hasWhatIf && comparisonMetrics ? [{ id: 'whatif', label: isAnalystView ? 'What-If Comparison' : 'Idea Comparison', icon: <GitCompare size={15} /> }] : []),
-    { id: 'takeaways', label: 'Key Takeaways', icon: <CheckCircle size={15} /> },
+    { id: 'overview', label: t('results_tabOverview', effectiveLanguage), icon: <LayoutDashboard size={15} /> },
+    { id: 'bottlenecks', label: isAnalystView ? t('results_tabBottlenecks', effectiveLanguage) : t('results_tabWhereWait', effectiveLanguage), icon: <Target size={15} /> },
+    ...(simMode !== 'quick' && Object.keys(results?.resource_utilization || {}).length > 0 ? [{ id: 'resources', label: isAnalystView ? t('results_tabResources', effectiveLanguage) : t('results_tabStaffActivity', effectiveLanguage), icon: <Zap size={15} /> }] : []),
+    ...(simMode !== 'quick' ? [{ id: 'financial', label: t('results_tabFinancial', effectiveLanguage), icon: <span style={{ fontSize: 13, fontWeight: 700, lineHeight: 1 }}>{currency}</span> }] : []),
+    ...(hasWhatIf && comparisonMetrics ? [{ id: 'whatif', label: isAnalystView ? t('results_tabWhatIfComparison', effectiveLanguage) : t('results_tabIdeaComparison', effectiveLanguage), icon: <GitCompare size={15} /> }] : []),
+    { id: 'takeaways', label: t('results_tabKeyTakeaways', effectiveLanguage), icon: <CheckCircle size={15} /> },
   ];
   const tab = tabs.some(t => t.id === activeTab) ? activeTab : 'overview';
 
   return (
     <div style={{ height: '100%', overflowY: 'auto', background: '#f8fafc', fontFamily: "'Inter', sans-serif", paddingBottom: 40 }}>
 
-      <AIChatWidget results={results} idToLabel={idToLabel} simMode={simMode} />
+      <AIChatWidget results={results} idToLabel={idToLabel} simMode={simMode} language={effectiveLanguage} />
 
       {/* HEADER */}
       <header style={{ background: '#fff', borderBottom: '1px solid #e2e8f0', padding: '16px 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, zIndex: 10 }}>
@@ -994,18 +1118,22 @@ export default function ResultsPage() {
           <button onClick={() => navigate('/simulate')} style={{ width: 36, height: 36, borderRadius: 8, border: '1px solid #e2e8f0', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}><ArrowLeft size={18} color="#64748b" /></button>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <h1 style={{ fontSize: 18, fontWeight: 700, color: '#0f172a', margin: 0 }}>{isAnalystView ? "Simulation Results" : "Test Results"}</h1>
+              <h1 style={{ fontSize: 18, fontWeight: 700, color: '#0f172a', margin: 0 }}>
+                {isAnalystView ? t('results_simResults', effectiveLanguage) : t('results_testResults', effectiveLanguage)}
+              </h1>
               <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 12, background: simMode === 'deep' ? '#1e1b4b' : '#f5f3ff', color: simMode === 'deep' ? '#c7d2fe' : '#6b4de6', border: '1px solid #ddd6fe' }}>
-                {simMode === 'deep' ? 'DEEP ANALYSIS' : 'QUICK ANALYSIS'}
+                {simMode === 'deep' ? t('results_deepAnalysisBadge', effectiveLanguage) : t('results_quickAnalysisBadge', effectiveLanguage)}
               </span>
             </div>
-            <p style={{ fontSize: 13, color: '#64748b', marginTop: 2 }}>{isAnalystView ? `Based on ${runs} iterations` : `Based on ${runs} test runs`}</p>
+            <p style={{ fontSize: 13, color: '#64748b', marginTop: 2 }}>
+              {isAnalystView ? t('results_basedOnIterations', effectiveLanguage, runs) : t('results_basedOnRuns', effectiveLanguage, runs)}
+            </p>
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, position: 'relative' }}>
           <div style={{ position: 'relative' }}>
             <SpotButton onClick={() => setScenarioPickerOpen(o => !o)} variant="secondary" size="sm">
-              <History size={14} /> {loadingRuns ? 'Loading…' : (isAnalystView ? 'Run History' : 'Test History')} <ChevronDown size={14} />
+              <History size={14} /> {loadingRuns ? t('results_loadingRuns', effectiveLanguage) : (isAnalystView ? t('results_runHistory', effectiveLanguage) : t('results_testHistory', effectiveLanguage))} <ChevronDown size={14} />
             </SpotButton>
             {scenarioPickerOpen && (
               <div onClick={() => setScenarioPickerOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 15 }} />
@@ -1017,12 +1145,12 @@ export default function ResultsPage() {
                 padding: 8, maxHeight: 380, overflowY: 'auto'
               }}>
                 <div style={{ padding: '6px 10px', fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                  {isAnalystView ? "Saved Simulation Runs" : "Saved Test Runs"}
+                  {isAnalystView ? t('results_savedSimRuns', effectiveLanguage) : t('results_savedTestRuns', effectiveLanguage)}
                 </div>
 
                 {loadingRuns && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 10px', color: '#6b4de6', fontSize: 13 }}>
-                    <Loader2 size={16} className="animate-spin" /> Loading runs…
+                    <Loader2 size={16} className="animate-spin" /> {t('results_loadingRuns', effectiveLanguage)}
                   </div>
                 )}
 
@@ -1034,7 +1162,7 @@ export default function ResultsPage() {
 
                 {!loadingRuns && runsList.length === 0 && !runsError && (
                   <p style={{ fontSize: 12.5, color: '#94a3b8', padding: '12px 10px', margin: 0 }}>
-                    {isAnalystView ? "No saved simulation runs yet." : "No saved test runs yet."}
+                    {isAnalystView ? t('results_noSavedSimRuns', effectiveLanguage) : t('results_noSavedRuns', effectiveLanguage)}
                   </p>
                 )}
 
@@ -1098,13 +1226,44 @@ export default function ResultsPage() {
                       color: '#475569', cursor: loadingMoreRuns ? 'not-allowed' : 'pointer'
                     }}
                   >
-                    {loadingMoreRuns ? 'Loading more…' : 'Load more'}
+                    {loadingMoreRuns ? t('results_loadingRuns', effectiveLanguage) : t('results_loadMore', effectiveLanguage)}
                   </button>
                 )}
               </div>
             )}
           </div>
-          <SpotButton onClick={() => navigate('/simulate')} size="sm"><RefreshCw size={14} /> {isAnalystView ? "Re-run Simulation" : "Re-run Test"}</SpotButton>
+
+          {/* One-off Language Override for View/Export */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#f8fafc', padding: '4px 10px', borderRadius: 8, border: '1px solid #e2e8f0' }} title="Override language for this view or export only, without changing your account preferredLanguage">
+            <Globe size={13} color="#64748b" />
+            <span style={{ fontSize: 11.5, fontWeight: 600, color: '#475569' }}>{t('results_viewExportIn', effectiveLanguage)}</span>
+            <select
+              value={viewLanguageOverride || ''}
+              onChange={(e) => setViewLanguageOverride(e.target.value || null)}
+              style={{
+                border: 'none',
+                background: 'transparent',
+                fontSize: 12,
+                fontWeight: 600,
+                color: '#5E43F3',
+                cursor: 'pointer',
+                outline: 'none',
+              }}
+            >
+              <option value="">{t('results_viewExportDefault', effectiveLanguage, preferredLanguage.toUpperCase())}</option>
+              <option value="en">English (en)</option>
+              <option value="ur-roman">Roman Urdu (ur-roman)</option>
+              <option value="ur">اردو (ur)</option>
+            </select>
+          </div>
+
+          <SpotButton onClick={handleExportReport} variant="secondary" size="sm" title="Export simulation report in chosen language">
+            <Download size={13} /> {t('results_export', effectiveLanguage)}
+          </SpotButton>
+
+          <SpotButton onClick={() => navigate('/simulate')} size="sm">
+            <RefreshCw size={14} /> {isAnalystView ? t('results_rerunSim', effectiveLanguage) : t('results_rerunTest', effectiveLanguage)}
+          </SpotButton>
         </div>
       </header>
 
@@ -1123,7 +1282,7 @@ export default function ResultsPage() {
             <History size={18} color="#6b4de6" />
             <div>
               <span style={{ fontWeight: 700, color: '#1e1b4b', fontSize: 13.5 }}>
-                Saved run from {new Date(selectedRun.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+                {t('results_savedRunFrom', effectiveLanguage, new Date(selectedRun.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }))}
               </span>
               <span style={{ marginLeft: 8, fontSize: 11.5, color: '#6b4de6', background: '#ede9fe', padding: '2px 8px', borderRadius: 999, fontWeight: 600 }}>
                 {selectedRun.title || (selectedRun.scenarioId ? (isAnalystView ? 'Scenario' : 'Idea to try') : (isAnalystView ? 'Baseline' : 'Current setup'))} (Read-Only)
@@ -1136,7 +1295,7 @@ export default function ResultsPage() {
               onClick={handleReRun}
               disabled={reRunning}
             >
-              <RefreshCw size={13} className={reRunning ? "animate-spin" : ""} /> {reRunning ? 'Re-running…' : 'Re-run'}
+              <RefreshCw size={13} className={reRunning ? "animate-spin" : ""} /> {reRunning ? t('results_rerunning', effectiveLanguage) : t('results_rerun', effectiveLanguage)}
             </SpotButton>
             <button
               onClick={() => {
@@ -1154,7 +1313,7 @@ export default function ResultsPage() {
                 textDecoration: 'underline'
               }}
             >
-              Exit saved view
+              {t('results_exitSavedView', effectiveLanguage)}
             </button>
           </div>
         </div>
@@ -1188,59 +1347,59 @@ export default function ResultsPage() {
 
         {tab === 'overview' && (
           <>
-        <AIInsightsPanel results={results} idToLabel={idToLabel} simMode={simMode} idToResource={idToResource} processId={typeof window !== 'undefined' ? localStorage.getItem('spot:processId') : null} />
+        <AIInsightsPanel results={results} idToLabel={idToLabel} simMode={simMode} idToResource={idToResource} processId={typeof window !== 'undefined' ? localStorage.getItem('spot:processId') : null} language={effectiveLanguage} />
 
-        <PlainSummaryCard plain={plain} simMode={simMode} idToLabel={idToLabel} isAnalystView={isAnalystView} />
+        <PlainSummaryCard plain={plain} simMode={simMode} idToLabel={idToLabel} isAnalystView={isAnalystView} lang={effectiveLanguage} />
 
         {/* ROW 1: Dynamic Top Level Stats based on Mode */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 20, ...fade(0) }}>
           
           <div style={{ position: 'relative', background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', padding: '24px', display: 'flex', alignItems: 'center', gap: 20 }}>
-<InfoTip title={isAnalystView ? "Average cycle time" : "Time from arrival to leaving"}>The average time a customer takes from entering to leaving, waiting in line included. In this simulation customers keep arriving without a break, so if staff cannot keep up the line grows and this number climbs to hours or even days. Compare it with Time per customer to see how much of it is just waiting.</InfoTip>
+<InfoTip title={isAnalystView ? t('results_avgCycleTime', effectiveLanguage) : t('results_avgCompletionTime', effectiveLanguage)}>{t('results_avgCycleTimeTip', effectiveLanguage)}</InfoTip>
             <div style={{ width: 56, height: 56, borderRadius: 12, background: '#f5f3ff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><Clock size={24} color="#6b4de6" /></div>
             <div>
-              <p style={{ fontSize: 13, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>{simMode === 'quick' ? 'Best-Case / Theoretical Duration' : (isAnalystView ? 'Avg. Cycle Time' : <Hint term="cycle_time">Time from arrival to leaving</Hint>)}</p>
-              <p style={{ fontSize: 24, fontWeight: 800, color: '#0f172a' }}>{fmt(totalAvg)}</p>
-              {simMode !== 'quick' && plain?.overloaded && <p style={{ fontSize: 11, color: '#b45309', marginTop: 4 }}>Inflated by a growing queue (see summary above)</p>}
+              <p style={{ fontSize: 13, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>{simMode === 'quick' ? t('results_bestCaseDuration', effectiveLanguage) : (isAnalystView ? t('results_avgCycleTime', effectiveLanguage) : <Hint term="cycle_time">{t('results_avgCompletionTime', effectiveLanguage)}</Hint>)}</p>
+              <p style={{ fontSize: 24, fontWeight: 800, color: '#0f172a' }}><bdi dir="ltr">{fmt(totalAvg, effectiveLanguage)}</bdi></p>
+              {simMode !== 'quick' && plain?.overloaded && <p style={{ fontSize: 11, color: '#b45309', marginTop: 4 }}>{t('results_inflatedByQueue', effectiveLanguage)}</p>}
             </div>
           </div>
 
           {simMode !== 'quick' && (
             <div style={{ position: 'relative', background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', padding: '24px', display: 'flex', alignItems: 'center', gap: 20 }}>
-<InfoTip title={isAnalystView ? "Production speed" : "Customers served per hour"}>How many customers your process finishes every hour in this simulation. Higher is better. If it is much lower than the number of customers arriving, a queue will keep growing.</InfoTip>
+<InfoTip title={isAnalystView ? t('results_productionSpeed', effectiveLanguage) : t('results_customersServedPerHour', effectiveLanguage)}>{t('results_customersPerHourTip', effectiveLanguage)}</InfoTip>
               <div style={{ width: 56, height: 56, borderRadius: 12, background: '#ecfdf5', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><Zap size={24} color="#10b981" /></div>
               <div>
-                <p style={{ fontSize: 13, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>{isAnalystView ? 'Production Speed' : <Hint term="throughput">Customers served per hour</Hint>}</p>
-                <p style={{ fontSize: 24, fontWeight: 800, color: '#0f172a' }}>{(throughput * 60).toFixed(2)} /hr</p>
+                <p style={{ fontSize: 13, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>{isAnalystView ? t('results_productionSpeed', effectiveLanguage) : <Hint term="throughput">{t('results_customersServedPerHour', effectiveLanguage)}</Hint>}</p>
+                <p style={{ fontSize: 24, fontWeight: 800, color: '#0f172a' }}><bdi dir="ltr">{formatRate(throughput * 60, 'hour', effectiveLanguage)}</bdi></p>
               </div>
             </div>
           )}
 
           {/* Conditional Metric: Predictability vs. Worst-Case Risk */}
           <div style={{ position: 'relative', background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', padding: '24px', display: 'flex', alignItems: 'center', gap: 20 }}>
-<InfoTip title="Worst case / predictability">Deep mode: the longest time any single customer took. A big gap from the average means some customers have a much worse experience. Quick mode: shows whether every customer takes the same time (Consistent) or it varies.</InfoTip>
+<InfoTip title={simMode === 'deep' ? t('results_worstCaseScenario', effectiveLanguage) : t('results_predictability', effectiveLanguage)}>{simMode === 'deep' ? t('results_worstCaseScenario', effectiveLanguage) : t('results_predictability', effectiveLanguage)}</InfoTip>
             <div style={{ width: 56, height: 56, borderRadius: 12, background: simMode === 'deep' ? '#fef2f2' : '#fffbeb', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
               {simMode === 'deep' ? <ShieldAlert size={24} color="#ef4444" /> : <Target size={24} color="#f59e0b" />}
             </div>
             <div>
-              <p style={{ fontSize: 13, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>{simMode === 'deep' ? 'Worst-Case Scenario' : 'Predictability'}</p>
-              <p style={{ fontSize: 24, fontWeight: 800, color: '#0f172a' }}>{simMode === 'deep' ? fmt(maxTime) : (spread === 0 ? 'Consistent' : 'Variable')}</p>
+              <p style={{ fontSize: 13, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>{simMode === 'deep' ? t('results_worstCaseScenario', effectiveLanguage) : t('results_predictability', effectiveLanguage)}</p>
+              <p style={{ fontSize: 24, fontWeight: 800, color: '#0f172a' }}>{simMode === 'deep' ? <bdi dir="ltr">{fmt(maxTime, effectiveLanguage)}</bdi> : (spread === 0 ? t('results_consistent', effectiveLanguage) : t('results_variable', effectiveLanguage))}</p>
             </div>
           </div>
 
           {/* Critical Alert Card */}
           <div style={{ position: 'relative', background: bnLabel ? '#fef2f2' : '#fff', borderRadius: 12, border: `1px solid ${bnLabel ? '#fecaca' : '#e2e8f0'}`, padding: '24px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-<InfoTip title={isAnalystView ? "Critical bottleneck" : "Where customers wait"}>The step where customers wait the longest before they can be served. Speeding it up or adding staff here improves the whole process more than fixing any other step.</InfoTip>
+<InfoTip title={simMode === 'quick' ? t('results_slowestTask', effectiveLanguage) : (isAnalystView ? t('results_criticalBottleneck', effectiveLanguage) : t('results_tabWhereWait', effectiveLanguage))}>{isAnalystView ? t('results_criticalBottleneck', effectiveLanguage) : t('results_tabWhereWait', effectiveLanguage)}</InfoTip>
             {bnLabel ? (
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
-                  <p style={{ fontSize: 11, fontWeight: 800, color: '#dc2626', textTransform: 'uppercase', marginBottom: 4 }}>{simMode === 'quick' ? 'Slowest Task' : (isAnalystView ? 'Critical Bottleneck' : <Hint term="bottleneck">Where customers wait</Hint>)}</p>
-                  <p style={{ fontSize: 20, fontWeight: 700, color: '#991b1b' }}>"{bnLabel}"</p>
+                  <p style={{ fontSize: 11, fontWeight: 800, color: '#dc2626', textTransform: 'uppercase', marginBottom: 4 }}>{simMode === 'quick' ? t('results_slowestTask', effectiveLanguage) : (isAnalystView ? t('results_criticalBottleneck', effectiveLanguage) : <Hint term="bottleneck">{t('results_tabWhereWait', effectiveLanguage)}</Hint>)}</p>
+                  <p style={{ fontSize: 20, fontWeight: 700, color: '#991b1b' }}>"<bdi dir="auto">{bnLabel}</bdi>"</p>
                 </div>
-                <button onClick={() => navigate('/model')} style={{ padding: '8px 16px', background: '#dc2626', color: '#fff', border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Fix Now</button>
+                <button onClick={() => navigate('/model')} style={{ padding: '8px 16px', background: '#dc2626', color: '#fff', border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>{t('results_fixNow', effectiveLanguage)}</button>
               </div>
             ) : (
-              <div style={{ textAlign: 'center', color: '#94a3b8' }}><CheckCircle size={24} style={{ marginBottom: 8 }} /> <p style={{ fontSize: 14 }}>No issues detected</p></div>
+              <div style={{ textAlign: 'center', color: '#94a3b8' }}><CheckCircle size={24} style={{ marginBottom: 8 }} /> <p style={{ fontSize: 14 }}>{t('results_noIssuesDetected', effectiveLanguage)}</p></div>
             )}
           </div>
         </div>
@@ -1248,11 +1407,11 @@ export default function ResultsPage() {
 
         {/* Context bar */}
         <div style={{ background: '#fff', padding: '16px 24px', borderRadius: 12, border: '1px solid #e2e8f0', ...fade(1) }}>
-          <p style={{ fontSize: 15, color: '#475569', margin: 0 }}>
+          <p style={{ fontSize: 15, color: '#475569', margin: 0 }} dir="auto">
             {simMode === 'deep' && spread > 0 ? (
-              <span>Times vary by <strong>{fmt(spread)}</strong>. {bnLabel ? `Stabilize "${bnLabel}" to reduce variance.` : ''}</span>
+              <span>{t('results_timesVary', effectiveLanguage, fmt(spread, effectiveLanguage), bnLabel)}</span>
             ) : (
-              <span>{bnLabel ? `Current throughput is limited by ${bnLabel}.` : 'Your process is operating efficiently.'}</span>
+              <span>{bnLabel ? t('results_throughputLimitedBy', effectiveLanguage, bnLabel) : t('results_processOperatingEfficiently', effectiveLanguage)}</span>
             )}
           </p>
         </div>
@@ -1264,8 +1423,8 @@ export default function ResultsPage() {
             {/* Pie Chart Card */}
             {simMode !== 'quick' && (
               <div style={{ position: 'relative', background: '#fff', borderRadius: 16, border: '1px solid #e2e8f0', padding: '24px' }}>
-<InfoTip title="System efficiency">Out of all the time customers spend in your steps, how much is real work (purple) and how much is waiting (teal). A low Active % means customers mostly wait instead of being served.</InfoTip>
-                <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', marginBottom: 24 }}>System Efficiency</h3>
+<InfoTip title={t('results_systemEfficiency', effectiveLanguage)}>{t('results_systemEfficiencyTip', effectiveLanguage)}</InfoTip>
+                <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', marginBottom: 24 }}>{t('results_systemEfficiency', effectiveLanguage)}</h3>
                 <div style={{ height: 260, position: 'relative' }}>
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
@@ -1276,8 +1435,8 @@ export default function ResultsPage() {
                     </PieChart>
                   </ResponsiveContainer>
                   <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', textAlign: 'center' }}>
-                    <p style={{ fontSize: 32, fontWeight: 800, color: '#6b4de6', margin: 0 }}>{((totalProc / (totalProc + totalWait)) * 100).toFixed(0)}%</p>
-                    <p style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase' }}>Active</p>
+                    <p style={{ fontSize: 32, fontWeight: 800, color: '#6b4de6', margin: 0 }}><bdi dir="ltr">{((totalProc / (totalProc + totalWait)) * 100).toFixed(0)}%</bdi></p>
+                    <p style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase' }}>{t('results_activeLabel', effectiveLanguage)}</p>
                   </div>
                 </div>
               </div>
@@ -1285,71 +1444,70 @@ export default function ResultsPage() {
 
             {/* Roadblock Analysis Card */}
             <div style={{ position: 'relative', background: '#fff', borderRadius: 16, border: '1px solid #e2e8f0', padding: '24px', display: 'flex', flexDirection: 'column' }}>
-<InfoTip title="Constraint analysis">The one step that holds the whole process back. It shows how long the step takes to do and how long customers wait for it. Improve this step first.</InfoTip>
-              <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', marginBottom: 24 }}>Constraint Analysis</h3>
+<InfoTip title={t('results_constraintAnalysis', effectiveLanguage)}>{t('results_constraintAnalysisTip', effectiveLanguage)}</InfoTip>
+              <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', marginBottom: 24 }}>{t('results_constraintAnalysis', effectiveLanguage)}</h3>
               <div style={{ flex: 1, background: '#fafbff', border: '2px dashed #e2e8f0', borderRadius: 12, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 32, textAlign: 'center' }}>
                 {bnLabel ? (
                   <>
                     <div style={{ width: 64, height: 64, background: '#f5f3ff', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
                       <AlertTriangle size={32} color="#6b4de6" />
                     </div>
-                    <h4 style={{ fontSize: 24, fontWeight: 700, color: '#1e1b4b', marginBottom: 8 }}>{bnLabel}</h4>
-                    <p style={{ fontSize: 14, color: '#475569', lineHeight: 1.6, marginBottom: 24 }}>
-                      This step takes <strong>{fmt(bnData?.processing_time_avg)}</strong> to process and causes <strong>{fmt(bnData?.wait_time_avg)}</strong> of waiting time per unit, making it your most resource-intensive constraint.
+                    <h4 style={{ fontSize: 24, fontWeight: 700, color: '#1e1b4b', marginBottom: 8 }}><bdi dir="auto">{bnLabel}</bdi></h4>
+                    <p style={{ fontSize: 14, color: '#475569', lineHeight: 1.6, marginBottom: 24 }} dir="auto">
+                      {t('results_constraintDesc', effectiveLanguage, fmt(bnData?.processing_time_avg, effectiveLanguage), fmt(bnData?.wait_time_avg, effectiveLanguage))}
                     </p>
-                    <SpotButton onClick={() => navigate('/model')} variant="secondary" size="sm">Edit Properties</SpotButton>
+                    <SpotButton onClick={() => navigate('/model')} variant="secondary" size="sm">{t('results_editProperties', effectiveLanguage)}</SpotButton>
                   </>
-                ) : <p style={{ color: '#94a3b8' }}>No major roadblocks identified.</p>}
+                ) : <p style={{ color: '#94a3b8' }}>{t('results_noMajorRoadblocks', effectiveLanguage)}</p>}
               </div>
             </div>
 
             {/* Queue Visualization Card */}
             {simMode !== 'quick' && (
               <div style={{ position: 'relative', background: '#fff', borderRadius: 16, border: '1px solid #e2e8f0', padding: '24px' }}>
-<InfoTip title="Queue backlog">The steps where customers wait in line the longest. The bar shows the average wait, and 'units' is the average number of customers standing in that line.</InfoTip>
-                <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', marginBottom: 24 }}>Queue Backlog</h3>
+<InfoTip title={t('results_queueBacklog', effectiveLanguage)}>{t('results_queueBacklogTip', effectiveLanguage)}</InfoTip>
+                <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', marginBottom: 24 }}>{t('results_queueBacklog', effectiveLanguage)}</h3>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
                   {queueRows.length > 0 ? queueRows.slice(0, 4).map((q, i) => (
                     <div key={i}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 13 }}>
-                        <span style={{ fontWeight: 600, color: '#334155' }}>{q.name}</span>
+                        <span style={{ fontWeight: 600, color: '#334155' }}><bdi dir="auto">{q.name}</bdi></span>
                         <span style={{ color: '#64748b' }}>
-                          {fmt(q.avgWait)} wait <span style={{ color: '#cbd5e1', margin: '0 6px' }}>|</span> {q.avg.toFixed(1)} units
+                          <bdi dir="ltr">{t('results_queueItemDesc', effectiveLanguage, fmt(q.avgWait, effectiveLanguage), q.avg.toFixed(1))}</bdi>
                         </span>
                       </div>
                       <div style={{ height: 12, background: '#f1f5f9', borderRadius: 6, overflow: 'hidden' }}>
                         <div style={{ height: '100%', width: `${Math.min((q.avgWait / maxWait) * 100, 100)}%`, background: q.avgWait > 0 ? '#6b4de6' : '#e2e8f0', borderRadius: 6 }} />
                       </div>
                     </div>
-                  )) : <p style={{ color: '#94a3b8', fontSize: 14, textAlign: 'center', marginTop: 40 }}>No queue build-up detected.</p>}
+                  )) : <p style={{ color: '#94a3b8', fontSize: 14, textAlign: 'center', marginTop: 40 }}>{t('results_noQueueBuildUp', effectiveLanguage)}</p>}
                 </div>
               </div>
             )}
             </div>
         )}
 
-        {tab === 'resources' && <ResourceUtilizationSection results={results} isAnalystView={isAnalystView} />}
+        {tab === 'resources' && <ResourceUtilizationSection results={results} isAnalystView={isAnalystView} lang={effectiveLanguage} />}
 
         {tab === 'financial' && (
           <>
             {!(results?.financial_summary?.total_cost > 0) && (
               <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', borderLeft: '4px solid #06b6d4', padding: '18px 22px' }}>
-                <p style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', margin: '0 0 6px' }}>No cost figures to show yet</p>
+                <p style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', margin: '0 0 6px' }}>{t('results_noCostFigures', effectiveLanguage)}</p>
                 <p style={{ fontSize: 14, color: '#475569', margin: 0, lineHeight: 1.6 }}>
-                  Costs are worked out from the details you enter on each resource in <strong>Simulate</strong>: monthly salary for staff, purchase price and running cost for equipment, rent for facilities.
-                  Fill those in and run a Deep Analysis again to see the total cost, idle waste and cost per resource.
+                  {t('results_noCostFiguresDesc', effectiveLanguage)}
                 </p>
               </div>
             )}
             {/* Financial Analysis Section */}
             {results?.financial_summary && simMode !== 'quick' && (
               <div style={{ position: 'relative', background: 'linear-gradient(to bottom right, #ffffff, #faf5ff)', borderRadius: 16, border: '1px solid #e2e8f0', padding: '28px', boxShadow: '0 4px 20px rgba(107, 77, 230, 0.04)' }}>
-<InfoTip title="Financial analysis" whole={false}>What this simulation cost to run. Active cost is paid while staff are working. Idle cost (waste) is paid while staff are waiting for work. Hover the charts below for more.</InfoTip>
+<InfoTip title={t('results_financialAnalysis', effectiveLanguage)} whole={false}>{t('results_verdictIdleSpent', effectiveLanguage, '', '')}</InfoTip>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
                   <div style={{ width: 40, height: 40, borderRadius: '50%', background: '#6b4de6', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 12px rgba(107, 77, 230, 0.2)' }}>
                     <span style={{ color: '#fff', fontSize: 16, fontWeight: 700 }}>{currency}</span>
                   </div>
-                  <h3 style={{ fontSize: 18, fontWeight: 800, color: '#0f172a', margin: 0 }}>Financial Analysis</h3>
+                  <h3 style={{ fontSize: 18, fontWeight: 800, color: '#0f172a', margin: 0 }}>{t('results_financialAnalysis', effectiveLanguage)}</h3>
                 </div>
 
                 {/* Warning card if active == 0 && paid > 0 */}
@@ -1368,10 +1526,7 @@ export default function ResultsPage() {
                     <AlertTriangle size={20} color="#d97706" style={{ flexShrink: 0 }} />
                     <div>
                       <p style={{ fontSize: 14, fontWeight: 700, color: '#92400e', margin: '0 0 2px' }}>
-                        No staff time was recorded, so all cost shows as idle. Assign staff to steps in Task Details
-                      </p>
-                      <p style={{ fontSize: 12, color: '#b45309', margin: 0 }}>
-                        Tasks executed in this simulation run had no staff resources assigned, so 100% of staff costs were counted as idle time.
+                        {t('results_verdictNoStaffTime', effectiveLanguage)}
                       </p>
                     </div>
                   </div>
@@ -1382,19 +1537,18 @@ export default function ResultsPage() {
                   const nCustomers = fin.customers ?? results?.time_in_system?.count ?? results?.total_runs ?? results?.instances_completed ?? 0;
                   const periodHours = fin.period_hours != null ? Number(fin.period_hours).toFixed(1) : (results?.total_sim_time ? (results.total_sim_time / 60).toFixed(1) : '0.0');
                   const costPerCustomer = fin.cost_per_customer != null && fin.cost_per_customer > 0 ? fin.cost_per_customer : (nCustomers > 0 ? (fin.total_cost / nCustomers) : 0);
-                  const costPerCustomerFmt = costPerCustomer.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
                   return (
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 32 }}>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                         <div style={{ padding: '20px', background: '#fff', borderRadius: 14, border: '1px solid #e2e8f0', boxShadow: '0 2px 8px rgba(0,0,0,0.02)', position: 'relative', overflow: 'hidden' }}>
                           <div style={{ position: 'absolute', top: 0, left: 0, width: 4, height: '100%', background: '#0f172a' }} />
-                          <p style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
-                            Cost for this run ({nCustomers} customers, {periodHours} hours)
+                          <p style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }} dir="auto">
+                            {t('results_costForThisRun', effectiveLanguage, nCustomers, periodHours)}
                           </p>
                           <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
                             <p style={{ fontSize: 32, fontWeight: 800, color: '#0f172a', margin: 0, letterSpacing: -0.5 }}>
-                              {currency} {fin.total_cost?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}
+                              <bdi dir="ltr">{formatCurrency(fin.total_cost || 0, effectiveLanguage, currency)}</bdi>
                             </p>
                             {anySalaryEstimated && (
                               <span
@@ -1410,9 +1564,8 @@ export default function ResultsPage() {
                                   fontSize: 11,
                                   fontWeight: 600,
                                 }}
-                                title="At least one staff salary was estimated rather than explicitly stated"
                               >
-                                <AlertTriangle size={12} color="#d97706" /> Based on estimated values
+                                <AlertTriangle size={12} color="#d97706" /> {t('results_basedOnEstimatedValues', effectiveLanguage)}
                               </span>
                             )}
                           </div>
@@ -1420,21 +1573,21 @@ export default function ResultsPage() {
                         
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
                           <div style={{ padding: '14px', background: 'linear-gradient(to bottom, #ffffff, #f5f3ff)', borderRadius: 12, border: '1px solid #ddd6fe', boxShadow: '0 2px 4px rgba(107, 77, 230, 0.05)' }}>
-                            <p style={{ fontSize: 11, fontWeight: 700, color: '#6b4de6', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>{isAnalystView ? 'Active Cost' : <Hint term="active_cost">Cost of active work</Hint>}</p>
+                            <p style={{ fontSize: 11, fontWeight: 700, color: '#6b4de6', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>{isAnalystView ? t('results_activeCost', effectiveLanguage) : <Hint term="active_cost">{t('results_activeCostHint', effectiveLanguage)}</Hint>}</p>
                             <p style={{ fontSize: 16, fontWeight: 800, color: '#4338ca', margin: 0 }}>
-                              {currency} {fin.total_active_cost?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}
+                              <bdi dir="ltr">{formatCurrency(fin.total_active_cost || 0, effectiveLanguage, currency)}</bdi>
                             </p>
                           </div>
                           <div style={{ padding: '14px', background: 'linear-gradient(to bottom, #ffffff, #ecfeff)', borderRadius: 12, border: '1px solid #a5f3fc', boxShadow: '0 2px 4px rgba(6, 182, 212, 0.06)' }}>
-                            <p style={{ fontSize: 11, fontWeight: 700, color: '#0891b2', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>{isAnalystView ? 'Idle Cost' : <Hint term="idle_cost">Paid time with no work</Hint>}</p>
+                            <p style={{ fontSize: 11, fontWeight: 700, color: '#0891b2', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>{isAnalystView ? t('results_idleCost', effectiveLanguage) : <Hint term="idle_cost">{t('results_idleCostHint', effectiveLanguage)}</Hint>}</p>
                             <p style={{ fontSize: 16, fontWeight: 800, color: '#0e7490', margin: 0 }}>
-                              {currency} {fin.total_idle_cost?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}
+                              <bdi dir="ltr">{formatCurrency(fin.total_idle_cost || 0, effectiveLanguage, currency)}</bdi>
                             </p>
                           </div>
                           <div style={{ padding: '14px', background: 'linear-gradient(to bottom, #ffffff, #f8fafc)', borderRadius: 12, border: '1px solid #e2e8f0', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }}>
-                            <p style={{ fontSize: 11, fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Cost / Customer</p>
+                            <p style={{ fontSize: 11, fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>{t('results_costPerCustomer', effectiveLanguage)}</p>
                             <p style={{ fontSize: 16, fontWeight: 800, color: '#0f172a', margin: 0 }}>
-                              {currency} {costPerCustomerFmt}
+                              <bdi dir="ltr">{formatCurrency(costPerCustomer, effectiveLanguage, currency)}</bdi>
                             </p>
                           </div>
                         </div>
@@ -1442,15 +1595,15 @@ export default function ResultsPage() {
                       
                       {/* Financial Donut Chart */}
                       <div style={{ position: 'relative', height: 280, display: 'flex', flexDirection: 'column', alignItems: 'center', background: '#fff', borderRadius: 14, border: '1px solid #e2e8f0', padding: '24px', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
-                        <InfoTip title="Cost distribution">Splits the total cost into money spent while staff were working (purple) and money spent while they were idle (teal). A big teal slice means you are paying for people who are waiting.</InfoTip>
-                        <h4 style={{ fontSize: 14, fontWeight: 700, color: '#475569', marginBottom: 12, alignSelf: 'flex-start' }}>Cost Distribution</h4>
+                        <InfoTip title={t('results_costDistribution', effectiveLanguage)}>{t('results_costDistribution', effectiveLanguage)}</InfoTip>
+                        <h4 style={{ fontSize: 14, fontWeight: 700, color: '#475569', marginBottom: 12, alignSelf: 'flex-start' }}>{t('results_costDistribution', effectiveLanguage)}</h4>
                         <div style={{ flex: 1, width: '100%', minHeight: 0 }}>
                           <ResponsiveContainer width="100%" height="100%">
                             <PieChart>
                               <Pie
                                 data={[
-                                  { name: isAnalystView ? 'Active Cost' : 'Active Work', value: fin.total_active_cost || 0, color: '#6b4de6' },
-                                  { name: isAnalystView ? 'Idle Cost' : 'Paid time with no work', value: fin.total_idle_cost || 0, color: '#06b6d4' }
+                                  { name: isAnalystView ? t('results_activeCost', effectiveLanguage) : t('results_activeLabel', effectiveLanguage), value: fin.total_active_cost || 0, color: '#6b4de6' },
+                                  { name: isAnalystView ? t('results_idleCost', effectiveLanguage) : t('results_idleCostHint', effectiveLanguage), value: fin.total_idle_cost || 0, color: '#06b6d4' }
                                 ]}
                                 cx="45%" cy="50%" innerRadius={55} outerRadius={75} paddingAngle={3} dataKey="value" stroke="none"
                               >
@@ -1459,7 +1612,7 @@ export default function ResultsPage() {
                                 ))}
                               </Pie>
                               <Tooltip 
-                                formatter={(value) => `${currency} ${Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                                formatter={(value) => formatCurrency(Number(value), effectiveLanguage, currency)}
                                 contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', fontWeight: 600 }}
                               />
                               <Legend layout="vertical" verticalAlign="middle" align="right" iconType="circle" wrapperStyle={{ fontSize: 13, fontWeight: 600, color: '#475569' }}/>
@@ -1477,7 +1630,7 @@ export default function ResultsPage() {
                     const filteredData = Object.values(results.financial_summary.resources)
                       .map(r => ({
                         name: r.name || r.id || 'Unnamed',
-                        displayName: `${r.name || r.id} (${r.utilization_pct != null ? r.utilization_pct : 0}% ${isAnalystView ? 'util' : 'busy'})`,
+                        displayName: `${r.name || r.id} (${r.utilization_pct != null ? r.utilization_pct : 0}% ${isAnalystView ? (effectiveLanguage === 'ur' ? 'استعمال' : 'util') : (effectiveLanguage === 'ur' ? 'مصروف' : 'busy')})`,
                         Active: r.active_cost || 0,
                         Idle: r.idle_cost || 0,
                         Total: r.total_cost != null ? r.total_cost : ((r.active_cost || 0) + (r.idle_cost || 0)),
@@ -1498,12 +1651,12 @@ export default function ResultsPage() {
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 20 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                             <div style={{ width: 4, height: 16, background: '#64748b', borderRadius: 2 }} />
-                            <h4 style={{ fontSize: 14, fontWeight: 700, color: '#334155', margin: 0 }}>Cost Breakdown by Resource</h4>
+                            <h4 style={{ fontSize: 14, fontWeight: 700, color: '#334155', margin: 0 }}>{isAnalystView ? t('results_costBreakdownByResource', effectiveLanguage) : t('results_costBreakdownByStaff', effectiveLanguage)}</h4>
                           </div>
-                          <span style={{ fontSize: 12, color: '#64748b' }}>{isAnalystView ? "Stacked Active + Idle Cost & Utilization" : "Stacked Active + Idle Cost & Busy %"}</span>
+                          <span style={{ fontSize: 12, color: '#64748b' }}>{t('results_stackedCostDesc', effectiveLanguage, isAnalystView)}</span>
                         </div>
                         <div style={{ position: 'relative', height: Math.max(220, filteredData.length * 60), background: '#fff', borderRadius: 14, border: '1px solid #e2e8f0', padding: '24px 24px 16px 0', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
-                          <InfoTip title={isAnalystView ? "Cost breakdown by resource" : "Cost breakdown by staff member"}>{isAnalystView ? "The same cost, shown for each staff member or resource. Stacked purple (active) and teal (idle) bars with values and utilization %." : "The same cost, shown for each staff member. Stacked purple (active) and teal (idle) bars with values and busy percentage."}</InfoTip>
+                          <InfoTip title={isAnalystView ? t('results_costBreakdownByResource', effectiveLanguage) : t('results_costBreakdownByStaff', effectiveLanguage)}>{t('results_stackedCostDesc', effectiveLanguage, isAnalystView)}</InfoTip>
                           <ResponsiveContainer width="100%" height="100%">
                             <BarChart
                               data={filteredData}
@@ -1511,19 +1664,19 @@ export default function ResultsPage() {
                               layout="vertical"
                             >
                               <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
-                              <XAxis type="number" tick={{ fontSize: 11, fill: '#94a3b8', fontWeight: 500 }} axisLine={false} tickLine={false} tickFormatter={v => `${currency} ${v}`} />
+                              <XAxis type="number" tick={{ fontSize: 11, fill: '#94a3b8', fontWeight: 500 }} axisLine={false} tickLine={false} tickFormatter={v => formatCurrency(v, effectiveLanguage, currency)} />
                               <YAxis dataKey="displayName" type="category" tick={{ fontSize: 12, fill: '#475569', fontWeight: 600 }} axisLine={false} tickLine={false} width={180} />
                               <Tooltip 
-                                formatter={(value, name) => [`${currency} ${Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, name]} 
+                                formatter={(value, name) => [formatCurrency(Number(value), effectiveLanguage, currency), name]} 
                                 cursor={{fill: '#f8fafc'}}
                                 contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', fontWeight: 600 }}
                               />
                               <Legend verticalAlign="top" height={36} iconType="circle" wrapperStyle={{ fontSize: 12, fontWeight: 600 }} />
-                              <Bar dataKey="Active" stackId="a" fill="#6b4de6" barSize={20} radius={[0, 0, 0, 0]}>
-                                <LabelList dataKey="Active" position="inside" formatter={v => v > 0 ? `${currency} ${Math.round(v)}` : ''} style={{ fill: '#fff', fontSize: 10, fontWeight: 700 }} />
+                              <Bar dataKey="Active" name={isAnalystView ? t('results_activeCost', effectiveLanguage) : t('results_activeLabel', effectiveLanguage)} stackId="a" fill="#6b4de6" barSize={20} radius={[0, 0, 0, 0]}>
+                                <LabelList dataKey="Active" position="inside" formatter={v => v > 0 ? formatCurrency(Math.round(v), effectiveLanguage, currency) : ''} style={{ fill: '#fff', fontSize: 10, fontWeight: 700 }} />
                               </Bar>
-                              <Bar dataKey="Idle" stackId="a" fill="#06b6d4" barSize={20} radius={[0, 4, 4, 0]}>
-                                <LabelList dataKey="Idle" position="inside" formatter={v => v > 0 ? `${currency} ${Math.round(v)}` : ''} style={{ fill: '#fff', fontSize: 10, fontWeight: 700 }} />
+                              <Bar dataKey="Idle" name={isAnalystView ? t('results_idleCost', effectiveLanguage) : t('results_idleCostHint', effectiveLanguage)} stackId="a" fill="#06b6d4" barSize={20} radius={[0, 4, 4, 0]}>
+                                <LabelList dataKey="Idle" position="inside" formatter={v => v > 0 ? formatCurrency(Math.round(v), effectiveLanguage, currency) : ''} style={{ fill: '#fff', fontSize: 10, fontWeight: 700 }} />
                               </Bar>
                             </BarChart>
                           </ResponsiveContainer>
@@ -1534,30 +1687,30 @@ export default function ResultsPage() {
                           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, textAlign: 'left' }}>
                             <thead>
                               <tr style={{ borderBottom: '2px solid #e2e8f0', color: '#64748b' }}>
-                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>Resource</th>
-                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>Type</th>
-                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>Qty</th>
-                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>Rate</th>
-                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>Busy Hours</th>
-                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>{isAnalystView ? "Active Cost" : <Hint term="active_cost">Active Work</Hint>}</th>
-                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>{isAnalystView ? "Idle Cost" : <Hint term="idle_cost">Paid time with no work</Hint>}</th>
-                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>Total Cost</th>
-                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>{isAnalystView ? "Utilization" : <Hint term="utilization">How busy staff are</Hint>}</th>
+                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>{t('results_colResource', effectiveLanguage)}</th>
+                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>{t('results_colType', effectiveLanguage)}</th>
+                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>{t('results_colQty', effectiveLanguage)}</th>
+                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>{t('results_colRate', effectiveLanguage)}</th>
+                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>{t('results_colBusyHours', effectiveLanguage)}</th>
+                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>{isAnalystView ? t('results_activeCost', effectiveLanguage) : <Hint term="active_cost">{t('results_activeLabel', effectiveLanguage)}</Hint>}</th>
+                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>{isAnalystView ? t('results_idleCost', effectiveLanguage) : <Hint term="idle_cost">{t('results_idleCostHint', effectiveLanguage)}</Hint>}</th>
+                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>{t('results_colTotalCost', effectiveLanguage)}</th>
+                                <th style={{ padding: '8px 10px', fontWeight: 600 }}>{isAnalystView ? t('results_colUtilization', effectiveLanguage) : <Hint term="utilization">{t('results_howBusyStaffAre', effectiveLanguage)}</Hint>}</th>
                               </tr>
                             </thead>
                             <tbody>
                               {filteredData.map((r, idx) => (
                                 <tr key={idx} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                                  <td style={{ padding: '9px 10px', fontWeight: 600, color: '#1e293b' }}>{r.name}</td>
+                                  <td style={{ padding: '9px 10px', fontWeight: 600, color: '#1e293b' }}><bdi dir="auto">{r.name}</bdi></td>
                                   <td style={{ padding: '9px 10px', textTransform: 'capitalize', color: '#64748b' }}>{r.type}</td>
-                                  <td style={{ padding: '9px 10px', color: '#334155' }}>{r.quantity}</td>
-                                  <td style={{ padding: '9px 10px', color: '#334155' }}>{currency} {r.hourly_rate?.toFixed(2)}/h</td>
-                                  <td style={{ padding: '9px 10px', color: '#334155' }}>{r.busy_hours?.toFixed(2)}h</td>
-                                  <td style={{ padding: '9px 10px', color: '#4338ca', fontWeight: 600 }}>{currency} {r.Active?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                                  <td style={{ padding: '9px 10px', color: '#0e7490', fontWeight: 600 }}>{currency} {r.Idle?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                                  <td style={{ padding: '9px 10px', color: '#0f172a', fontWeight: 700 }}>{currency} {r.Total?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                  <td style={{ padding: '9px 10px', color: '#334155' }}><bdi dir="ltr">{r.quantity}</bdi></td>
+                                  <td style={{ padding: '9px 10px', color: '#334155' }}><bdi dir="ltr">{formatCurrency(r.hourly_rate || 0, effectiveLanguage, currency)}/h</bdi></td>
+                                  <td style={{ padding: '9px 10px', color: '#334155' }}><bdi dir="ltr">{r.busy_hours?.toFixed(2)}h</bdi></td>
+                                  <td style={{ padding: '9px 10px', color: '#4338ca', fontWeight: 600 }}><bdi dir="ltr">{formatCurrency(r.Active || 0, effectiveLanguage, currency)}</bdi></td>
+                                  <td style={{ padding: '9px 10px', color: '#0e7490', fontWeight: 600 }}><bdi dir="ltr">{formatCurrency(r.Idle || 0, effectiveLanguage, currency)}</bdi></td>
+                                  <td style={{ padding: '9px 10px', color: '#0f172a', fontWeight: 700 }}><bdi dir="ltr">{formatCurrency(r.Total || 0, effectiveLanguage, currency)}</bdi></td>
                                   <td style={{ padding: '9px 10px', fontWeight: 700, color: r.utilization_pct > 80 ? '#dc2626' : (r.utilization_pct > 0 ? '#16a34a' : '#94a3b8') }}>
-                                    {r.utilization_pct != null ? `${r.utilization_pct}%` : '0.0%'}
+                                    <bdi dir="ltr">{r.utilization_pct != null ? `${r.utilization_pct}%` : '0.0%'}</bdi>
                                   </td>
                                 </tr>
                               ))}
@@ -1588,10 +1741,10 @@ export default function ResultsPage() {
             gap: 20,
             ...fade(0)
           }}>
-<InfoTip title={isAnalystView ? "Baseline vs What-If" : "Current setup vs Idea to try"} whole={false}>
+<InfoTip title={isAnalystView ? t('results_tabWhatIfComparison', effectiveLanguage) : t('results_tabIdeaComparison', effectiveLanguage)} whole={false}>
   {isAnalystView
-    ? "Compares your original process (baseline) with the scenario you changed (what-if), so you can see whether your change helped."
-    : "Compares your original process (current setup) with the idea you changed, so you can see whether your change helped."}
+    ? t('results_comparingBaselineVsWhatIf', effectiveLanguage, '')
+    : t('results_comparingCurrentVsIdea', effectiveLanguage, '')}
 </InfoTip>
             {/* Title */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
@@ -1601,16 +1754,15 @@ export default function ResultsPage() {
                 </div>
                 <div>
                   <h2 style={{ fontSize: 16, fontWeight: 800, color: '#1e1b4b', margin: 0 }}>
-                    {isAnalystView ? "Baseline vs What-If Performance Comparison" : "Current Setup vs Idea Comparison"}
+                    {isAnalystView ? t('results_baselineVsWhatIf', effectiveLanguage) : t('results_currentSetupVsIdea', effectiveLanguage)}
                   </h2>
                   <p style={{ fontSize: 12, color: '#6b7280', margin: '2px 0 0' }}>
-                    {isAnalystView ? "Comparing baseline process with scenario: " : "Comparing current setup with idea: "}
-                    <strong>"{whatifName}"</strong>
+                    {isAnalystView ? t('results_comparingBaselineVsWhatIf', effectiveLanguage, <bdi dir="auto">"{whatifName}"</bdi>) : t('results_comparingCurrentVsIdea', effectiveLanguage, <bdi dir="auto">"{whatifName}"</bdi>)}
                   </p>
                 </div>
               </div>
               <div style={{ background: '#e0e7ff', color: '#4338ca', fontSize: 11, fontWeight: 700, padding: '4px 10px', borderRadius: 9999 }}>
-                {isAnalystView ? "What-If Active" : "Idea Active"}
+                {isAnalystView ? t('results_whatIfActive', effectiveLanguage) : t('results_ideaActive', effectiveLanguage)}
               </div>
             </div>
 
@@ -1619,18 +1771,12 @@ export default function ResultsPage() {
                 <AlertTriangle size={22} color="#d97706" style={{ flexShrink: 0, marginTop: 2 }} />
                 <div>
                   <p style={{ fontSize: 14, fontWeight: 700, color: '#92400e', margin: '0 0 6px' }}>
-                    {isAnalystView ? "Baseline and What-If used different simulation modes" : "Current setup and idea used different test modes"}
+                    {t('results_diffModesTitle', effectiveLanguage, isAnalystView)}
                   </p>
                   <p style={{ fontSize: 13, color: '#78350f', lineHeight: 1.6, margin: 0 }}>
-                    {formatPlainLanguage(
-                      comparisonMetrics.baseRuns <= 1 && comparisonMetrics.wiRuns > 1
-                        ? `Your baseline (${fmt(comparisonMetrics.baseAvg)}) was run in Quick Analysis — a single pass with no queuing or resource contention at all — while your what-if scenario (${fmt(comparisonMetrics.wiAvg)}) ran Deep Analysis with ${comparisonMetrics.wiRuns} iterations of real congestion. `
-                        : `Your what-if scenario (${fmt(comparisonMetrics.wiAvg)}) was run in Quick Analysis — a single pass with no queuing or resource contention at all — while your baseline (${fmt(comparisonMetrics.baseAvg)}) ran Deep Analysis with ${comparisonMetrics.baseRuns} iterations of real congestion. `,
-                      { isAnalystView }
-                    )}
-                    These aren't comparable — go to <strong>Simulate</strong> and re-run the benchmark in Deep Analysis mode to get an accurate comparison.
+                    {t('results_diffModesDesc', effectiveLanguage)}
                   </p>
-                  <button onClick={() => navigate('/simulate')} style={{ marginTop: 14, padding: '8px 16px', background: '#d97706', color: '#fff', border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Go to Simulate</button>
+                  <button onClick={() => navigate('/simulate')} style={{ marginTop: 14, padding: '8px 16px', background: '#d97706', color: '#fff', border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>{t('results_goToSimulate', effectiveLanguage)}</button>
                 </div>
               </div>
             ) : (
@@ -1640,10 +1786,10 @@ export default function ResultsPage() {
               
               {/* Metric 1: Cycle Time */}
               <div style={{ position: 'relative', background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', padding: 18 }}>
-<InfoTip title={isAnalystView ? "Average cycle time" : "Time from arrival to leaving"} corner="br">Average time one customer takes from start to finish. The percentage shows how much it changed with your scenario. Lower is better.</InfoTip>
+<InfoTip title={isAnalystView ? t('results_avgCycleTime', effectiveLanguage) : t('results_avgCompletionTime', effectiveLanguage)} corner="br">{t('results_avgCycleTimeTip', effectiveLanguage)}</InfoTip>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                   <span style={{ fontSize: 13, fontWeight: 600, color: '#475569' }}>
-                    {isAnalystView ? "Avg. Cycle Time" : <Hint term="cycle_time">Time from arrival to leaving</Hint>}
+                    {isAnalystView ? t('results_avgCycleTime', effectiveLanguage) : <Hint term="cycle_time">{t('results_avgCompletionTime', effectiveLanguage)}</Hint>}
                   </span>
                   {comparisonMetrics.cycleMeaningful ? (
                     <span style={{
@@ -1653,7 +1799,7 @@ export default function ResultsPage() {
                       display: 'inline-flex', alignItems: 'center', gap: 4
                     }}>
                       {comparisonMetrics.cycleTimeDelta < 0 ? <TrendingDown size={14} /> : <TrendingUp size={14} />}
-                      {comparisonMetrics.cycleTimeDelta < 0 ? '' : '+'}{comparisonMetrics.cycleTimeDelta.toFixed(1)}%
+                      <bdi dir="ltr">{comparisonMetrics.cycleTimeDelta < 0 ? '' : '+'}{comparisonMetrics.cycleTimeDelta.toFixed(1)}%</bdi>
                     </span>
                   ) : (
                     <span style={{
@@ -1661,7 +1807,7 @@ export default function ResultsPage() {
                       background: '#f1f5f9', color: '#64748b', border: '1px solid #e2e8f0',
                       display: 'inline-flex', alignItems: 'center', gap: 4
                     }}>
-                      No meaningful change
+                      {t('results_noMeaningfulChange', effectiveLanguage)}
                     </span>
                   )}
                 </div>
@@ -1669,8 +1815,8 @@ export default function ResultsPage() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                   <div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
-                      <span style={{ color: '#64748b' }}>{isAnalystView ? "Baseline" : "Current setup"}</span>
-                      <span style={{ fontWeight: 700, color: '#0f172a' }}>{comparisonMetrics.baseCycleFormatted || fmt(comparisonMetrics.baseAvg)}</span>
+                      <span style={{ color: '#64748b' }}>{isAnalystView ? t('results_baseline', effectiveLanguage) : t('results_currentSetup', effectiveLanguage)}</span>
+                      <span style={{ fontWeight: 700, color: '#0f172a' }}><bdi dir="ltr">{comparisonMetrics.baseCycleFormatted || fmt(comparisonMetrics.baseAvg, effectiveLanguage)}</bdi></span>
                     </div>
                     <div style={{ height: 8, background: '#f1f5f9', borderRadius: 4, overflow: 'hidden' }}>
                       <div style={{ height: '100%', width: '100%', background: '#94a3b8', borderRadius: 4 }} />
@@ -1679,8 +1825,8 @@ export default function ResultsPage() {
 
                   <div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
-                      <span style={{ color: '#6b4de6', fontWeight: 600 }}>{isAnalystView ? "What-If Scenario" : "Idea to try"}</span>
-                      <span style={{ fontWeight: 700, color: '#6b4de6' }}>{comparisonMetrics.wiCycleFormatted || fmt(comparisonMetrics.wiAvg)}</span>
+                      <span style={{ color: '#6b4de6', fontWeight: 600 }}>{isAnalystView ? t('results_whatIfScenario', effectiveLanguage) : t('results_ideaToTry', effectiveLanguage)}</span>
+                      <span style={{ fontWeight: 700, color: '#6b4de6' }}><bdi dir="ltr">{comparisonMetrics.wiCycleFormatted || fmt(comparisonMetrics.wiAvg, effectiveLanguage)}</bdi></span>
                     </div>
                     <div style={{ height: 8, background: '#f1f5f9', borderRadius: 4, overflow: 'hidden' }}>
                       <div style={{
@@ -1697,10 +1843,10 @@ export default function ResultsPage() {
               {/* Metric 2: Throughput */}
               {simMode !== 'quick' && (
                 <div style={{ position: 'relative', background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', padding: 18 }}>
-<InfoTip title={isAnalystView ? "Production throughput" : "Customers served per hour"} corner="br">How many customers are finished per hour. The percentage shows how much it changed with your scenario. Higher is better.</InfoTip>
+<InfoTip title={isAnalystView ? t('results_productionSpeed', effectiveLanguage) : t('results_customersServedPerHour', effectiveLanguage)} corner="br">{t('results_customersPerHourTip', effectiveLanguage)}</InfoTip>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                     <span style={{ fontSize: 13, fontWeight: 600, color: '#475569' }}>
-                      {isAnalystView ? "Production Throughput" : <Hint term="throughput">Customers served per hour</Hint>}
+                      {isAnalystView ? t('results_productionSpeed', effectiveLanguage) : <Hint term="throughput">{t('results_customersServedPerHour', effectiveLanguage)}</Hint>}
                     </span>
                     {comparisonMetrics.throughputMeaningful ? (
                       <span style={{
@@ -1710,7 +1856,7 @@ export default function ResultsPage() {
                         display: 'inline-flex', alignItems: 'center', gap: 4
                       }}>
                         {comparisonMetrics.throughputDelta > 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
-                        {comparisonMetrics.throughputDelta > 0 ? '+' : ''}{comparisonMetrics.throughputDelta.toFixed(1)}%
+                        <bdi dir="ltr">{comparisonMetrics.throughputDelta > 0 ? '+' : ''}{comparisonMetrics.throughputDelta.toFixed(1)}%</bdi>
                       </span>
                     ) : (
                       <span style={{
@@ -1718,7 +1864,7 @@ export default function ResultsPage() {
                         background: '#f1f5f9', color: '#64748b', border: '1px solid #e2e8f0',
                         display: 'inline-flex', alignItems: 'center', gap: 4
                       }}>
-                        No meaningful change
+                        {t('results_noMeaningfulChange', effectiveLanguage)}
                       </span>
                     )}
                   </div>
@@ -1726,8 +1872,8 @@ export default function ResultsPage() {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                     <div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
-                        <span style={{ color: '#64748b' }}>{isAnalystView ? "Baseline" : "Current setup"}</span>
-                        <span style={{ fontWeight: 700, color: '#0f172a' }}>{comparisonMetrics.baseThroughput.toFixed(1)}/hr</span>
+                        <span style={{ color: '#64748b' }}>{isAnalystView ? t('results_baseline', effectiveLanguage) : t('results_currentSetup', effectiveLanguage)}</span>
+                        <span style={{ fontWeight: 700, color: '#0f172a' }}><bdi dir="ltr">{formatRate(comparisonMetrics.baseThroughput, 'hr', effectiveLanguage)}</bdi></span>
                       </div>
                       <div style={{ height: 8, background: '#f1f5f9', borderRadius: 4, overflow: 'hidden' }}>
                         <div style={{
@@ -1741,8 +1887,8 @@ export default function ResultsPage() {
 
                     <div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
-                        <span style={{ color: '#6b4de6', fontWeight: 600 }}>{isAnalystView ? "What-If Scenario" : "Idea to try"}</span>
-                        <span style={{ fontWeight: 700, color: '#6b4de6' }}>{comparisonMetrics.wiThroughput.toFixed(1)}/hr</span>
+                        <span style={{ color: '#6b4de6', fontWeight: 600 }}>{isAnalystView ? t('results_whatIfScenario', effectiveLanguage) : t('results_ideaToTry', effectiveLanguage)}</span>
+                        <span style={{ fontWeight: 700, color: '#6b4de6' }}><bdi dir="ltr">{formatRate(comparisonMetrics.wiThroughput, 'hr', effectiveLanguage)}</bdi></span>
                       </div>
                       <div style={{ height: 8, background: '#f1f5f9', borderRadius: 4, overflow: 'hidden' }}>
                         <div style={{
@@ -1759,20 +1905,20 @@ export default function ResultsPage() {
 
               {/* Metric 3: Primary Bottleneck */}
               <div style={{ position: 'relative', background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', padding: 18, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-<InfoTip title={isAnalystView ? "Bottleneck shift" : "Wait point shift"} corner="br">The bottleneck is the step that holds the process back most. If it moves to a different step after your change, the original problem was fixed and a new one is now the biggest.</InfoTip>
-                <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', marginBottom: 8, display: 'block' }}>{simMode === 'quick' ? (isAnalystView ? 'Slowest Task Shift' : 'Slowest Step Shift') : (isAnalystView ? 'Bottleneck Shift' : 'Wait Point Shift')}</span>
+<InfoTip title={isAnalystView ? t('results_bottleneckShift', effectiveLanguage) : t('results_waitPointShift', effectiveLanguage)} corner="br">{t('results_constraintAnalysisTip', effectiveLanguage)}</InfoTip>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', marginBottom: 8, display: 'block' }}>{simMode === 'quick' ? t('results_slowestStepShift', effectiveLanguage) : (isAnalystView ? t('results_bottleneckShift', effectiveLanguage) : t('results_waitPointShift', effectiveLanguage))}</span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                   <div style={{ flex: 1 }}>
-                    <span style={{ fontSize: 11, color: '#94a3b8', display: 'block' }}>{isAnalystView ? "Baseline:" : "Current setup:"}</span>
+                    <span style={{ fontSize: 11, color: '#94a3b8', display: 'block' }}>{isAnalystView ? `${t('results_baseline', effectiveLanguage)}:` : `${t('results_currentSetup', effectiveLanguage)}:`}</span>
                     <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      "{comparisonMetrics.baseBnLabel}"
+                      "<bdi dir="auto">{comparisonMetrics.baseBnLabel}</bdi>"
                     </div>
                   </div>
                   <div style={{ fontSize: 16, color: '#6b4de6', fontWeight: 700 }}>➔</div>
                   <div style={{ flex: 1 }}>
-                    <span style={{ fontSize: 11, color: '#6b4de6', display: 'block' }}>{isAnalystView ? "What-If:" : "Idea to try:"}</span>
+                    <span style={{ fontSize: 11, color: '#6b4de6', display: 'block' }}>{isAnalystView ? `${t('results_whatIfScenario', effectiveLanguage)}:` : `${t('results_ideaToTry', effectiveLanguage)}:`}</span>
                     <div style={{ fontSize: 13, fontWeight: 700, color: '#6b4de6', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      "{comparisonMetrics.wiBnLabel}"
+                      "<bdi dir="auto">{comparisonMetrics.wiBnLabel}</bdi>"
                     </div>
                   </div>
                 </div>
@@ -1783,18 +1929,18 @@ export default function ResultsPage() {
             {/* Comparison Charts */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 20 }}>
               <div style={{ position: 'relative', background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', padding: '18px' }}>
-<InfoTip title={isAnalystView ? "Cycle time comparison" : "Time comparison"}>{isAnalystView ? "Average time per customer before (baseline) and after (what-if) your change. A green bar means your change made it faster; red means slower." : "Average time per customer before (current setup) and after your change. A green bar means your change made it faster; red means slower."}</InfoTip>
-                <h4 style={{ fontSize: 13, fontWeight: 700, color: '#475569', marginBottom: 8 }}>{isAnalystView ? "Cycle Time: Baseline vs What-If" : "Time from arrival to leaving: Current setup vs Idea"}</h4>
+<InfoTip title={t('results_timeComparisonTitle', effectiveLanguage, isAnalystView)}>{t('results_timeComparisonTitle', effectiveLanguage, isAnalystView)}</InfoTip>
+                <h4 style={{ fontSize: 13, fontWeight: 700, color: '#475569', marginBottom: 8 }}>{t('results_timeComparisonTitle', effectiveLanguage, isAnalystView)}</h4>
                 <div style={{ height: 180 }}>
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={[
-                      { name: isAnalystView ? 'Baseline' : 'Current setup', value: comparisonMetrics.baseAvg },
-                      { name: whatifName.length > 14 ? (isAnalystView ? 'What-If' : 'Idea') : whatifName, value: comparisonMetrics.wiAvg },
+                      { name: isAnalystView ? t('results_baseline', effectiveLanguage) : t('results_currentSetup', effectiveLanguage), value: comparisonMetrics.baseAvg },
+                      { name: whatifName.length > 14 ? (isAnalystView ? t('results_whatIfScenario', effectiveLanguage) : t('results_ideaToTry', effectiveLanguage)) : whatifName, value: comparisonMetrics.wiAvg },
                     ]} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                       <XAxis dataKey="name" tick={{ fontSize: 12, fill: '#64748b' }} axisLine={false} tickLine={false} />
-                      <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} tickFormatter={(v) => fmt(v)} />
-                      <Tooltip formatter={(v) => fmt(v)} />
+                      <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} tickFormatter={(v) => fmt(v, effectiveLanguage)} />
+                      <Tooltip formatter={(v) => fmt(v, effectiveLanguage)} />
                       <Bar dataKey="value" radius={[6, 6, 0, 0]} barSize={56}>
                         <Cell fill="#94a3b8" />
                         <Cell fill={!comparisonMetrics.cycleMeaningful ? '#94a3b8' : (comparisonMetrics.cycleTimeDelta < 0 ? '#10b981' : '#ef4444')} />
@@ -1805,18 +1951,18 @@ export default function ResultsPage() {
               </div>
 
               <div style={{ position: 'relative', background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', padding: '18px' }}>
-<InfoTip title={isAnalystView ? "Throughput comparison" : "Customers served comparison"}>{isAnalystView ? "Customers finished per hour before (baseline) and after (what-if) your change. A green bar means more customers were served; red means fewer." : "Customers finished per hour before (current setup) and after your change. A green bar means more customers were served; red means fewer."}</InfoTip>
-                <h4 style={{ fontSize: 13, fontWeight: 700, color: '#475569', marginBottom: 8 }}>{isAnalystView ? "Throughput: Baseline vs What-If" : "Customers served per hour: Current setup vs Idea"}</h4>
+<InfoTip title={t('results_throughputComparisonTitle', effectiveLanguage, isAnalystView)}>{t('results_throughputComparisonTitle', effectiveLanguage, isAnalystView)}</InfoTip>
+                <h4 style={{ fontSize: 13, fontWeight: 700, color: '#475569', marginBottom: 8 }}>{t('results_throughputComparisonTitle', effectiveLanguage, isAnalystView)}</h4>
                 <div style={{ height: 180 }}>
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={[
-                      { name: isAnalystView ? 'Baseline' : 'Current setup', value: comparisonMetrics.baseThroughput },
-                      { name: whatifName.length > 14 ? (isAnalystView ? 'What-If' : 'Idea') : whatifName, value: comparisonMetrics.wiThroughput },
+                      { name: isAnalystView ? t('results_baseline', effectiveLanguage) : t('results_currentSetup', effectiveLanguage), value: comparisonMetrics.baseThroughput },
+                      { name: whatifName.length > 14 ? (isAnalystView ? t('results_whatIfScenario', effectiveLanguage) : t('results_ideaToTry', effectiveLanguage)) : whatifName, value: comparisonMetrics.wiThroughput },
                     ]} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                       <XAxis dataKey="name" tick={{ fontSize: 12, fill: '#64748b' }} axisLine={false} tickLine={false} />
-                      <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} tickFormatter={(v) => `${v.toFixed(0)}/hr`} />
-                      <Tooltip formatter={(v) => `${v.toFixed(2)}/hr`} />
+                      <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} tickFormatter={(v) => formatRate(v, 'hr', effectiveLanguage)} />
+                      <Tooltip formatter={(v) => formatRate(v, 'hr', effectiveLanguage)} />
                       <Bar dataKey="value" radius={[6, 6, 0, 0]} barSize={56}>
                         <Cell fill="#94a3b8" />
                         <Cell fill={!comparisonMetrics.throughputMeaningful ? '#94a3b8' : (comparisonMetrics.throughputDelta > 0 ? '#10b981' : '#ef4444')} />
@@ -1847,7 +1993,7 @@ export default function ResultsPage() {
         )}
          </>
         )}
-        {tab === 'takeaways' && <KeyTakeaways lines={summaryLines} isAnalystView={isAnalystView} />}
+        {tab === 'takeaways' && <KeyTakeaways lines={summaryLines} isAnalystView={isAnalystView} lang={effectiveLanguage} />}
       </main>
     </div>
   );
