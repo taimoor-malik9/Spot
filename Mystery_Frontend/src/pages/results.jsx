@@ -402,26 +402,26 @@ function PlainSummaryCard({ plain, simMode, idToLabel = {}, isAnalystView = fals
     </div>
   );
 
-  const who = tight ? <bdi dir="auto"><strong>{tight.name}</strong></bdi> : null;
+  const who = tight ? tight.name : '';
   const callout = (() => {
     if (isQuick || !tight || !status) return null;
     if (status === 'overloaded') {
       return {
         color: '#ef4444',
         text: arrivalPerHr != null
-          ? t('results_calloutOverloadedWithArrival', lang, who, <bdi dir="ltr">{arrivalPerHr.toFixed(1)}</bdi>, <bdi dir="ltr">{tight.perHr.toFixed(1)}</bdi>, <bdi dir="ltr">{(tight.perHr * 0.8).toFixed(1)}</bdi>)
-          : t('results_calloutOverloadedNoArrival', lang, who, <bdi dir="ltr">{tight.util.toFixed(0)}</bdi>, <bdi dir="ltr">{tight.perHr.toFixed(1)}</bdi>)
+          ? t('results_calloutOverloadedWithArrival', lang, who, arrivalPerHr.toFixed(1), tight.perHr.toFixed(1), (tight.perHr * 0.8).toFixed(1))
+          : t('results_calloutOverloadedNoArrival', lang, who, tight.util.toFixed(0), tight.perHr.toFixed(1))
       };
     }
     if (status === 'tight') {
       return {
         color: '#f59e0b',
-        text: t('results_calloutTight', lang, who, <bdi dir="ltr">{tight.util.toFixed(0)}</bdi>, <bdi dir="ltr">{tight.perHr.toFixed(1)}</bdi>)
+        text: t('results_calloutTight', lang, who, tight.util.toFixed(0), tight.perHr.toFixed(1))
       };
     }
     return {
       color: '#10b981',
-      text: t('results_calloutOk', lang, who, <bdi dir="ltr">{tight.perHr.toFixed(1)}</bdi>, arrivalPerHr != null ? <bdi dir="ltr">{arrivalPerHr.toFixed(1)}</bdi> : null)
+      text: t('results_calloutOk', lang, who, tight.perHr.toFixed(1), arrivalPerHr != null ? arrivalPerHr.toFixed(1) : null)
     };
   })();
 
@@ -453,10 +453,10 @@ function PlainSummaryCard({ plain, simMode, idToLabel = {}, isAnalystView = fals
             {chip && <span style={{ fontSize: 11, fontWeight: 700, color: chip.c, background: chip.bg, borderRadius: 999, padding: '3px 10px' }}>{chip.t}</span>}
           </div>
           <p style={{ fontSize: 13, color: '#64748b', margin: '3px 0 0', lineHeight: 1.5, paddingRight: 28 }} dir="auto">
-            {t('results_customerNeedsWork', lang, <strong style={{ color: '#334155' }}><bdi dir="ltr">{fmt(work, lang)}</bdi></strong>)}
+            {t('results_customerNeedsWork', lang, fmt(work, lang))}
             {overloaded && tight
-              ? <> {t('results_customersArriveFaster', lang, <strong style={{ color: '#334155' }}><bdi dir="auto">{tight.name}</bdi></strong>)}</>
-              : !isQuick && wait > 0 ? <> {t('results_averageWaitInLine', lang, <strong style={{ color: '#334155' }}><bdi dir="ltr">{fmt(wait, lang)}</bdi></strong>)}</> : null}
+              ? <> {t('results_customersArriveFaster', lang, tight.name)}</>
+              : !isQuick && wait > 0 ? <> {t('results_averageWaitInLine', lang, fmt(wait, lang))}</> : null}
             {isQuick ? ` ${t('results_bestCaseNoWait', lang)}` : ` ${t('results_workedOutFromCustomers', lang, runs)}`}
           </p>
         </div>
@@ -523,7 +523,7 @@ function PlainSummaryCard({ plain, simMode, idToLabel = {}, isAnalystView = fals
             <Heading title={t('results_arrivalsVsRole', lang, tight.name)} hint={t('results_arrivalsVsRoleHint', lang)} />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               {arrivalPerHr != null && bar(t('results_customersArriving', lang), arrivalPerHr, arrivalPerHr > tight.perHr ? '#ef4444' : '#6b4de6')}
-              {bar(t('results_roleCanHandle', lang, <bdi dir="auto">{tight.name}</bdi>), tight.perHr, '#10b981')}
+              {bar(t('results_roleCanHandle', lang, tight.name), tight.perHr, '#10b981')}
             </div>
           </div>
         )}
@@ -1757,7 +1757,7 @@ export default function ResultsPage() {
                     {isAnalystView ? t('results_baselineVsWhatIf', effectiveLanguage) : t('results_currentSetupVsIdea', effectiveLanguage)}
                   </h2>
                   <p style={{ fontSize: 12, color: '#6b7280', margin: '2px 0 0' }}>
-                    {isAnalystView ? t('results_comparingBaselineVsWhatIf', effectiveLanguage, <bdi dir="auto">"{whatifName}"</bdi>) : t('results_comparingCurrentVsIdea', effectiveLanguage, <bdi dir="auto">"{whatifName}"</bdi>)}
+                    {isAnalystView ? t('results_comparingBaselineVsWhatIf', effectiveLanguage, whatifName) : t('results_comparingCurrentVsIdea', effectiveLanguage, whatifName)}
                   </p>
                 </div>
               </div>
