@@ -69,6 +69,7 @@ import {
   PALETTE_TOOLTIPS,
   formatPlainLanguage,
 } from '../lib/labels';
+import { upsertScenarios, dedupeScenarios } from '../lib/resultsHelper';
 
 function isXorGateway(type) {
   if (!type) return false;
@@ -1305,7 +1306,7 @@ function ComparisonPane({ scenarios, compareIds, scenarioResults, backendScenari
   const [isAnalystView] = useAnalystView();
   const [isCollapsed, setIsCollapsed] = useState(false);
 
-  const selectedScenarios = compareIds.map(id => scenarios.find(s => s.id === id)).filter(Boolean);
+  const selectedScenarios = dedupeScenarios(compareIds.map(id => scenarios.find(s => s.id === id)).filter(Boolean));
   const baseline = selectedScenarios.find(s => s._isBaseline) || selectedScenarios[0];
   const others = selectedScenarios.filter(s => s.id !== baseline.id);
 
@@ -1394,12 +1395,13 @@ function ComparisonPane({ scenarios, compareIds, scenarioResults, backendScenari
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-50">
-            {selectedScenarios.map(s => {
+            {selectedScenarios.map((s, idx) => {
               const m = getMetrics(s);
               const isBase = s.id === baseline.id;
+              const rowKey = s.id || s._backendId || s._id || `comp-${idx}`;
               
               return (
-                <tr key={s.id} className={isBase ? 'bg-slate-50/50' : ''}>
+                <tr key={rowKey} className={isBase ? 'bg-slate-50/50' : ''}>
                   <td className="py-2.5">
                     <div className="flex items-center gap-2">
                       <span className={`h-2 w-2 rounded-full ${s._isBaseline ? 'bg-sky-500' : 'bg-violet-400'}`} />
@@ -1643,7 +1645,7 @@ export default function ScenariosPage() {
     canvasConnectionsRef.current[localId] = JSON.parse(JSON.stringify(baseConns));
     resourceAllocationsRef.current[localId] = cloneResourceList(baseRes);
     const nowIso = new Date().toISOString();
-    scenariosRef.current = [...scenariosRef.current, { id: localId, name: newName, description: 'Created new scenario', _backendId: null, _allowCreate: true, updatedAt: nowIso, createdAt: nowIso }];
+    scenariosRef.current = upsertScenarios(scenariosRef.current, [{ id: localId, name: newName, description: 'Created new scenario', _backendId: null, _allowCreate: true, updatedAt: nowIso, createdAt: nowIso }]);
 
     // 2. Update states
     setActiveId(localId);
@@ -1856,15 +1858,15 @@ export default function ScenariosPage() {
           });
         }
 
-        // Merge backend scenarios into local state (avoid duplicates by title)
+        // Merge backend scenarios into local state (avoid duplicates by title and ID)
         const names = [...scenariosRef.current.map((s) => s.name)];
         const newOnes = list.map((bs) => {
           const uniqueTitle = getUniqueScenarioName(bs.title, names);
           names.push(uniqueTitle);
           return { id: bs._id, name: uniqueTitle, description: '', _backendId: bs._id, updatedAt: bs.updatedAt, createdAt: bs.createdAt };
         });
-        setScenarios((prev) => [...prev, ...newOnes]);
-        scenariosRef.current = [...scenariosRef.current, ...newOnes];
+        setScenarios((prev) => upsertScenarios(prev, newOnes));
+        scenariosRef.current = upsertScenarios(scenariosRef.current, newOnes);
 
         const idMap = {};
         list.forEach((bs) => { idMap[bs._id] = bs._id; });
@@ -2119,11 +2121,11 @@ export default function ScenariosPage() {
 
             // Add or update Baseline scenario in list
             setScenarios(prev => {
-              const hasBaseline = prev.some(s => s.id === 'baseline');
+              const hasBaseline = prev.some(s => s.id === 'baseline' || s._isBaseline);
               if (hasBaseline) {
-                return prev.map(s => s.id === 'baseline' ? { ...s, name: baselineTitle } : s);
+                return dedupeScenarios(prev.map(s => (s.id === 'baseline' || s._isBaseline) ? { ...s, name: baselineTitle, _isBaseline: true } : s));
               }
-              return [{ id: 'baseline', name: baselineTitle, description: isAnalystView ? 'Original model' : 'Current setup', _isBaseline: true }, ...prev];
+              return dedupeScenarios([{ id: 'baseline', name: baselineTitle, description: isAnalystView ? 'Original model' : 'Current setup', _isBaseline: true }, ...prev]);
             });
             
             // Sync baseline canvas elements and connections from Model page
@@ -2173,7 +2175,7 @@ export default function ScenariosPage() {
     canvasConnectionsRef.current[localId] = JSON.parse(JSON.stringify(baseConns));
     resourceAllocationsRef.current[localId] = cloneResourceList(baseRes);
     const nowIso = new Date().toISOString();
-    scenariosRef.current = [...scenariosRef.current, { id: localId, name: newName, description: 'Created new scenario', _backendId: null, _allowCreate: true, updatedAt: nowIso, createdAt: nowIso }];
+    scenariosRef.current = upsertScenarios(scenariosRef.current, [{ id: localId, name: newName, description: 'Created new scenario', _backendId: null, _allowCreate: true, updatedAt: nowIso, createdAt: nowIso }]);
 
     setActiveId(localId);
     setScenarios(scenariosRef.current);
@@ -2738,9 +2740,10 @@ export default function ScenariosPage() {
   const currentScenario = scenarios.find((s) => s.id === activeId) || scenarios[0];
 
   const sortedScenarios = useMemo(() => {
+    const dedupedList = dedupeScenarios(scenarios);
     const q = scenarioSearch.trim().toLowerCase();
-    const baseline = scenarios.find((s) => s._isBaseline || s.id === 'baseline');
-    const others = scenarios.filter((s) => !(s._isBaseline || s.id === 'baseline'));
+    const baseline = dedupedList.find((s) => s._isBaseline || s.id === 'baseline');
+    const others = dedupedList.filter((s) => !(s._isBaseline || s.id === 'baseline'));
 
     const filteredOthers = q ? others.filter((s) => s.name?.toLowerCase().includes(q)) : others;
     filteredOthers.sort((a, b) => {
@@ -3078,11 +3081,16 @@ export default function ScenariosPage() {
                     {isAnalystView ? "No scenarios found" : "No ideas found"}
                   </div>
                 ) : (
-                  sortedScenarios.map((s) => {
-                    const isActive = s.id === activeId;
-                    return (
-                      <div
-                        key={s.id}
+                  (() => {
+                    const seenKeys = new Set();
+                    return sortedScenarios.map((s, idx) => {
+                      const isActive = s.id === activeId;
+                      const rawKey = s.id || s._backendId || s._id;
+                      const cardKey = rawKey && !seenKeys.has(rawKey) ? rawKey : `${rawKey || 'scenario'}-${idx}`;
+                      seenKeys.add(cardKey);
+                      return (
+                        <div
+                          key={cardKey}
                         className={`group flex items-center gap-2.5 px-3 py-1.5 min-h-[44px] text-xs transition-colors ${
                           isActive ? 'bg-indigo-50/70 border-l-2 border-indigo-600' : 'hover:bg-slate-50'
                         }`}
@@ -3174,8 +3182,9 @@ export default function ScenariosPage() {
                         </div>
                       </div>
                     );
-                  })
-                )}
+                  });
+                })()
+              )}
               </div>
 
               {/* Bottom "+ New scenario" button */}
