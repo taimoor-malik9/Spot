@@ -20,6 +20,7 @@ import { NW, NH, elCenter, bestPorts, isXorGateway, outlineAnchor } from '../com
 import { Shape } from '../components/model/BpmnShape';
 import { DiagramEdge as Edge, tempConnectionLine } from '../components/model/DiagramEdge';
 import DiagramCanvas from '../components/model/DiagramCanvas';
+import { getPoolForNode } from '../components/model/BpmnCanvasComponents';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const GRID = 8;
