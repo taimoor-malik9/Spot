@@ -68,15 +68,17 @@ app.post('/api/process', requireAuth, async (req, res) => {
                 edge.type === 'message-flow' ||
                 edge.type === 'message' ||
                 (typeof edge.data === 'object' && (edge.data?.type === 'message-flow' || edge.data?.flowType === 'message'));
+            const edgeLabel = edge.label || (typeof edge.data === 'object' ? edge.data?.label : '') || '';
             return {
                 id: edge.id || edge._id,
                 source: edge.source || edge.fromId || edge.from,
                 target: edge.target || edge.toId || edge.to,
                 type: edge.type || (isMsg ? 'message-flow' : 'sequence-flow'),
                 flowType: edge.flowType || (isMsg ? 'message' : 'sequence'),
+                label: edgeLabel,
                 data: typeof edge.data === 'object'
-                    ? { ...edge.data, type: isMsg ? 'message-flow' : (edge.data?.type || 'sequence-flow') }
-                    : (edge.data || {})
+                    ? { ...edge.data, label: edgeLabel, type: isMsg ? 'message-flow' : (edge.data?.type || 'sequence-flow') }
+                    : { label: edgeLabel }
             };
         });
 
@@ -115,6 +117,13 @@ app.post('/api/process', requireAuth, async (req, res) => {
         });
     } catch (err) {
         console.error('❌ Save error:', err.message);
+        if (err.name === 'ValidationError') {
+            return res.status(400).json({
+                error: 'Validation failed: please check required process and resource fields.',
+                detail: err.message,
+                details: Object.values(err.errors || {}).map(e => e.message)
+            });
+        }
         if (err.status) return res.status(err.status).json({ error: err.message });
         const friendly = toFriendlyError(err);
         res.status(500).json({ error: friendly.userMessage, detail: friendly.detail });
@@ -248,15 +257,17 @@ app.put('/api/process/:id', requireAuth, async (req, res) => {
                     edge.type === 'message-flow' ||
                     edge.type === 'message' ||
                     (typeof edge.data === 'object' && (edge.data?.type === 'message-flow' || edge.data?.flowType === 'message'));
+                const edgeLabel = edge.label || (typeof edge.data === 'object' ? edge.data?.label : '') || '';
                 return {
                     id: edge.id || edge._id,
                     source: edge.source || edge.fromId || edge.from,
                     target: edge.target || edge.toId || edge.to,
                     type: edge.type || (isMsg ? 'message-flow' : 'sequence-flow'),
                     flowType: edge.flowType || (isMsg ? 'message' : 'sequence'),
+                    label: edgeLabel,
                     data: typeof edge.data === 'object'
-                        ? { ...edge.data, type: isMsg ? 'message-flow' : (edge.data?.type || 'sequence-flow') }
-                        : (edge.data || {})
+                        ? { ...edge.data, label: edgeLabel, type: isMsg ? 'message-flow' : (edge.data?.type || 'sequence-flow') }
+                        : { label: edgeLabel }
                 };
             });
         }
@@ -286,6 +297,13 @@ app.put('/api/process/:id', requireAuth, async (req, res) => {
         res.json({ message: 'Process updated successfully!', process: processDoc });
     } catch (err) {
         console.error('❌ Update process error:', err.message);
+        if (err.name === 'ValidationError') {
+            return res.status(400).json({
+                error: 'Validation failed: please check required process and resource fields.',
+                detail: err.message,
+                details: Object.values(err.errors || {}).map(e => e.message)
+            });
+        }
         if (err.status) return res.status(err.status).json({ error: err.message });
         const friendly = toFriendlyError(err);
         res.status(500).json({ error: friendly.userMessage, detail: friendly.detail });
@@ -456,9 +474,13 @@ app.post('/api/process/:id', requireAuth, async (req, res) => {
 app.get('/health', (req, res) => res.json({ status: 'Server running' }));
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ Server running on http://localhost:${PORT}`);
-  console.log('Test URLs:');
-  console.log(`   → http://localhost:${PORT}/health`);
-  console.log(`   → POST http://localhost:${PORT}/api/process`);
-});
+if (require.main === module) {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`✅ Server running on http://localhost:${PORT}`);
+    console.log('Test URLs:');
+    console.log(`   → http://localhost:${PORT}/health`);
+    console.log(`   → POST http://localhost:${PORT}/api/process`);
+  });
+}
+
+module.exports = app;
