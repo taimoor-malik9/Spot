@@ -1218,11 +1218,69 @@ export function formatCurrency(n, lang = 'en', currency = 'Rs') {
   return `${currency} ${val}`;
 }
 
+function getParamNames(fn) {
+  try {
+    const fnStr = fn.toString();
+    const match = fnStr.match(/^(?:async\s*)?(?:function\s*)?(?:\w+\s*)?\(([^)]*)\)/) || fnStr.match(/^(?:async\s*)?([^\s=>(]+)\s*=>/);
+    if (match && match[1]) {
+      return match[1].split(',').map(p => p.trim().split('=')[0].trim()).filter(Boolean);
+    }
+  } catch {}
+  return [];
+}
+
+function safeStringify(val, key, paramName, isDev) {
+  if (typeof val === 'string') return val;
+  if (typeof val === 'number') {
+    if (!Number.isFinite(val) || Number.isNaN(val)) {
+      if (isDev) {
+        console.warn(`[i18n] Fallback used for key "${key}" param "${paramName}": received ${val}`);
+      }
+      return '';
+    }
+    return val;
+  }
+  if (typeof val === 'boolean') return val;
+
+  if (val === null || val === undefined) {
+    if (isDev) {
+      console.warn(`[i18n] Fallback used for key "${key}" param "${paramName}": received ${val}`);
+    }
+    return '';
+  }
+
+  if (typeof val === 'object') {
+    if (isDev) {
+      console.warn(`[i18n] Fallback used for key "${key}" param "${paramName}": received object`, val);
+    }
+    let str = val.name ?? val.label ?? val.title;
+    if (str === undefined && val.props) {
+      const ch = val.props.children;
+      if (typeof ch === 'string') {
+        str = ch;
+      } else if (ch && typeof ch === 'object') {
+        str = ch.name ?? ch.label ?? ch.title ?? (typeof ch.props?.children === 'string' ? ch.props.children : '');
+      }
+    }
+    return str != null ? String(str) : '';
+  }
+
+  return String(val);
+}
+
 /**
  * Translate a key according to the active language with English fallback.
  */
 export function t(key, lang = 'en', ...args) {
-  const selectedLang = ['en', 'ur-roman', 'ur'].includes(lang) ? lang : 'en';
+  let selectedLang = 'en';
+  let passedArgs = args;
+
+  if (['en', 'ur-roman', 'ur'].includes(lang)) {
+    selectedLang = lang;
+  } else if (lang !== undefined && lang !== null) {
+    passedArgs = [lang, ...args];
+  }
+
   const table = STRINGS[selectedLang] || STRINGS.en;
   let val = table ? table[key] : undefined;
 
@@ -1251,8 +1309,43 @@ export function t(key, lang = 'en', ...args) {
   }
 
   if (typeof val === 'function') {
-    return val(...args);
+    const paramNames = getParamNames(val);
+    if (
+      passedArgs.length === 1 &&
+      typeof passedArgs[0] === 'object' &&
+      passedArgs[0] !== null &&
+      !Array.isArray(passedArgs[0]) &&
+      !passedArgs[0].$$typeof &&
+      paramNames.length > 0 &&
+      paramNames.some(p => p in passedArgs[0])
+    ) {
+      const namedObj = passedArgs[0];
+      const safeArgs = paramNames.map(pName =>
+        safeStringify(namedObj[pName], key, pName, isDev)
+      );
+      return val(...safeArgs);
+    }
+
+    const safeArgs = passedArgs.map((arg, idx) => {
+      const pName = paramNames[idx] || `param_${idx}`;
+      return safeStringify(arg, key, pName, isDev);
+    });
+    return val(...safeArgs);
   }
+
+  if (typeof val === 'string' && /\{[a-zA-Z0-9_]+\}/.test(val)) {
+    const params = (passedArgs.length === 1 && typeof passedArgs[0] === 'object' && passedArgs[0] !== null && !passedArgs[0].$$typeof)
+      ? passedArgs[0]
+      : null;
+    return val.replace(/\{([a-zA-Z0-9_]+)\}/g, (match, pName) => {
+      let raw = params ? params[pName] : undefined;
+      if (raw === undefined && !isNaN(Number(pName))) {
+        raw = passedArgs[Number(pName)];
+      }
+      return safeStringify(raw, key, pName, isDev);
+    });
+  }
+
   return val !== undefined ? val : key;
 }
 

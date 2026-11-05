@@ -6,7 +6,7 @@ import {
   TestTube, Box, X, Loader2, CheckCircle2, AlertCircle, Zap, Settings, Target, Info
 } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { runSimulation, saveProcess, updateProcess } from '../lib/apiService';
+import { runSimulation, saveProcess, updateProcess, getProcess, shapeBackendToFrontend } from '../lib/apiService';
 import { NW, NH, elCenter } from '../components/model/bpmnGeometry';
 import DiagramCanvas from '../components/model/DiagramCanvas';
 import { validateDurationRules, normalizeRanges } from '../lib/durationRules';
@@ -623,6 +623,7 @@ export default function SimulatePage() {
   const [customType,       setCustomType]       = useState('staff');
   const [editingResource,  setEditingResource]  = useState(null);
   const [showAdd,          setShowAdd]          = useState(false);
+  const [loadingProcess,   setLoadingProcess]   = useState(false);
 
   const handleSaveResourceConfig = (updatedRes) => {
     const cleanedRes = { ...updatedRes };
@@ -785,10 +786,68 @@ export default function SimulatePage() {
   });
 
   useEffect(() => {
-    const { nodes, connections: conns } = readModelFromStorage();
-    setModelElements(nodes || []);
-    setConnections(conns || []);
-  }, []);
+    let isCancelled = false;
+
+    async function initModel() {
+      // 1. Sync from storage first
+      const storageModel = readModelFromStorage();
+      const hasStoredNodes = Array.isArray(storageModel.nodes) && storageModel.nodes.length > 0;
+      if (hasStoredNodes) {
+        setModelElements(storageModel.nodes);
+        setConnections(storageModel.connections || []);
+      }
+
+      // 2. Check route query param for processId / id, or localStorage
+      const query = new URLSearchParams(location.search);
+      const processId = query.get('processId') || query.get('id') || (typeof window !== 'undefined' ? localStorage.getItem('spot:processId') : null);
+
+      if (!processId) return;
+
+      const storedProcessId = typeof window !== 'undefined' ? localStorage.getItem('spot:processId') : null;
+      const needsBackendFetch = !hasStoredNodes || (query.get('processId') && query.get('processId') !== storedProcessId);
+
+      if (needsBackendFetch) {
+        setLoadingProcess(true);
+        try {
+          const proc = await getProcess(processId);
+          if (isCancelled || !proc) return;
+
+          const { elements: shapedEls, connections: shapedConns } = shapeBackendToFrontend(proc);
+          if (Array.isArray(shapedEls) && shapedEls.length > 0) {
+            setModelElements(shapedEls);
+            setConnections(shapedConns || []);
+
+            if (Array.isArray(proc.resources) && proc.resources.length > 0) {
+              const shapedRes = proc.resources.map(res => {
+                const defaultRes = DEFAULT_RESOURCES.find(d => d.id === res.id);
+                return { ...res, icon: defaultRes ? defaultRes.icon : Box };
+              });
+              setGlobalResources(shapedRes);
+              if (typeof window !== 'undefined') {
+                localStorage.setItem('spot:globalResources', JSON.stringify(proc.resources));
+              }
+            }
+
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('spot:model:nodes', JSON.stringify({ nodes: shapedEls, connections: shapedConns }));
+              localStorage.setItem('spot:processId', processId);
+              if (proc.title) localStorage.setItem('spot:processTitle', proc.title);
+            }
+          }
+        } catch (err) {
+          console.warn('Could not fetch process from backend in Simulate:', err);
+        } finally {
+          if (!isCancelled) setLoadingProcess(false);
+        }
+      }
+    }
+
+    initModel();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [location.search]);
 
   useEffect(() => {
     if (!modelElements.length) { setTaskAssignments({}); return; }
@@ -1022,7 +1081,10 @@ export default function SimulatePage() {
     const query = new URLSearchParams(location.search);
     if (query.get('autorun') === 'true' && modelElements.length > 0 && !autorunDoneRef.current) {
       autorunDoneRef.current = true;
-      navigate(location.pathname, { replace: true });
+      const nextQuery = new URLSearchParams(location.search);
+      nextQuery.delete('autorun');
+      const nextSearch = nextQuery.toString() ? `?${nextQuery.toString()}` : '';
+      navigate(`${location.pathname}${nextSearch}`, { replace: true });
       setTimeout(() => {
         handleRun();
       }, 100);
@@ -1950,13 +2012,39 @@ export default function SimulatePage() {
               backgroundSize: '32px 32px',
             }}
           >
-            {modelElements.length === 0 ? (
+            {loadingProcess ? (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#6b7280', width: '100%', height: '100%', gap: 12 }}>
+                <Loader2 size={32} className="animate-spin text-indigo-600" />
+                <p style={{ fontSize: 14, fontWeight: 600, color: '#374151', margin: 0 }}>Loading process model…</p>
+              </div>
+            ) : modelElements.length === 0 ? (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#9ca3af', width: '100%', height: '100%', gap: 12 }}>
                 <span style={{ fontSize: 36 }}>🗺️</span>
-                <p style={{ fontSize: 14, fontWeight: 600, color: '#374151', margin: 0 }}>No process found</p>
-                <p style={{ fontSize: 12, color: '#9ca3af', margin: 0, textAlign: 'center', maxWidth: 260 }}>
-                  Go to the <strong>Model</strong> page first to draw your process, then come back here to {isAnalystView ? 'run the simulation' : 'run the test'}.
+                <p style={{ fontSize: 14, fontWeight: 600, color: '#374151', margin: 0 }}>No process model found</p>
+                <p style={{ fontSize: 12, color: '#9ca3af', margin: 0, textAlign: 'center', maxWidth: 280 }}>
+                  Go to the <strong>Model</strong> page first to create or generate your process diagram, then come back here to {isAnalystView ? 'run the simulation' : 'run the test'}.
                 </p>
+                <button
+                  type="button"
+                  onClick={() => navigate('/model')}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: '8px 18px',
+                    borderRadius: 8,
+                    border: 'none',
+                    background: '#6366f1',
+                    color: '#fff',
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    marginTop: 6,
+                    boxShadow: '0 2px 4px rgba(99, 102, 241, 0.25)',
+                  }}
+                >
+                  Open in Model page
+                </button>
               </div>
             ) : (
               <>

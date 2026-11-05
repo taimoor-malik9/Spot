@@ -1,6 +1,9 @@
 // Convert a stored Process document into the engine's compact BPMN shape.
 // Kept shared so every simulation entry point applies the same normalization.
 function processForSimulation(processDoc) {
+  if (!processDoc || typeof processDoc !== 'object') {
+    return { resources: [], nodes: [], edges: [] };
+  }
   const processData = typeof processDoc.toJSON === 'function' ? processDoc.toJSON() : processDoc;
 
   const nodePoolMap = {};

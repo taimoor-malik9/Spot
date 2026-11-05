@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { useGoogleLogin } from '@react-oauth/google';
 import { Eye, EyeOff, Loader2, AlertCircle, CheckCircle2 } from 'lucide-react';
@@ -6,6 +6,93 @@ import SpotLogo from '@/components/SpotLogo';
 import { useAuth } from '@/context/AuthContext';
 import AuthShowcase from '@/components/AuthShowcase';
 import '@/styles/auth.css';
+
+export function isValidGoogleClientId(id) {
+  if (!id || typeof id !== 'string') return false;
+  const trimmed = id.trim();
+  if (!trimmed || trimmed.includes('your_google_client_id_here')) return false;
+  return trimmed.endsWith('.apps.googleusercontent.com') || trimmed.length > 20;
+}
+
+export class GoogleAuthErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(err) {
+    console.warn('[Google Auth ErrorBoundary caught]', err);
+  }
+
+  render() {
+    if (this.state.hasError) return null;
+    return this.props.children;
+  }
+}
+
+export function GoogleSignInButton({ onSuccess, onError, disabled, onLoadingChange }) {
+  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
+
+  const setLoading = (val) => {
+    setIsGoogleLoading(val);
+    if (onLoadingChange) onLoadingChange(val);
+  };
+
+  const triggerGoogleLogin = useGoogleLogin({
+    flow: 'auth-code',
+    onSuccess: (codeResponse) => {
+      setLoading(false);
+      onSuccess(codeResponse);
+    },
+    onError: (err) => {
+      console.warn('[Google Auth] Popup closed or failed:', err);
+      setLoading(false);
+      onError(err);
+    }
+  });
+
+  const handleClick = () => {
+    setLoading(true);
+    try {
+      triggerGoogleLogin();
+    } catch (err) {
+      console.warn('[Google Auth] Failed to trigger Google login:', err);
+      setLoading(false);
+      onError(err);
+    }
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        className="spot-auth-google-btn"
+        onClick={handleClick}
+        disabled={isGoogleLoading || disabled}
+      >
+        {isGoogleLoading ? (
+          <Loader2 size={18} className="animate-spin text-slate-500" />
+        ) : (
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+            <path fill="#4285F4" d="M17.64 9.2c0-.63-.06-1.25-.16-1.84H9v3.49h4.84a4.14 4.14 0 0 1-1.8 2.71v2.26h2.92c1.71-1.57 2.68-3.89 2.68-6.62z"/>
+            <path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.91-2.26c-.8.54-1.83.86-3.05.86-2.34 0-4.33-1.58-5.04-3.71H.95v2.33C2.43 15.98 5.48 18 9 18z"/>
+            <path fill="#FBBC05" d="M3.96 10.71A5.4 5.4 0 0 1 3.68 9c0-.59.1-1.17.28-1.71V4.96H.95A8.996 8.996 0 0 0 0 9c0 1.45.35 2.82.95 4.04l3.01-2.33z"/>
+            <path fill="#EA4335" d="M9 3.58c1.32 0 2.51.45 3.44 1.35l2.58-2.59C13.46.89 11.43 0 9 0 5.48 0 2.43 2.02.95 4.96l3.01 2.33c.71-2.13 2.7-3.71 5.04-3.71z"/>
+          </svg>
+        )}
+        <span>{isGoogleLoading ? 'Connecting…' : 'Continue with Google'}</span>
+      </button>
+
+      <div className="spot-auth-divider">
+        <span>or</span>
+      </div>
+    </>
+  );
+}
 
 export default function Login() {
   const { user, login, googleLogin, continueAsGuest } = useAuth();
@@ -22,6 +109,15 @@ export default function Login() {
   const [notice, setNotice] = useState(() => location.state?.notice || '');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
+
+  const googleClientId = typeof import.meta !== 'undefined' ? import.meta.env?.VITE_GOOGLE_CLIENT_ID : '';
+  const hasValidGoogleClientId = isValidGoogleClientId(googleClientId);
+
+  useEffect(() => {
+    if (!hasValidGoogleClientId && typeof import.meta !== 'undefined' && import.meta.env?.DEV) {
+      console.warn('[Google Auth] Missing or invalid environment variable: VITE_GOOGLE_CLIENT_ID. Google sign-in button is hidden.');
+    }
+  }, [hasValidGoogleClientId]);
 
   // Redirect to /model ONLY for real authenticated users; guests can view login page
   if (user) {
@@ -69,7 +165,6 @@ export default function Login() {
 
   const handleGoogleSuccess = async (codeResponse) => {
     setServerError('');
-    setIsGoogleLoading(true);
     try {
       const res = await googleLogin(codeResponse.code);
       if (res?.requireSecurityQuestions) {
@@ -80,31 +175,7 @@ export default function Login() {
       navigate(target, { replace: true });
     } catch (err) {
       setServerError(err.message || 'Google sign-in failed');
-    } finally {
-      setIsGoogleLoading(false);
     }
-  };
-
-  const triggerGoogleLogin = useGoogleLogin({
-    flow: 'auth-code',
-    onSuccess: handleGoogleSuccess,
-    onError: (err) => {
-      console.warn('[Google Auth] Popup closed or failed:', err);
-      setIsGoogleLoading(false);
-      setServerError('Google sign-in cancelled');
-    }
-  });
-
-  const handleGoogleClick = () => {
-    setServerError('');
-    const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
-    if (!clientId) {
-      console.error('❌ Missing environment variable: VITE_GOOGLE_CLIENT_ID in Mystery_Frontend/.env');
-      setServerError('Google sign-in unavailable');
-      return;
-    }
-    setIsGoogleLoading(true);
-    triggerGoogleLogin();
   };
 
   const handleGuestClick = () => {
@@ -143,29 +214,17 @@ export default function Login() {
             </div>
           )}
 
-          {/* Google Button */}
-          <button
-            type="button"
-            className="spot-auth-google-btn"
-            onClick={handleGoogleClick}
-            disabled={isGoogleLoading || isSubmitting}
-          >
-            {isGoogleLoading ? (
-              <Loader2 size={18} className="animate-spin text-slate-500" />
-            ) : (
-              <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
-                <path fill="#4285F4" d="M17.64 9.2c0-.63-.06-1.25-.16-1.84H9v3.49h4.84a4.14 4.14 0 0 1-1.8 2.71v2.26h2.92c1.71-1.57 2.68-3.89 2.68-6.62z"/>
-                <path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.91-2.26c-.8.54-1.83.86-3.05.86-2.34 0-4.33-1.58-5.04-3.71H.95v2.33C2.43 15.98 5.48 18 9 18z"/>
-                <path fill="#FBBC05" d="M3.96 10.71A5.4 5.4 0 0 1 3.68 9c0-.59.1-1.17.28-1.71V4.96H.95A8.996 8.996 0 0 0 0 9c0 1.45.35 2.82.95 4.04l3.01-2.33z"/>
-                <path fill="#EA4335" d="M9 3.58c1.32 0 2.51.45 3.44 1.35l2.58-2.59C13.46.89 11.43 0 9 0 5.48 0 2.43 2.02.95 4.96l3.01 2.33c.71-2.13 2.7-3.71 5.04-3.71z"/>
-              </svg>
-            )}
-            <span>{isGoogleLoading ? 'Connecting…' : 'Continue with Google'}</span>
-          </button>
-
-          <div className="spot-auth-divider">
-            <span>or</span>
-          </div>
+          {/* Google Button & Divider (only when client ID is valid) */}
+          {hasValidGoogleClientId && (
+            <GoogleAuthErrorBoundary>
+              <GoogleSignInButton
+                onSuccess={handleGoogleSuccess}
+                onError={(err) => setServerError(err?.message || 'Google sign-in cancelled')}
+                disabled={isSubmitting}
+                onLoadingChange={setIsGoogleLoading}
+              />
+            </GoogleAuthErrorBoundary>
+          )}
 
           <form onSubmit={handleSubmit} noValidate>
             {/* Email Field */}

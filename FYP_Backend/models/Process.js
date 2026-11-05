@@ -36,6 +36,7 @@ const ProcessSchema = new mongoose.Schema({
     target: { type: String, required: true },
     type: { type: String },
     flowType: { type: String },
+    label: { type: String, default: '' },
     data: {
       type: mongoose.Schema.Types.Mixed,
       default: {}

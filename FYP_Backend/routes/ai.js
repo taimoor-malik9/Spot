@@ -442,7 +442,9 @@ router.post('/insights', async (req, res) => {
     return res.status(200).json({ insights });
   } catch (err) {
     if (err instanceof ResultsAiError) {
-      console.error('Results AI insights error:', err.message, err.detail);
+      if (process.env.NODE_ENV !== 'test' || !err.message?.includes('AI service is not configured')) {
+        console.error('Results AI insights error:', err.message, err.detail);
+      }
       return res.status(502).json({ error: 'AI failed to generate insights', detail: err.message });
     }
     console.error('Unexpected insights error:', err);
@@ -466,7 +468,9 @@ router.post('/chat', async (req, res) => {
     return res.status(200).json({ reply });
   } catch (err) {
     if (err instanceof ResultsAiError) {
-      console.error('Results AI chat error:', err.message, err.detail);
+      if (process.env.NODE_ENV !== 'test' || !err.message?.includes('AI service is not configured')) {
+        console.error('Results AI chat error:', err.message, err.detail);
+      }
       return res.status(502).json({ error: 'AI failed to respond', detail: err.message });
     }
     console.error('Unexpected chat error:', err);
