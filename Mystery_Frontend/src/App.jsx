@@ -1,4 +1,5 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
+import AppErrorBoundary from '@/components/AppErrorBoundary'
 import { useAuth } from '@/context/AuthContext'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
@@ -28,8 +29,9 @@ function HomeRoute() {
 function App() {
   return (
     <Router>
-      <Routes>
-        <Route path="/" element={<HomeRoute />} />
+      <AppErrorBoundary>
+        <Routes>
+          <Route path="/" element={<HomeRoute />} />
         <Route path="/app" element={<Navigate to="/model" replace />} />
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
@@ -122,8 +124,9 @@ function App() {
         />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
-      <Toaster />
-    </Router>
+    </AppErrorBoundary>
+    <Toaster />
+  </Router>
   )
 }
 
