@@ -82,10 +82,10 @@ class TestModuleG1Experiments(unittest.TestCase):
 
         self.assertFalse(result["target_met"])
         self.assertIsNotNone(result["reason"])
-        self.assertIn("work time is", result["reason"])
-        self.assertIn("staffing cannot go lower", result["reason"])
+        self.assertIn("Staff-handled steps are only", result["reason"])
+        self.assertIn("short of your 85.0% target", result["reason"])
         self.assertIsNotNone(result["realism"])
-        self.assertIn("requires steps", result["realism"])
+        self.assertIn("would need steps", result["realism"])
 
     def test_no_target_uses_default_behavior(self):
         """When no target is given, target_met is True and no failure reason is set."""

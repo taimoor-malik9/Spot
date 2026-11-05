@@ -13,7 +13,7 @@ MU = 1.0  # mean service rate (1 / minute)
 MEAN_SERVICE = 1.0 / MU
 SEED = 42
 REPLICATIONS = 5
-TOTAL_INSTANCES = 2000
+TOTAL_INSTANCES = 5000
 REL_TOL = 0.10
 
 

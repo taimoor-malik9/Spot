@@ -80,9 +80,9 @@ class TestModuleG1b(unittest.TestCase):
 
         self.assertFalse(result["target_met"])
         self.assertIsNotNone(result["reason"])
-        self.assertIn("Staff-handled steps are", result["reason"])
-        self.assertIn("so the best you can reach is", result["reason"])
-        self.assertIn("The rest is customer time or fixed", result["reason"])
+        self.assertIn("Staff-handled steps are only", result["reason"])
+        self.assertIn("so most of the cycle time is queueing, customer time or fixed time", result["reason"])
+        self.assertIn("short of your 50.0% target", result["reason"])
         self.assertIsNotNone(result["realism"])
         self.assertFalse(result["best"]["recommended"])
 
