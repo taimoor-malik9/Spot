@@ -13,8 +13,30 @@ const app = express();
 console.log("🚀 Starting minimal server...");
 
 // Middleware
-app.use(cors({ origin: '*' }));
-app.use(express.json({ limit: '50mb' }));
+const defaultOrigins = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:3000',
+];
+const envOrigins = (process.env.ALLOWED_ORIGINS || process.env.CORS_ORIGINS || process.env.FRONTEND_URL || '')
+  .split(',')
+  .map(o => o.trim())
+  .filter(Boolean);
+const allowedOrigins = envOrigins.length > 0 ? envOrigins : defaultOrigins;
+const hasWildcard = allowedOrigins.includes('*');
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (hasWildcard || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error(`CORS origin '${origin}' not allowed`));
+  },
+  credentials: !hasWildcard,
+}));
+app.use(express.json({ limit: '5mb' }));
 
 // MongoDB
 mongoose.connect(process.env.MONGO_URI)
@@ -378,8 +400,10 @@ app.post('/api/process/:id', requireAuth, async (req, res) => {
             }
         };
 
-        console.log("🔄 Sending to Simulation Engine...");
-        console.log("PAYLOAD:", JSON.stringify(payload).substring(0, 500));
+        if (process.env.DEBUG) {
+            console.log("🔄 Sending to Simulation Engine...");
+            console.log("PAYLOAD:", JSON.stringify(payload).substring(0, 500));
+        }
 
         const engineBase = (process.env.SIMULATION_ENGINE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
         const engineUrl = `${engineBase}/simulate`;

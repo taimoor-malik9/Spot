@@ -89,7 +89,7 @@ How to answer:
 
 async function callGemini({ systemPrompt, contents, expectJson }) {
   if (!GEMINI_API_KEY) {
-    throw new ResultsAiError('GEMINI_API_KEY is not set in .env', null);
+    throw new ResultsAiError('AI service is not configured on this server', null);
   }
 
   const requestBody = {

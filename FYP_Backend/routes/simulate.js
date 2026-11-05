@@ -37,7 +37,9 @@ router.post('/:id', async (req, res) => {
         
         processData.simulationResults = realResults;
         await processData.save();
-console.log(JSON.stringify(realResults, null, 2));
+        if (process.env.DEBUG) {
+            console.log(JSON.stringify(realResults, null, 2));
+        }
         res.json({ 
             message: 'Simulation completed!', 
             results: realResults 

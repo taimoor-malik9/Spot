@@ -16,13 +16,18 @@ import httpx
 from fastapi.middleware.cors import CORSMiddleware
 import os
 
-EXPRESS_URL = os.getenv("EXPRESS_URL", "https://bcntb52z-5000.inc1.devtunnels.ms/")
+EXPRESS_URL = os.getenv("EXPRESS_URL", "")
+
+raw_origins = os.getenv("CORS_ORIGINS", os.getenv("ALLOWED_ORIGINS", "http://localhost:5000,http://127.0.0.1:5000,http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000"))
+allowed_origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
+has_wildcard = "*" in allowed_origins
+allow_credentials = False if has_wildcard else True
 
 app = FastAPI(title="SPOT Simulation Engine")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=allowed_origins,
+    allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -409,6 +414,8 @@ def what_if_scenario(what_if: WhatIfModel):
 
 @app.post("/baseline/save")
 async def baseline_save(input: ProcessInput):
+    if not EXPRESS_URL:
+        raise HTTPException(status_code=500, detail="EXPRESS_URL environment variable is not configured")
     results = _run_process(input.process_json, input.config or {})
 
     async with httpx.AsyncClient() as client:
@@ -419,6 +426,8 @@ async def baseline_save(input: ProcessInput):
 
 @app.post("/baseline/compare")
 async def baseline_compare(input: ProcessInput):
+    if not EXPRESS_URL:
+        raise HTTPException(status_code=500, detail="EXPRESS_URL environment variable is not configured")
     new_results = _run_process(input.process_json, input.config or {})
 
     async with httpx.AsyncClient() as client:
