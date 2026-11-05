@@ -18,6 +18,7 @@ import { getScenarios, listRuns, getRun, deleteRun, runSimulation, runScenarioSi
 import AIInsightsPanel from './AIInsightsPanel';
 import AIChatWidget from './AIChatWidget';
 import { computeComparisonMetrics } from '../lib/whatIfComparison';
+import { getBottleneckView, prepareResultForMetrics } from '../lib/resultsHelper';
 import { useAnalystView, Hint, LABELS, formatPlainLanguage } from '../lib/labels';
 import { t, formatDuration, formatRate, formatCurrency } from '../lib/intake/i18n';
 
@@ -63,7 +64,8 @@ function buildIdToLabel() {
     const map = {};
     nodes.forEach(n => {
       if (n.id) {
-        map[n.id] = n.label || n.data?.label || n.id;
+        const rawLbl = n.label || n.data?.label || n.id;
+        map[n.id] = typeof rawLbl === 'string' ? rawLbl : (rawLbl?.label ?? rawLbl?.name ?? rawLbl?.title ?? String(n.id));
       }
     });
     return map;
@@ -141,7 +143,9 @@ function getPrimaryBottleneck(results, idToLabel) {
     wait_time_avg: actObj[topId]?.avg_wait_time ?? 0,
   };
 
-  return { id: topId, label: idToLabel[topId] || topId, data };
+  const rawLabel = idToLabel?.[topId] || topId;
+  const label = typeof rawLabel === 'string' ? rawLabel : (rawLabel?.label ?? rawLabel?.name ?? rawLabel?.title ?? String(topId));
+  return { id: topId, label, data };
 }
 
 /**
@@ -154,7 +158,7 @@ function getPrimaryBottleneck(results, idToLabel) {
  *  - capacity: resource capacity / avg_busy_time_per_item, tightest resource
  *  - arrival speed: results.arrival_rate (saved by the Simulate page)
  */
-function buildPlainSummary(results) {
+function buildPlainSummary(results, idToLabel = {}) {
   const runs = results?.runs || 1;
   const tis = results?.time_in_system || {};
   const total = tis.avg ?? 0;
@@ -183,27 +187,17 @@ function buildPlainSummary(results) {
   const perHour = extractThroughput(results) * 60;
   const perDay = perHour * dayHours;
 
-  let tight = null;
-  Object.entries(results?.resource_utilization || {}).forEach(([name, u]) => {
-    const busy = u?.avg_busy_time_per_item || 0;
-    if (busy <= 0) return;
-    const cap = u.capacity || 1;
-    const perHr = (cap * 60) / busy;
-    if (!tight || perHr < tight.perHr) tight = { name, cap, perHr, util: u.utilization_pct || 0 };
-  });
-  const arrivalPerHr = results?.arrival_rate > 0 ? results.arrival_rate * 60 : null;
-  let status = null; // 'overloaded' | 'tight' | 'ok'
-  if (tight) {
-    if ((arrivalPerHr != null && arrivalPerHr > tight.perHr) || tight.util >= 95) status = 'overloaded';
-    else if ((arrivalPerHr != null && arrivalPerHr > tight.perHr * 0.85) || tight.util >= 85) status = 'tight';
-    else status = 'ok';
-  }
+  const bnView = getBottleneckView(results, idToLabel);
+  const tight = bnView.tight;
+  const arrivalPerHr = bnView.arrivalPerHr;
+  const status = bnView.status;
 
   return {
     runs, total, work, wait, min: tis.min ?? 0, max: tis.max ?? 0, p95: tis.p95 ?? null,
     perHour, perDay, dayHours, dayHoursFromSettings: Boolean(hoursPerDay),
     tight, arrivalPerHr, status, overloaded: status === 'overloaded',
     steps: steps.slice(0, 6),
+    bottleneckView: bnView,
   };
 }
 
@@ -274,9 +268,14 @@ function verdict(results, idToLabel, simMode, currency = 'Rs', isAnalystView = f
   const max = tis.max ?? 0;
   const spread = max - min;
   const throughput = extractThroughput(results);
+  const bnView = getBottleneckView(results, idToLabel);
   const { label: bnLabel } = getPrimaryBottleneck(results, idToLabel);
+  const effectiveBnLabel = bnLabel || (bnView.bottleneckName !== 'None' ? bnView.bottleneckName : null);
   const util = results?.resource_utilization || {};
-  const criticalResource = Object.entries(util).find(([, v]) => (v.utilization_pct || 0) > 85);
+  const criticalResource = Object.entries(util).find(([, v]) => {
+    const p = typeof v === 'object' ? (v?.utilization_pct ?? v?.pct ?? 0) : Number(v) || 0;
+    return p > 85;
+  });
 
   const lines = [];
   if (simMode === 'quick') {
@@ -286,7 +285,7 @@ function verdict(results, idToLabel, simMode, currency = 'Rs', isAnalystView = f
       text: t('results_verdictOptimalBaseline', lang, isAnalystView)
     });
   } else {
-    const ov = buildPlainSummary(results);
+    const ov = buildPlainSummary(results, idToLabel);
     if (ov.overloaded && ov.tight) {
       lines.push({
         type: 'warn',
@@ -308,20 +307,24 @@ function verdict(results, idToLabel, simMode, currency = 'Rs', isAnalystView = f
     }
   }
 
-  if (bnLabel) {
+  if (effectiveBnLabel) {
     if (simMode === 'quick') {
-      lines.push({ type: 'alert', text: t('results_verdictSlowestStep', lang, bnLabel) });
+      lines.push({ type: 'alert', text: t('results_verdictSlowestStep', lang, effectiveBnLabel) });
     } else {
       lines.push({
         type: 'alert',
-        text: t('results_verdictPrimaryBottleneck', lang, bnLabel, isAnalystView)
+        text: t('results_verdictPrimaryBottleneck', lang, effectiveBnLabel, isAnalystView)
       });
     }
   }
   if (criticalResource && simMode !== 'quick') {
+    const rawName = criticalResource[1]?.name ?? criticalResource[1]?.resource ?? criticalResource[0];
+    const critName = typeof rawName === 'string' ? rawName : (rawName?.name ?? rawName?.label ?? 'Staff');
+    const rawPct = criticalResource[1]?.utilization_pct ?? criticalResource[1]?.pct ?? 0;
+    const critPct = typeof rawPct === 'number' ? rawPct : (Number(rawPct) || 0);
     lines.push({
       type: 'alert',
-      text: t('results_verdictResourceOverloaded', lang, criticalResource[0], criticalResource[1].utilization_pct)
+      text: t('results_verdictResourceOverloaded', lang, critName, critPct.toFixed(0))
     });
   }
 
@@ -402,26 +405,29 @@ function PlainSummaryCard({ plain, simMode, idToLabel = {}, isAnalystView = fals
     </div>
   );
 
-  const who = tight ? tight.name : '';
+  const who = tight ? (typeof tight.name === 'string' ? tight.name : (tight.name?.name ?? tight.name?.label ?? 'Staff')) : '';
   const callout = (() => {
     if (isQuick || !tight || !status) return null;
+    const perHrStr = typeof tight.perHr === 'number' ? tight.perHr.toFixed(1) : String(tight.perHr || 0);
+    const utilStr = typeof tight.util === 'number' ? tight.util.toFixed(0) : String(tight.util || 0);
+    const targetArrivalStr = typeof tight.perHr === 'number' ? (tight.perHr * 0.8).toFixed(1) : '0.0';
     if (status === 'overloaded') {
       return {
         color: '#ef4444',
         text: arrivalPerHr != null
-          ? t('results_calloutOverloadedWithArrival', lang, who, arrivalPerHr.toFixed(1), tight.perHr.toFixed(1), (tight.perHr * 0.8).toFixed(1))
-          : t('results_calloutOverloadedNoArrival', lang, who, tight.util.toFixed(0), tight.perHr.toFixed(1))
+          ? t('results_calloutOverloadedWithArrival', lang, who, arrivalPerHr.toFixed(1), perHrStr, targetArrivalStr)
+          : t('results_calloutOverloadedNoArrival', lang, who, utilStr, perHrStr)
       };
     }
     if (status === 'tight') {
       return {
         color: '#f59e0b',
-        text: t('results_calloutTight', lang, who, tight.util.toFixed(0), tight.perHr.toFixed(1))
+        text: t('results_calloutTight', lang, who, utilStr, perHrStr)
       };
     }
     return {
       color: '#10b981',
-      text: t('results_calloutOk', lang, who, tight.perHr.toFixed(1), arrivalPerHr != null ? arrivalPerHr.toFixed(1) : null)
+      text: t('results_calloutOk', lang, who, perHrStr, arrivalPerHr != null ? arrivalPerHr.toFixed(1) : null)
     };
   })();
 
@@ -455,7 +461,7 @@ function PlainSummaryCard({ plain, simMode, idToLabel = {}, isAnalystView = fals
           <p style={{ fontSize: 13, color: '#64748b', margin: '3px 0 0', lineHeight: 1.5, paddingRight: 28 }} dir="auto">
             {t('results_customerNeedsWork', lang, fmt(work, lang))}
             {overloaded && tight
-              ? <> {t('results_customersArriveFaster', lang, tight.name)}</>
+              ? <> {t('results_customersArriveFaster', lang, who)}</>
               : !isQuick && wait > 0 ? <> {t('results_averageWaitInLine', lang, fmt(wait, lang))}</> : null}
             {isQuick ? ` ${t('results_bestCaseNoWait', lang)}` : ` ${t('results_workedOutFromCustomers', lang, runs)}`}
           </p>
@@ -520,10 +526,10 @@ function PlainSummaryCard({ plain, simMode, idToLabel = {}, isAnalystView = fals
 
         {!isQuick && tight && (
           <div>
-            <Heading title={t('results_arrivalsVsRole', lang, tight.name)} hint={t('results_arrivalsVsRoleHint', lang)} />
+            <Heading title={t('results_arrivalsVsRole', lang, who)} hint={t('results_arrivalsVsRoleHint', lang)} />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               {arrivalPerHr != null && bar(t('results_customersArriving', lang), arrivalPerHr, arrivalPerHr > tight.perHr ? '#ef4444' : '#6b4de6')}
-              {bar(t('results_roleCanHandle', lang, tight.name), tight.perHr, '#10b981')}
+              {bar(t('results_roleCanHandle', lang, who), tight.perHr, '#10b981')}
             </div>
           </div>
         )}
@@ -1034,7 +1040,9 @@ export default function ResultsPage() {
   // What-if comparison metrics
   const comparisonMetrics = useMemo(() => {
     if (!hasWhatIf || !baselineResults || !whatifResults) return null;
-    return computeComparisonMetrics(baselineResults, whatifResults, idToLabel);
+    const safeBase = prepareResultForMetrics(baselineResults, idToLabel);
+    const safeWI = prepareResultForMetrics(whatifResults, idToLabel);
+    return computeComparisonMetrics(safeBase, safeWI, idToLabel);
   }, [hasWhatIf, baselineResults, whatifResults, idToLabel]);
   
   const { id: bnId, label: bnLabel, data: bnData } = getPrimaryBottleneck(results, idToLabel);
@@ -1069,7 +1077,7 @@ export default function ResultsPage() {
 
   const maxWait = useMemo(() => Math.max(...queueRows.map(q => q.avgWait), 1), [queueRows]);
   const summaryLines = useMemo(() => results ? verdict(results, idToLabel, simMode, currency, isAnalystView, effectiveLanguage) : [], [results, idToLabel, simMode, currency, isAnalystView, effectiveLanguage]);
-  const plain = useMemo(() => results ? buildPlainSummary(results) : null, [results]);
+  const plain = useMemo(() => results ? buildPlainSummary(results, idToLabel) : null, [results, idToLabel]);
   const fade = (i) => ({ opacity: ready ? 1 : 0, transform: ready ? 'translateY(0)' : 'translateY(15px)', transition: `all 0.5s ease ${i * 0.07}s` });
 
   if (!ready) return null; // Prevent flicker before useEffect resolves
@@ -1911,14 +1919,14 @@ export default function ResultsPage() {
                   <div style={{ flex: 1 }}>
                     <span style={{ fontSize: 11, color: '#94a3b8', display: 'block' }}>{isAnalystView ? `${t('results_baseline', effectiveLanguage)}:` : `${t('results_currentSetup', effectiveLanguage)}:`}</span>
                     <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      "<bdi dir="auto">{comparisonMetrics.baseBnLabel}</bdi>"
+                      "<bdi dir="auto">{typeof comparisonMetrics.baseBnLabel === 'string' ? comparisonMetrics.baseBnLabel : (comparisonMetrics.baseBnLabel?.name ?? comparisonMetrics.baseBnLabel?.label ?? 'None')}</bdi>"
                     </div>
                   </div>
                   <div style={{ fontSize: 16, color: '#6b4de6', fontWeight: 700 }}>➔</div>
                   <div style={{ flex: 1 }}>
                     <span style={{ fontSize: 11, color: '#6b4de6', display: 'block' }}>{isAnalystView ? `${t('results_whatIfScenario', effectiveLanguage)}:` : `${t('results_ideaToTry', effectiveLanguage)}:`}</span>
                     <div style={{ fontSize: 13, fontWeight: 700, color: '#6b4de6', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      "<bdi dir="auto">{comparisonMetrics.wiBnLabel}</bdi>"
+                      "<bdi dir="auto">{typeof comparisonMetrics.wiBnLabel === 'string' ? comparisonMetrics.wiBnLabel : (comparisonMetrics.wiBnLabel?.name ?? comparisonMetrics.wiBnLabel?.label ?? 'None')}</bdi>"
                     </div>
                   </div>
                 </div>

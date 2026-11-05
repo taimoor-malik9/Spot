@@ -1230,7 +1230,9 @@ function getParamNames(fn) {
 }
 
 function safeStringify(val, key, paramName, isDev) {
-  if (typeof val === 'string') return val;
+  if (typeof val === 'string') {
+    return val === '[object Object]' ? '' : val;
+  }
   if (typeof val === 'number') {
     if (!Number.isFinite(val) || Number.isNaN(val)) {
       if (isDev) {
@@ -1249,11 +1251,15 @@ function safeStringify(val, key, paramName, isDev) {
     return '';
   }
 
+  if (Array.isArray(val)) {
+    return val.map(item => safeStringify(item, key, paramName, isDev)).filter(Boolean).join(', ');
+  }
+
   if (typeof val === 'object') {
     if (isDev) {
       console.warn(`[i18n] Fallback used for key "${key}" param "${paramName}": received object`, val);
     }
-    let str = val.name ?? val.label ?? val.title;
+    let str = val.name ?? val.label ?? val.title ?? val.task_name ?? val.role ?? val.text;
     if (str === undefined && val.props) {
       const ch = val.props.children;
       if (typeof ch === 'string') {
@@ -1262,10 +1268,21 @@ function safeStringify(val, key, paramName, isDev) {
         str = ch.name ?? ch.label ?? ch.title ?? (typeof ch.props?.children === 'string' ? ch.props.children : '');
       }
     }
-    return str != null ? String(str) : '';
+    if (str === undefined) {
+      if (val.current != null && Number.isFinite(Number(val.current))) str = String(val.current);
+      else if (val.value != null && Number.isFinite(Number(val.value))) str = String(val.value);
+      else if (val.pct != null && Number.isFinite(Number(val.pct))) str = String(val.pct);
+      else if (val.utilization_pct != null && Number.isFinite(Number(val.utilization_pct))) str = String(val.utilization_pct);
+    }
+    if (typeof str === 'object' && str !== null) {
+      str = str.name ?? str.label ?? str.title ?? '';
+    }
+    const res = str != null ? String(str) : '';
+    return res === '[object Object]' ? '' : res;
   }
 
-  return String(val);
+  const res = String(val);
+  return res === '[object Object]' ? '' : res;
 }
 
 /**
@@ -1308,6 +1325,7 @@ export function t(key, lang = 'en', ...args) {
     }
   }
 
+  let result;
   if (typeof val === 'function') {
     const paramNames = getParamNames(val);
     if (
@@ -1323,30 +1341,33 @@ export function t(key, lang = 'en', ...args) {
       const safeArgs = paramNames.map(pName =>
         safeStringify(namedObj[pName], key, pName, isDev)
       );
-      return val(...safeArgs);
+      result = val(...safeArgs);
+    } else {
+      const safeArgs = passedArgs.map((arg, idx) => {
+        const pName = paramNames[idx] || `param_${idx}`;
+        return safeStringify(arg, key, pName, isDev);
+      });
+      result = val(...safeArgs);
     }
-
-    const safeArgs = passedArgs.map((arg, idx) => {
-      const pName = paramNames[idx] || `param_${idx}`;
-      return safeStringify(arg, key, pName, isDev);
-    });
-    return val(...safeArgs);
-  }
-
-  if (typeof val === 'string' && /\{[a-zA-Z0-9_]+\}/.test(val)) {
+  } else if (typeof val === 'string' && /\{[a-zA-Z0-9_]+\}/.test(val)) {
     const params = (passedArgs.length === 1 && typeof passedArgs[0] === 'object' && passedArgs[0] !== null && !passedArgs[0].$$typeof)
       ? passedArgs[0]
       : null;
-    return val.replace(/\{([a-zA-Z0-9_]+)\}/g, (match, pName) => {
+    result = val.replace(/\{([a-zA-Z0-9_]+)\}/g, (match, pName) => {
       let raw = params ? params[pName] : undefined;
       if (raw === undefined && !isNaN(Number(pName))) {
         raw = passedArgs[Number(pName)];
       }
       return safeStringify(raw, key, pName, isDev);
     });
+  } else {
+    result = val !== undefined ? val : key;
   }
 
-  return val !== undefined ? val : key;
+  if (typeof result === 'string' && result.includes('[object Object]')) {
+    result = result.replaceAll('[object Object]', '');
+  }
+  return result;
 }
 
 /**
