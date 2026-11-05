@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { generateAIProcess } from '../lib/apiService';
+import { useNavigate } from 'react-router-dom';
+import { generateAIProcess, saveProcess, updateProcess } from '../lib/apiService';
 import { layoutAiDiagram } from '../lib/aiDiagramLayout';
 import { DiagramPreview } from './AiPanel';
 import ProcessStepList from '../components/model/ProcessStepList';
@@ -76,8 +77,11 @@ export default function IntakeFlow({
   onSwitchToChat,
   onApplyDiagram,
   onConfirmApply,
+  onSaveAndSimulate,
   isExpanded = false,
 }) {
+  const navigate = useNavigate();
+  const [isSimulatingNav, setIsSimulatingNav] = useState(false);
   const auth = useAuth();
   const user = auth?.user;
   const [localStep, setLocalStep] = useState(1);
@@ -769,35 +773,139 @@ export default function IntakeFlow({
     return { steps, decisions, roles, hasEstimated };
   }, [simulationReadyData, confirmedData, rawDiagram]);
 
-  const handleRunSimulation = useCallback(() => {
-    const targetDiagram = simulationReadyData?.patched || confirmedData?.rawDiagram || rawDiagram;
-    const layout =
-      simulationReadyData?.layout ||
-      confirmedData?.layout ||
-      (targetDiagram ? layoutAiDiagram(targetDiagram) : null);
+  const handleRunSimulation = useCallback(async () => {
+    if (isSimulatingNav) return;
+    setIsSimulatingNav(true);
+    try {
+      const targetDiagram = simulationReadyData?.patched || confirmedData?.rawDiagram || rawDiagram;
+      const layout =
+        simulationReadyData?.layout ||
+        confirmedData?.layout ||
+        (targetDiagram ? layoutAiDiagram(targetDiagram) : null);
 
-    if (targetDiagram && layout) {
+      if (!targetDiagram || !layout) {
+        navigate('/simulate');
+        return;
+      }
+
+      // Sanitize resources
+      const rawRes = layout.resources || targetDiagram.resources || [];
+      const sanitizedResources = (Array.isArray(rawRes) ? rawRes : []).map((r) => {
+        const cleanName = r.displayName || r.name || r.id || 'Staff / Specialist';
+        return {
+          ...r,
+          id: cleanName,
+          name: cleanName,
+          displayName: cleanName,
+          payloadKey: cleanName,
+          type: r.type || 'staff',
+          quantity: Number(r.quantity) || 1,
+        };
+      });
+
+      const titleToSave = targetDiagram.title || 'AI Generated Process';
+
+      // Persist locally first
       if (typeof window !== 'undefined') {
         try {
           localStorage.setItem(
             'spot:model:nodes',
             JSON.stringify({ nodes: layout.elements, connections: layout.connections })
           );
+          localStorage.setItem('spot:globalResources', JSON.stringify(sanitizedResources));
+          localStorage.setItem('spot:processTitle', titleToSave);
         } catch (e) {
           console.warn('Could not save model to localStorage:', e);
         }
       }
+
+      // Update parent diagram state
       if (onConfirmApply) {
         onConfirmApply(targetDiagram, simulationReadyData?.repairs || []);
       } else if (onApplyDiagram) {
-        onApplyDiagram(layout.elements, layout.connections, layout.resources);
+        onApplyDiagram(layout.elements, layout.connections, sanitizedResources);
       }
-    }
 
-    if (typeof window !== 'undefined') {
-      window.location.href = '/simulate';
+      // Persist to backend (same path Model page uses), and await resolution
+      let savedId = null;
+      if (typeof onSaveAndSimulate === 'function') {
+        try {
+          savedId = await onSaveAndSimulate({
+            elements: layout.elements,
+            connections: layout.connections,
+            title: titleToSave,
+            resources: sanitizedResources,
+          });
+        } catch (e) {
+          console.warn('onSaveAndSimulate failed:', e);
+        }
+      } else {
+        const token =
+          typeof window !== 'undefined'
+            ? localStorage.getItem('spot_token') || sessionStorage.getItem('spot_token')
+            : null;
+        if (token) {
+          try {
+            const existingId = localStorage.getItem('spot:processId');
+            let res;
+            if (existingId) {
+              try {
+                res = await updateProcess(
+                  existingId,
+                  layout.elements,
+                  layout.connections,
+                  titleToSave,
+                  sanitizedResources
+                );
+              } catch (err) {
+                const missingProcess =
+                  err?.status === 404 || /Process not found/i.test(err?.message || '');
+                if (missingProcess) {
+                  res = await saveProcess(
+                    layout.elements,
+                    layout.connections,
+                    titleToSave,
+                    sanitizedResources
+                  );
+                }
+              }
+            } else {
+              res = await saveProcess(
+                layout.elements,
+                layout.connections,
+                titleToSave,
+                sanitizedResources
+              );
+            }
+            savedId = res?.process?._id || res?.process?.id || existingId;
+          } catch (e) {
+            console.warn('direct backend save failed:', e);
+          }
+        }
+      }
+
+      if (savedId) {
+        localStorage.setItem('spot:processId', savedId);
+        navigate(`/simulate?processId=${savedId}&autorun=true`);
+      } else {
+        navigate('/simulate?autorun=true');
+      }
+    } catch (err) {
+      console.error('Error during run simulation handler:', err);
+      navigate('/simulate?autorun=true');
+    } finally {
+      setIsSimulatingNav(false);
     }
-  }, [simulationReadyData, confirmedData, rawDiagram, onConfirmApply, onApplyDiagram]);
+  }, [
+    isSimulatingNav,
+    simulationReadyData,
+    confirmedData,
+    rawDiagram,
+    onConfirmApply,
+    onApplyDiagram,
+    onSaveAndSimulate,
+    navigate,
+  ]);
 
   const handleReset = useCallback(() => {
     if (onStartOver) {
@@ -1910,6 +2018,7 @@ export default function IntakeFlow({
                 <button
                   type="button"
                   onClick={handleRunSimulation}
+                  disabled={isSimulatingNav}
                   style={{
                     flex: 1,
                     display: 'flex',
@@ -1919,16 +2028,20 @@ export default function IntakeFlow({
                     padding: '10px 14px',
                     borderRadius: 8,
                     border: 'none',
-                    background: 'linear-gradient(135deg, #10b981, #059669)',
+                    background: isSimulatingNav ? '#9ca3af' : 'linear-gradient(135deg, #10b981, #059669)',
                     color: '#fff',
                     fontSize: 13,
                     fontWeight: 700,
-                    cursor: 'pointer',
+                    cursor: isSimulatingNav ? 'not-allowed' : 'pointer',
                     boxShadow: '0 2px 5px rgba(16, 185, 129, 0.25)',
                   }}
                 >
-                  <Play size={14} fill="#fff" />
-                  {t('runSimulation', intakeLanguage)}
+                  {isSimulatingNav ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <Play size={14} fill="#fff" />
+                  )}
+                  <span>{isSimulatingNav ? 'Saving…' : t('runSimulation', intakeLanguage)}</span>
                 </button>
 
                 <button

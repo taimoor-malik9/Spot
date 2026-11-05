@@ -222,7 +222,7 @@ export { DiagramPreview };
 import { GUIDED_STORAGE_KEY, getInitialGuidedState } from '../lib/intake/guidedState';
 export { GUIDED_STORAGE_KEY, getInitialGuidedState };
 
-export default function AiPanel({ open, onClose, elements = [], connections = [], onApplyDiagram }) {
+export default function AiPanel({ open, onClose, elements = [], connections = [], onApplyDiagram, onSaveToBackend }) {
   const [isAnalystView] = useAnalystView();
   const [mode,        setMode]       = useState('guided'); // 'guided' | 'chat'
   const [messages,   setMessages]   = useState([]);
@@ -792,6 +792,7 @@ export default function AiPanel({ open, onClose, elements = [], connections = []
             onSwitchToChat={handleSwitchToChat}
             onApplyDiagram={onApplyDiagram}
             onConfirmApply={handleConfirmApply}
+            onSaveAndSimulate={onSaveToBackend}
             isExpanded={isExpanded}
           />
         </div>

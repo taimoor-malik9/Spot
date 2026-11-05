@@ -1202,11 +1202,12 @@ export default function ModelPage() {
         const storedResources = JSON.parse(localStorage.getItem('spot:globalResources') || '[]');
         if (Array.isArray(storedResources)) globalResources = storedResources;
       } catch {}
+      const resourcesToSave = overrides?.resources ?? globalResources;
 
       let res;
       if (existingId) {
         try {
-          res = await updateProcess(existingId, elsToSave, connsToSave, titleToSave, globalResources);
+          res = await updateProcess(existingId, elsToSave, connsToSave, titleToSave, resourcesToSave);
         } catch (err) {
           const missingProcess = err?.status === 404 || /Process not found/i.test(err?.message || '');
           if (!missingProcess) throw err;
@@ -1214,10 +1215,10 @@ export default function ModelPage() {
           // to another account. Save the current diagram as a new process.
           localStorage.removeItem('spot:processId');
           setSavedProcessId(null);
-          res = await saveProcess(elsToSave, connsToSave, titleToSave, globalResources);
+          res = await saveProcess(elsToSave, connsToSave, titleToSave, resourcesToSave);
         }
       } else {
-        res = await saveProcess(elsToSave, connsToSave, titleToSave, globalResources);
+        res = await saveProcess(elsToSave, connsToSave, titleToSave, resourcesToSave);
       }
       const id = res.process?._id || res.process?.id || existingId;
       if (id) {
@@ -1225,6 +1226,9 @@ export default function ModelPage() {
         localStorage.setItem('spot:processId', id);
         localStorage.setItem('spot:processTitle', titleToSave);
         localStorage.setItem('spot:model:nodes', JSON.stringify({ nodes: elsToSave, connections: connsToSave }));
+        if (overrides?.resources) {
+          localStorage.setItem('spot:globalResources', JSON.stringify(overrides.resources));
+        }
         showMsg('success', 'Process saved to backend!');
         return id;
       }
@@ -2808,8 +2812,9 @@ export default function ModelPage() {
             onApplyDiagram={(newElements, newConnections, newResources) => {
               setElements(newElements);
               setConnections(newConnections);
+              let sanitized = [];
               if (Array.isArray(newResources) && newResources.length) {
-                const sanitized = newResources.map(r => {
+                sanitized = newResources.map(r => {
                   const cleanName = r.displayName || r.name || r.id || 'Staff / Specialist';
                   return {
                     ...r,
@@ -2833,8 +2838,9 @@ export default function ModelPage() {
               // whatever OLD process was last actually saved, which looks
               // exactly like "the diagram got scrambled" but is really just
               // "the diagram was never here to begin with."
-              saveToBackend({ elements: newElements, connections: newConnections });
+              saveToBackend({ elements: newElements, connections: newConnections, resources: sanitized });
             }}
+            onSaveToBackend={saveToBackend}
           />
         )}
         <SpotAssistant
