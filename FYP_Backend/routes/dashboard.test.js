@@ -5,9 +5,9 @@ const mongoose = require('mongoose');
 const Process = require('../models/Process');
 const Scenario = require('../models/Scenario');
 const { SimulationRun } = require('../models/SimulationRun');
-const { shapeBackendToFrontend } = require('../../Mystery_Frontend/src/lib/apiService');
 
 test('Module P1: Dashboard Data Enrichment, Process Duplication, & State Hydration', async (t) => {
+  const { shapeBackendToFrontend } = await import('../shared/shapeBackendToFrontend.js');
   const userId = new mongoose.Types.ObjectId();
   const reqUser = { user: { _id: userId, id: userId.toString() }, params: {}, body: {}, query: {} };
 

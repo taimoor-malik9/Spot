@@ -10,7 +10,7 @@ const { processForSimulation } = require('../utils/processForSimulation');
 const descriptions = require('../tests/fixtures/moduleG2bDescriptions');
 
 async function getValidator() {
-  const validatorPath = path.resolve(__dirname, '../../Mystery_Frontend/src/lib/intake/validateBpmn.js');
+  const validatorPath = path.resolve(__dirname, '../shared/validateBpmn.js');
   return await import(require('url').pathToFileURL(path.resolve(validatorPath)).href);
 }
 

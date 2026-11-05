@@ -14,7 +14,7 @@ const USE_SPEC_COMPILER = process.env.USE_SPEC_COMPILER !== 'false';
 let compileBpmnModule = null;
 async function getCompiler() {
   if (!compileBpmnModule) {
-    const compilerPath = path.resolve(__dirname, '../../Mystery_Frontend/src/lib/intake/compileBpmn.js');
+    const compilerPath = path.resolve(__dirname, '../shared/compileBpmn.js');
     compileBpmnModule = await import(require('url').pathToFileURL(path.resolve(compilerPath)).href);
   }
   return compileBpmnModule;
@@ -23,7 +23,7 @@ async function getCompiler() {
 let validateBpmnModule = null;
 async function getValidator() {
   if (!validateBpmnModule) {
-    const validatorPath = path.resolve(__dirname, '../../Mystery_Frontend/src/lib/intake/validateBpmn.js');
+    const validatorPath = path.resolve(__dirname, '../shared/validateBpmn.js');
     validateBpmnModule = await import(require('url').pathToFileURL(path.resolve(validatorPath)).href);
   }
   return validateBpmnModule;
@@ -32,7 +32,7 @@ async function getValidator() {
 let normalizerModule = null;
 async function getNormalizer() {
   if (!normalizerModule) {
-    const normalizerPath = path.resolve(__dirname, '../../Mystery_Frontend/src/lib/intake/deterministicNormalizer.js');
+    const normalizerPath = path.resolve(__dirname, '../shared/deterministicNormalizer.js');
     normalizerModule = await import(require('url').pathToFileURL(path.resolve(normalizerPath)).href);
   }
   return normalizerModule;
@@ -327,7 +327,7 @@ Never mix shapes. No commentary outside the JSON.`;
 
 async function callGemini({ systemPrompt, contents, generationConfig, expectJson = true }) {
   if (!GEMINI_API_KEY) {
-    throw new AiValidationError('GEMINI_API_KEY is not set in .env', null);
+    throw new AiValidationError('AI service is not configured on this server', null);
   }
 
   const requestBody = {
@@ -395,7 +395,7 @@ async function callGemini({ systemPrompt, contents, generationConfig, expectJson
 
 async function generateProcess(description, history = [], preferredLanguage = 'en') {
   if (!GEMINI_API_KEY) {
-    throw new AiValidationError('GEMINI_API_KEY is not set in .env', null);
+    throw new AiValidationError('AI service is not configured on this server', null);
   }
 
   // Gemini expects { role: 'user'|'model', parts: [{text}] } instead of Anthropic's
