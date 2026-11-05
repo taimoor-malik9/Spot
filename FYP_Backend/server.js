@@ -23,18 +23,28 @@ const envOrigins = (process.env.ALLOWED_ORIGINS || process.env.CORS_ORIGINS || p
   .split(',')
   .map(o => o.trim())
   .filter(Boolean);
-const allowedOrigins = envOrigins.length > 0 ? envOrigins : defaultOrigins;
+const allowedOrigins = [...new Set([...defaultOrigins, ...envOrigins])];
 const hasWildcard = allowedOrigins.includes('*');
+
+const isOriginAllowed = (origin) => {
+  if (!origin) return true;
+  if (hasWildcard) return true;
+  if (allowedOrigins.includes(origin)) return true;
+  try {
+    const parsed = new URL(origin);
+    // Allow any Vercel deployment (*.vercel.app)
+    if (parsed.hostname.endsWith('.vercel.app')) return true;
+    // Allow local development hostnames
+    if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') return true;
+  } catch (_) {}
+  return false;
+};
 
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin) return callback(null, true);
-    if (hasWildcard || allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-    return callback(new Error(`CORS origin '${origin}' not allowed`));
+    callback(null, isOriginAllowed(origin));
   },
-  credentials: !hasWildcard,
+  credentials: true,
 }));
 app.use(express.json({ limit: '5mb' }));
 
