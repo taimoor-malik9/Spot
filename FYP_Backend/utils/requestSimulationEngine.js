@@ -1,4 +1,4 @@
-const RETRYABLE_STATUSES = new Set([502, 503, 504]);
+const RETRYABLE_STATUSES = new Set([429, 502, 503, 504]);
 
 function wait(milliseconds) {
   return new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -12,6 +12,7 @@ async function requestSimulationEngine(url, options = {}, attempts = 3) {
   let lastError;
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
+    let retryDelay = attempt * 1000;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30000);
 
@@ -25,6 +26,10 @@ async function requestSimulationEngine(url, options = {}, attempts = 3) {
         return response;
       }
 
+      const retryAfterSeconds = Number(response.headers.get('retry-after'));
+      if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+        retryDelay = Math.min(retryAfterSeconds * 1000, 10000);
+      }
       lastError = new Error(`Simulation engine returned HTTP ${response.status}`);
     } catch (error) {
       lastError = error;
@@ -33,7 +38,7 @@ async function requestSimulationEngine(url, options = {}, attempts = 3) {
       clearTimeout(timeout);
     }
 
-    await wait(attempt * 1000);
+    await wait(retryDelay);
   }
 
   throw lastError || new Error('Simulation engine request failed');
