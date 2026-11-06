@@ -1,0 +1,17 @@
+name: Keep Render services warm
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Ping Express backend
+        run: curl --fail --silent --show-error --max-time 30 https://spot-4n76.onrender.com/health
+
+      - name: Ping simulation engine
+        run: curl --fail --silent --show-error --max-time 30 https://spot-1-7hof.onrender.com/health
