@@ -154,8 +154,11 @@ describe('Language Setting & Removal of Language Popup', () => {
   });
 
   it('No saved language -> UI renders in English and no language popup appears', () => {
-    // Ensure no saved language in localStorage and navigator reports ur
-    global.navigator = { language: 'ur-PK' };
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { language: 'ur-PK' },
+      configurable: true,
+      writable: true,
+    });
     global.localStorage.clear();
 
     let observedContext = null;

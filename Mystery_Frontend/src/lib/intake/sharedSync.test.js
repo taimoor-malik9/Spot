@@ -52,10 +52,11 @@ describe('Shared BPMN Module Sync Verification', () => {
       const sharedContent = fs.readFileSync(sharedPath, 'utf8');
       const frontendContent = fs.readFileSync(frontendPath, 'utf8');
 
+      const normalizeLineEndings = (content) => content.replace(/\r\n/g, '\n');
       assert.strictEqual(
-        frontendContent,
-        sharedContent,
-        `Frontend copy of ${name} has diverged from FYP_Backend/shared/${name}. Keep them in sync!`
+        normalizeLineEndings(frontendContent),
+        normalizeLineEndings(sharedContent),
+        `Frontend copy of ${name} must match FYP_Backend/shared/${name}. Keep them in sync!`
       );
     });
   }
