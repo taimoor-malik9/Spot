@@ -64,4 +64,30 @@ desktop.ini
 *.tmp
 *.temp
 *.swp
-*.swo
+*.swoS D:\Desktop\SPOT\spot> git add FYP_Backend/server.js Mystery_Frontend/vercel.json Simulation_Engine/requirements.txt
+warning: in the working copy of 'FYP_Backend/server.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'Mystery_Frontend/vercel.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'Simulation_Engine/requirements.txt', LF will be replaced by CRLF the next time Git touches it
+PS D:\Desktop\SPOT\spot> git commit -m "Add backend root route, vercel proxy config, and simulation requirements"
+[clean-deploy-2026-2 d693716] Add backend root route, vercel proxy config, and simulation requirements
+ 3 files changed, 28 insertions(+), 1 deletion(-)
+ create mode 100644 Mystery_Frontend/vercel.json
+ create mode 100644 Simulation_Engine/requirements.txt
+PS D:\Desktop\SPOT\spot> git push
+fatal: The upstream branch of your current branch does not match
+the name of your current branch.  To push to the upstream branch
+on the remote, use
+
+    git push origin HEAD:main
+
+To push to the branch of the same name on the remote, use
+
+    git push origin HEAD
+
+To choose either option permanently, see push.default in 'git help config'.
+
+To avoid automatically configuring an upstream branch when its name
+won't match the local branch, see option 'simple' of branch.autoSetupMerge
+in 'git help config'.
+
+PS D:\Desktop\SPOT\spot> 

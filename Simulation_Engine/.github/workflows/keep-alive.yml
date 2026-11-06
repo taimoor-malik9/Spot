@@ -1,0 +1,29 @@
+name: Keep Alive - Simulation Engine
+
+on:
+  schedule:
+    # Run every 14 minutes (Render free tier spins down after 15 minutes of inactivity)
+    - cron: '*/14 * * * *'
+  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
+
+jobs:
+  keep-alive:
+    name: Ping Render Simulation Engine
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Simulation Engine Health Endpoint
+        env:
+          SERVICE_URL: ${{ secrets.SIMULATION_ENGINE_URL || 'https://spot-simulation-engine.onrender.com' }}
+        run: |
+          echo "Pinging simulation engine at: ${SERVICE_URL}/health"
+          RESPONSE=$(curl -sL -w "\n%{http_code}" --max-time 60 "${SERVICE_URL}/health" || echo "000")
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          echo "HTTP Status Code: $HTTP_CODE"
+          echo "Response Body: $BODY"
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 400 ]; then
+            echo "✅ Simulation engine service is awake and healthy."
+          else
+            echo "⚠️ Health check returned code $HTTP_CODE. Attempting root endpoint..."
+            curl -sL -I --max-time 60 "${SERVICE_URL}/" || true
+          fi
