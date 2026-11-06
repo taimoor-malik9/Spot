@@ -4,8 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { MessageCircle, X, Send, Sparkles, RefreshCw } from 'lucide-react';
 import { buildResultsSummary } from './aiSummary';
 import { useImplementSuggestion } from '../lib/useImplementSuggestion';
-
-const AI_API_BASE = import.meta.env.VITE_AI_API_URL || '';
+import { request } from '../lib/apiService';
 
 function RichText({ text }) {
   const parts = String(text || '').split(/\*\*(.*?)\*\*/g);
@@ -61,22 +60,15 @@ export default function AIChatWidget({ results, idToLabel, simMode, language = '
 
     try {
       const summary = buildResultsSummary(results, idToLabel, simMode);
-      const token = localStorage.getItem('spot_token') || sessionStorage.getItem('spot_token');
-      const res = await fetch(`${AI_API_BASE}/api/ai/chat`, {
+      const data = await request('/api/ai/chat', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {})
-        },
         body: JSON.stringify({
           summary,
           message: trimmed,
-          history: nextMessages.slice(0, -1), // everything before this turn
+          history: nextMessages.slice(0, -1),
           preferredLanguage: language,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || 'Failed to get a response');
       setMessages(m => [...m, { role: 'assistant', content: data.reply }]);
     } catch (err) {
       setError(err.message || 'Something went wrong');

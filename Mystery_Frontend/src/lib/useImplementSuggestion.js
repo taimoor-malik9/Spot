@@ -1,8 +1,6 @@
 'use client';
 import { useState, useCallback, useRef } from 'react';
-import { createScenario, getScenarios, shapeFrontendToBackend, shapeBackendToFrontend, getProcess } from './apiService';
-
-const AI_API_BASE = import.meta.env.VITE_AI_API_URL || '';
+import { createScenario, getScenarios, shapeFrontendToBackend, shapeBackendToFrontend, getProcess, request } from './apiService';
 
 // A node ends up here — missing a position, or landing on the exact same
 // (100, 100) as another node — whenever it was never given a real layout
@@ -193,25 +191,13 @@ export function useImplementSuggestion(navigate) {
         throw new Error('No valid variant definition provided for implementation');
       }
 
-      const token = localStorage.getItem('spot_token') || sessionStorage.getItem('spot_token');
-      const response = await fetch(`${AI_API_BASE}/api/ai/apply-option`, {
+      const newScenario = await request('/api/ai/apply-option', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {})
-        },
         body: JSON.stringify({
           processId: baseProcessId,
           variantDefinition,
         }),
       });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || errorData.detail || 'Failed to create scenario via apply-option');
-      }
-
-      const newScenario = await response.json();
       if (!newScenario || !newScenario._id) {
         throw new Error('Failed to create scenario on the backend');
       }

@@ -5,8 +5,7 @@ import { Sparkles, RefreshCw, AlertTriangle, AlertCircle, CheckCircle, Info } fr
 import { buildResultsSummary } from './aiSummary';
 import { useImplementSuggestion } from '../lib/useImplementSuggestion';
 import { t } from '../lib/intake/i18n';
-
-const AI_API_BASE = import.meta.env.VITE_AI_API_URL || '';
+import { request } from '../lib/apiService';
 
 function RichText({ text }) {
   const parts = String(text || '').split(/\*\*(.*?)\*\*/g);
@@ -38,19 +37,10 @@ export default function AIInsightsPanel({ results, idToLabel, simMode, idToResou
     setError(null);
     setNoneReason(null);
     try {
-      const token = localStorage.getItem('spot_token') || sessionStorage.getItem('spot_token');
-      const res = await fetch(`${AI_API_BASE}/api/ai/tested-suggestions`, {
+      const data = await request('/api/ai/tested-suggestions', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {})
-        },
         body: JSON.stringify({ processId, preferredLanguage: language }),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data?.error || data?.detail || 'Failed to generate tested insights');
-      }
       if (data.none) {
         setInsights([]);
         setNoneReason(data.reason || 'No change worth making at this load');
