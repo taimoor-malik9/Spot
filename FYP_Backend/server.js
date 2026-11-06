@@ -29,6 +29,72 @@ app.use('/api/scenario', requireAuth, require('./routes/scenario'));
 app.use('/api/scenarios', requireAuth, require('./routes/scenario'));
 const { getValidateBpmn } = require('./utils/cloneProcessToScenario');
 
+function assignLanesToNodes(nodes, layoutElements) {
+    const lanes = (layoutElements || []).filter(el => el && el.type === 'lane');
+    const pools = (layoutElements || []).filter(el => el && el.type === 'pool');
+    const NODE_W = 80;
+    const NODE_H = 80;
+
+    return (nodes || []).map(node => {
+        let lane = node.lane || node.data?.lane;
+        let pool = node.pool || node.data?.pool;
+
+        if (!lane && node.position && Number.isFinite(node.position.x) && Number.isFinite(node.position.y)) {
+            const cx = node.position.x + (node.width || NODE_W) / 2;
+            const cy = node.position.y + (node.height || NODE_H) / 2;
+
+            const hitLane = lanes.find(l => {
+                const lx = l.position?.x ?? 0;
+                const ly = l.position?.y ?? 0;
+                const lw = l.width ?? 540;
+                const lh = l.height ?? 150;
+                return cx >= lx && cx <= lx + lw && cy >= ly && cy <= ly + lh;
+            });
+
+            if (hitLane) {
+                lane = hitLane.label || hitLane.id;
+                if (!pool && hitLane.poolId) pool = hitLane.poolId;
+            } else {
+                const hitPool = pools.find(p => {
+                    const px = p.position?.x ?? 0;
+                    const py = p.position?.y ?? 0;
+                    const pw = p.width ?? 600;
+                    const ph = p.height ?? 220;
+                    return cx >= px && cx <= px + pw && cy >= py && cy <= py + ph;
+                });
+
+                if (hitPool) {
+                    pool = pool || hitPool.id;
+                    const poolSubLanes = lanes.filter(l => l.poolId === hitPool.id);
+                    if (poolSubLanes.length > 0) {
+                        const vLane = poolSubLanes.find(l => {
+                            const ly = l.position?.y ?? 0;
+                            const lh = l.height ?? 150;
+                            return cy >= ly && cy <= ly + lh;
+                        }) || poolSubLanes[0];
+                        lane = vLane.label || vLane.id;
+                    } else {
+                        lane = hitPool.label || hitPool.id || 'Default Lane';
+                    }
+                }
+            }
+        }
+
+        if (!lane && pool) {
+            lane = pool;
+        }
+
+        return {
+            ...node,
+            pool: pool || node.pool || null,
+            lane: lane || node.lane || null,
+            data: typeof node.data === 'object'
+                ? { ...node.data, ...(lane ? { lane } : {}), ...(pool ? { pool } : {}) }
+                : (node.data || {})
+        };
+    });
+}
+
 app.post('/api/process', requireAuth, async (req, res) => {
     console.log('📥 POST /api/process hit!');
     try {
@@ -54,10 +120,7 @@ app.post('/api/process', requireAuth, async (req, res) => {
             };
         });
 
-        const cleanNodes = (nodes || []).map(node => ({
-            ...node,
-            data: typeof node.data === 'object' ? { ...node.data } : node.data
-        }));
+        const cleanNodes = assignLanesToNodes(nodes, layoutElements);
 
         // Run full validator on base process at save time
         const validateBpmn = await getValidateBpmn();
@@ -124,13 +187,11 @@ app.put('/api/process/:id', requireAuth, async (req, res) => {
         if (title !== undefined) processDoc.title = title;
         if (resources !== undefined) processDoc.resources = resources;
 
+        const effectiveLayout = layoutElements !== undefined ? layoutElements : processDoc.layoutElements;
         if (nodes !== undefined) {
             // Preserve positions, dimensions, pool/lane assignment, and BPMN
             // type metadata as well as the simulation data.
-            processDoc.nodes = nodes.map(node => ({
-                ...node,
-                data: typeof node.data === 'object' ? { ...node.data } : node.data
-            }));
+            processDoc.nodes = assignLanesToNodes(nodes, effectiveLayout);
         }
 
         if (edges !== undefined) {

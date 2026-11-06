@@ -71,26 +71,59 @@ async function request(path, options = {}) {
 const CANVAS_NODE_W = 80;
 const CANVAS_NODE_H = 80;
 
-function inferPoolIds(elements) {
+function inferSwimlaneAssignments(elements) {
   const pools = elements.filter(e => e && e.type === 'pool');
-  const inferred = {};
-  if (!pools.length) return inferred;
+  const lanes = elements.filter(e => e && e.type === 'lane');
+  const poolMap = {};
+  const laneMap = {};
+
   elements.forEach(el => {
     if (!el || ['pool', 'lane'].includes(el.type)) return;
-    if (el.pool || el.poolId) return;
     if (!el.position || !Number.isFinite(el.position.x) || !Number.isFinite(el.position.y)) return;
     const cx = el.position.x + (el.width || CANVAS_NODE_W) / 2;
     const cy = el.position.y + (el.height || CANVAS_NODE_H) / 2;
-    const hit = pools.find(pool => {
+
+    // 1. Check if the element falls inside any lane
+    const hitLane = lanes.find(lane => {
+      const lx = lane.position?.x ?? 0;
+      const ly = lane.position?.y ?? 0;
+      const lw = lane.width ?? 540;
+      const lh = lane.height ?? 150;
+      return cx >= lx && cx <= lx + lw && cy >= ly && cy <= ly + lh;
+    });
+
+    if (hitLane) {
+      laneMap[el.id] = hitLane.label || hitLane.id;
+      if (hitLane.poolId) poolMap[el.id] = hitLane.poolId;
+      return;
+    }
+
+    // 2. Check if the element falls inside a pool
+    const hitPool = pools.find(pool => {
       const px = pool.position?.x ?? 0;
       const py = pool.position?.y ?? 0;
       const pw = pool.width ?? 600;
       const ph = pool.height ?? 300;
       return cx >= px && cx <= px + pw && cy >= py && cy <= py + ph;
     });
-    if (hit) inferred[el.id] = hit.id;
+
+    if (hitPool) {
+      poolMap[el.id] = hitPool.id;
+      const subLanes = lanes.filter(l => l.poolId === hitPool.id);
+      if (subLanes.length > 0) {
+        const vLane = subLanes.find(l => {
+          const ly = l.position?.y ?? 0;
+          const lh = l.height ?? 150;
+          return cy >= ly && cy <= ly + lh;
+        }) || subLanes[0];
+        laneMap[el.id] = vLane.label || vLane.id;
+      } else {
+        laneMap[el.id] = hitPool.label || hitPool.id || 'Default Lane';
+      }
+    }
   });
-  return inferred;
+
+  return { poolMap, laneMap };
 }
 
 export function shapeFrontendToBackend(elements, connections, title, globalResources = []) {
@@ -113,12 +146,17 @@ export function shapeFrontendToBackend(elements, connections, title, globalResou
       };
     });
 
-  const inferredPools = inferPoolIds(elements);
+  const { poolMap: inferredPools, laneMap: inferredLanes } = inferSwimlaneAssignments(elements);
   const nodePoolMap = {};
+  const nodeLaneMap = {};
   elements.forEach(el => {
     if (el.pool) nodePoolMap[el.id] = el.pool;
     else if (el.poolId) nodePoolMap[el.id] = el.poolId;
     else if (inferredPools[el.id]) nodePoolMap[el.id] = inferredPools[el.id];
+
+    if (el.lane) nodeLaneMap[el.id] = el.lane;
+    else if (el.data?.lane) nodeLaneMap[el.id] = el.data.lane;
+    else if (inferredLanes[el.id]) nodeLaneMap[el.id] = inferredLanes[el.id];
   });
 
   const resNameMap = {};
@@ -148,11 +186,14 @@ export function shapeFrontendToBackend(elements, connections, title, globalResou
         cleanTaskRes[primaryRes] = 1;
       }
 
+      const finalLane = nodeLaneMap[el.id] || el.lane || el.data?.lane || (nodePoolMap[el.id] || null);
+      const finalPool = nodePoolMap[el.id] || null;
+
       return {
         id: el.id,
         type: normaliseBpmnType(el.type),
-        pool: nodePoolMap[el.id] || null,
-        lane: el.lane || null,
+        pool: finalPool,
+        lane: finalLane,
         parent: el.parent || null,
         // FIX: preserve canvas layout across save/reload — without these,
         // every node comes back from the backend defaulted to the same
@@ -172,6 +213,8 @@ export function shapeFrontendToBackend(elements, connections, title, globalResou
           resources: cleanTaskRes,
           gateway_type: el.data?.gateway_type || null,
           customType: el.type,
+          lane: finalLane,
+          pool: finalPool,
         },
       };
     });
