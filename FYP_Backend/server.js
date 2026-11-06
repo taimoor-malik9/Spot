@@ -6,6 +6,7 @@ const cors = require('cors');
 const Process = require('./models/Process');
 const { toFriendlyError } = require('./utils/friendlyError');
 const { processForSimulation } = require('./utils/processForSimulation');
+const { requestSimulationEngine } = require('./utils/requestSimulationEngine');
 require('dotenv').config();
 
 const app = express();
@@ -435,7 +436,7 @@ app.post('/api/process/:id', requireAuth, async (req, res) => {
 
         const engineBase = (process.env.SIMULATION_ENGINE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
         const engineUrl = `${engineBase}/simulate`;
-        const response = await fetch(engineUrl, {
+        const response = await requestSimulationEngine(engineUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)

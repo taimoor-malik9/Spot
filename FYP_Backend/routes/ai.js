@@ -5,6 +5,7 @@ const rateLimit = require('express-rate-limit');
 const Process = require('../models/Process');
 const Scenario = require('../models/Scenario');
 const { processForSimulation } = require('../utils/processForSimulation');
+const { requestSimulationEngine } = require('../utils/requestSimulationEngine');
 const { cloneProcessToScenario } = require('../utils/cloneProcessToScenario');
 
 // AI Rate Limiter: 30 requests per 15 minutes per user id (falls back to IP)
@@ -289,7 +290,7 @@ router.post('/solve-problem', async (req, res) => {
     }
 
     const engineBase = (process.env.SIMULATION_ENGINE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
-    const response = await fetch(`${engineBase}/experiment`, {
+    const response = await requestSimulationEngine(`${engineBase}/experiment`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
