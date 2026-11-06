@@ -4,6 +4,11 @@
 // change here can never affect the (already working) diagram-generation flow.
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const CANDIDATE_MODELS = [...new Set([
+  process.env.GEMINI_MODEL || 'gemini-flash-latest',
+  'gemini-2.0-flash-lite',
+  'gemini-2.5-flash',
+])];
 // Cache for AI explanations by (resultId, language)
 const explanationsCache = new Map();
 
