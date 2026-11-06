@@ -1,5 +1,6 @@
 // FYP_Backend/services/testedSuggestionsService.js
 const { processForSimulation } = require('../utils/processForSimulation');
+const { requestSimulationEngine } = require('../utils/requestSimulationEngine');
 const { PLAIN_LANGUAGE_RULES, callGemini } = require('./resultsAiService');
 
 // In-memory cache keyed by process version + goal + arrival rate
@@ -260,7 +261,7 @@ async function callEngineSimulate(processJson, config, timeoutDeadline) {
     },
   };
 
-  const response = await fetch(url, {
+  const response = await requestSimulationEngine(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -422,7 +423,7 @@ async function summarizeCandidateWithGemini(candidate, passingData) {
  */
 async function generateTestedSuggestions({ processDoc, goal = 'waiting', config = {} }) {
   const startTime = Date.now();
-  const timeoutDeadline = startTime + Number(process.env.SOLVE_TIMEOUT_MS || 30000);
+  const timeoutDeadline = startTime + Number(process.env.SOLVE_TIMEOUT_MS || 60000);
 
   const validGoal = ['waiting', 'cost', 'throughput'].includes(goal)
     ? goal
@@ -433,8 +434,8 @@ async function generateTestedSuggestions({ processDoc, goal = 'waiting', config 
   );
   const busyArrivalRate = baseArrivalRate * 2.0; // arrival gap x 0.5 => rate x 2.0
 
-  const replications = config.replications ? Number(config.replications) : 3;
-  const totalInstances = config.total_instances ? Number(config.total_instances) : 200;
+  const replications = config.replications ? Number(config.replications) : 1;
+  const totalInstances = config.total_instances ? Number(config.total_instances) : 100;
   const seed = config.seed !== undefined ? Number(config.seed) : 42;
 
   // Check cache
