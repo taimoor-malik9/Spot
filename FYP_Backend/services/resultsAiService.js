@@ -6,8 +6,8 @@
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const CANDIDATE_MODELS = [...new Set([
   process.env.GEMINI_MODEL || 'gemini-flash-latest',
-  'gemini-2.0-flash-lite',
-  'gemini-2.5-flash',
+  'gemini-3.8-flash',
+  'gemini-3.1-flash-lite',
 ])];
 // Cache for AI explanations by (resultId, language)
 const explanationsCache = new Map();
