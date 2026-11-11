@@ -5,9 +5,9 @@
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const CANDIDATE_MODELS = [...new Set([
+  'gemini-3.1-flash-lite',
   process.env.GEMINI_MODEL || 'gemini-flash-latest',
   'gemini-3.8-flash',
-  'gemini-3.1-flash-lite',
 ])];
 // Cache for AI explanations by (resultId, language)
 const explanationsCache = new Map();
@@ -92,7 +92,14 @@ How to answer:
 - Never claim costs are wasted or 100% idle unless busy work was recorded; when active work is zero, guide the user to assign staff to steps in Task Details.
 - Plain conversational text, 60-150 words, short paragraphs. Bold (**like this**) key numbers, step names and worker names. No formulas.`;
 
-async function callGemini({ systemPrompt, contents, expectJson }) {
+async function callGemini({
+  systemPrompt,
+  contents,
+  expectJson,
+  maxModels = CANDIDATE_MODELS.length,
+  maxAttempts = 2,
+  timeoutMs = 12000,
+}) {
   if (!GEMINI_API_KEY) {
     throw new ResultsAiError('AI service is not configured on this server', null);
   }
@@ -110,20 +117,25 @@ async function callGemini({ systemPrompt, contents, expectJson }) {
   let response;
   let lastErrBody = '';
 
-  for (const modelName of CANDIDATE_MODELS) {
+  for (const modelName of CANDIDATE_MODELS.slice(0, maxModels)) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${GEMINI_API_KEY}`;
-    for (let attempt = 1; attempt <= 2; attempt++) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
       try {
         response = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(requestBody),
+          signal: controller.signal,
         });
         if (response.ok) break;
         lastErrBody = await response.text();
-        if (response.status === 429 || response.status === 503) break; // try next model
+        if (response.status === 429 || response.status === 503) break;
       } catch (err) {
-        lastErrBody = err.message;
+        lastErrBody = err.name === 'AbortError' ? `Timed out after ${timeoutMs}ms` : err.message;
+      } finally {
+        clearTimeout(timeout);
       }
     }
     if (response && response.ok) break;
@@ -163,6 +175,9 @@ async function generateInsights(summary, language = 'en', resultId = null) {
     systemPrompt: promptWithLang,
     contents: [{ role: 'user', parts: [{ text: JSON.stringify(summary) }] }],
     expectJson: true,
+    maxModels: 1,
+    maxAttempts: 1,
+    timeoutMs: 10000,
   });
 
   let parsed;
@@ -223,6 +238,9 @@ async function chatAboutResults(summary, message, history = [], language = 'en')
     systemPrompt: promptWithLang,
     contents,
     expectJson: false,
+    maxModels: 1,
+    maxAttempts: 1,
+    timeoutMs: 10000,
   });
 
   return raw;

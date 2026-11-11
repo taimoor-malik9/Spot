@@ -520,12 +520,14 @@ async function generateTestedSuggestions({ processDoc, goal = 'waiting', config 
       let goalDelta = 0;
 
       if (validGoal === 'waiting') {
+        // Do not relabel a cycle-time improvement as a waiting improvement.
+        // If nobody is waiting in the baseline, there is no waiting reduction
+        // to recommend, even when a variant shortens work time.
+        if (baseWait.mean <= 0.0001) continue;
         const waitChange = checkIntervalMeaningfulChange(baseWait, candWait);
-        const cycleChange = checkIntervalMeaningfulChange(baseCycle, candCycle);
-        if ((waitChange.isMeaningful && waitChange.delta <= -5.0) ||
-            (cycleChange.isMeaningful && cycleChange.delta <= -5.0)) {
+        if (waitChange.isMeaningful && waitChange.delta <= -5.0) {
           goalImproved = true;
-          goalDelta = waitChange.isMeaningful ? waitChange.delta : cycleChange.delta;
+          goalDelta = waitChange.delta;
         }
       } else if (validGoal === 'cost') {
         const costChange = checkIntervalMeaningfulChange(baseCost, candCost);
