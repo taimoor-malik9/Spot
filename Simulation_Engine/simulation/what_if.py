@@ -1,6 +1,7 @@
 from simulation.graph import build_graph
 from simulation.monte_carlo import run_until_convergence
 from simulation.financials import generate_financial_report, calculate_profit_delta
+from simulation.resource_diff import compute_resource_changes
 
 
 def run_what_if(baseline_process_json: dict, scenario_process_json: dict, config: dict) -> dict:
@@ -10,7 +11,9 @@ def run_what_if(baseline_process_json: dict, scenario_process_json: dict, config
         baseline_result["financial_summary"],
         scenario_result["financial_summary"]
     )
-    return {"baseline": baseline_result, "scenario": scenario_result}
+    diff = compute_resource_changes(baseline_process_json, scenario_process_json)
+    scenario_result["resource_changes"] = diff
+    return {"baseline": baseline_result, "scenario": scenario_result, "resource_changes": diff}
 
 
 def _run_single(process_json: dict, config: dict) -> dict:

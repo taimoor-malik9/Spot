@@ -1157,7 +1157,33 @@ export default function DashboardPage() {
                     navigate('/scenarios');
                   }}>
                     <td className="spot-table-td" style={{ fontWeight: 600, color: '#0f172a' }}>
-                      {formatPlainLanguage(scen.title, { isAnalystView })}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        <span>{formatPlainLanguage(scen.title, { isAnalystView })}</span>
+                        {(() => {
+                          const changesCount = Array.isArray(scen.resource_changes)
+                            ? scen.resource_changes.length
+                            : (Array.isArray(scen.lastRun?.resource_changes) ? scen.lastRun.resource_changes.length : 0);
+                          return (
+                            <span
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                fontSize: 11,
+                                fontWeight: 600,
+                                padding: '1px 7px',
+                                borderRadius: 999,
+                                background: changesCount > 0 ? '#ede9fe' : '#f1f5f9',
+                                color: changesCount > 0 ? '#6b4de6' : '#64748b',
+                                border: `1px solid ${changesCount > 0 ? '#ddd6fe' : '#e2e8f0'}`,
+                              }}
+                            >
+                              {changesCount > 0
+                                ? `${changesCount} ${changesCount === 1 ? 'resource changed' : 'resources changed'}`
+                                : 'No resource changes'}
+                            </span>
+                          );
+                        })()}
+                      </div>
                     </td>
                     <td className="spot-table-td" style={{ color: '#475569' }}>
                       {scen.baseProcessId?.title || '—'}

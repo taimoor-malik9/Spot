@@ -17,6 +17,7 @@
  */
 
 const path = require('path');
+const { getComputeResourceChanges } = require('./resourceDiffHelper');
 
 let validateBpmnFn = null;
 async function getValidateBpmn() {
@@ -399,6 +400,12 @@ async function cloneProcessToScenario(process, overrides = {}) {
     throw err;
   }
 
+  const diffFn = await getComputeResourceChanges();
+  const resource_changes = overrides.resource_changes || diffFn(raw, {
+    resources: clonedResources,
+    nodes: finalNodes,
+  });
+
   return {
     baseProcessId,
     title,
@@ -406,6 +413,7 @@ async function cloneProcessToScenario(process, overrides = {}) {
     edges: finalEdges,
     layoutElements: finalLayoutElements,
     resources: clonedResources,
+    resource_changes,
     simulationConfig,
     goal,
   };

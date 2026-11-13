@@ -7,6 +7,7 @@ runner supplied by the API layer.
 
 from copy import deepcopy
 from statistics import mean
+from simulation.resource_diff import compute_resource_changes
 
 TASK_TYPES = {
     "task", "user-task", "service-task", "script-task",
@@ -476,12 +477,15 @@ def run_experiment(process_json, config, goal, run_process, target=None):
         metrics = _metrics(runs)
         delta_vs = _delta(metrics, baseline)
         impr = _calc_improvement(baseline, metrics, target_metric, target_direction)
+        res_changes = compute_resource_changes(process_json, item["proc"])
+        item["definition"]["resource_changes"] = res_changes
         tested_candidates.append({
             "label": item["label"],
             "metrics": metrics,
             "delta_vs_baseline": delta_vs,
             "improvement_pct": round(impr, 2),
             "definition": item["definition"],
+            "resource_changes": res_changes,
             "category": item["category"],
             "staff_delta": item["staff_delta"],
             "min_mult": item["min_mult"],
@@ -627,7 +631,12 @@ def run_experiment(process_json, config, goal, run_process, target=None):
         seen_candidate_labels.add(pick["label"])
 
     variants_formatted = [
-        {"label": v["label"], "metrics": v["metrics"], "delta_vs_baseline": v["delta_vs_baseline"]}
+        {
+            "label": v["label"],
+            "metrics": v["metrics"],
+            "delta_vs_baseline": v["delta_vs_baseline"],
+            "resource_changes": v.get("resource_changes", []),
+        }
         for v in selected_variants
     ]
 
@@ -637,6 +646,7 @@ def run_experiment(process_json, config, goal, run_process, target=None):
             "label": best_candidate["label"],
             "metrics": best_candidate["metrics"],
             "delta_vs_baseline": best_candidate["delta_vs_baseline"],
+            "resource_changes": best_candidate.get("resource_changes", []),
             "variant_definition": best_candidate["definition"],
             "recommended": is_meaningful,
         }

@@ -12,6 +12,7 @@ from simulation.monte_carlo import (
 from simulation.results import compute_results
 from simulation.financials import generate_financial_report, calculate_profit_delta
 from simulation.experiments import run_experiment
+from simulation.resource_diff import compute_resource_changes
 import httpx
 from fastapi.middleware.cors import CORSMiddleware
 import os
@@ -399,6 +400,15 @@ class WhatIfModel(BaseModel):
     baseline: ProcessInput
     scenario: ProcessInput
 
+class DiffInput(BaseModel):
+    baseline_process_json: dict
+    scenario_process_json: dict
+
+@app.post("/resource_changes")
+def get_resource_changes(input: DiffInput):
+    diff = compute_resource_changes(input.baseline_process_json, input.scenario_process_json)
+    return {"resource_changes": diff}
+
 @app.post("/what_if_scenario")
 def what_if_scenario(what_if: WhatIfModel):
     baseline_result = _run_process(what_if.baseline.process_json, what_if.baseline.config or {})
@@ -408,8 +418,10 @@ def what_if_scenario(what_if: WhatIfModel):
         baseline_result["financial_summary"],
         scenario_result["financial_summary"]
     )
+    diff = compute_resource_changes(what_if.baseline.process_json, what_if.scenario.process_json)
+    scenario_result["resource_changes"] = diff
 
-    return {"baseline": baseline_result, "scenario": scenario_result}
+    return {"baseline": baseline_result, "scenario": scenario_result, "resource_changes": diff}
 
 
 @app.post("/baseline/save")

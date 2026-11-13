@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { applyAiOption, solveProblem } from '../lib/apiService';
 import { useExpandablePanel } from '../hooks/useExpandablePanel';
 import { useAnalystView, Hint, formatPlainLanguage } from '../lib/labels';
+import ResourceChangesView from './ResourceChangesView';
 
 function number(value, digits = 1) {
   const numeric = Number(value);
@@ -320,6 +321,7 @@ export default function SpotAssistant({ open, onClose, processId, ensureProcessS
 
       const scenario = await applyAiOption(id, definition);
       const scenarioId = scenario?._id || scenario?.id;
+      const resource_changes = scenario?.resource_changes || definition.resource_changes || [];
 
       setMessages((prev) => {
         const next = prev.map((m) => {
@@ -329,7 +331,12 @@ export default function SpotAssistant({ open, onClose, processId, ensureProcessS
               ...m,
               scenarioState: {
                 ...currentScenarioState,
-                [variant.label]: { loading: false, created: true, scenarioId },
+                [variant.label]: {
+                  loading: false,
+                  created: true,
+                  scenarioId,
+                  resource_changes,
+                },
               },
             };
           }
@@ -1073,22 +1080,54 @@ function EvidenceCard({ evidenceMsg, isExpanded, onApplyVariant, onOpenScenario 
                       color: '#334155',
                     }}
                   >
-                    {formatPlainLanguage(row.label, { isAnalystView })}
-                    {isRowRecommended && (
-                      <span
-                        style={{
-                          marginLeft: 6,
-                          color: '#166534',
-                          background: '#dcfce7',
-                          borderRadius: 999,
-                          padding: '2px 8px',
-                          fontSize: 10.5,
-                          fontWeight: 700,
-                        }}
-                      >
-                        Recommended
-                      </span>
-                    )}
+                    <div>
+                      {formatPlainLanguage(row.label, { isAnalystView })}
+                      {isRowRecommended && (
+                        <span
+                          style={{
+                            marginLeft: 6,
+                            color: '#166534',
+                            background: '#dcfce7',
+                            borderRadius: 999,
+                            padding: '2px 8px',
+                            fontSize: 10.5,
+                            fontWeight: 700,
+                          }}
+                        >
+                          Recommended
+                        </span>
+                      )}
+                    </div>
+                    {/* Before creation: show proposed resource changes */}
+                    {!row.baseline && (() => {
+                      const def = evidence?.variant_definitions?.find((d) => d.label === row.label);
+                      const proposed = def?.resource_changes || row.variant?.resource_changes || [];
+                      if (proposed.length === 0) {
+                        return (
+                          <div style={{ marginTop: 3, fontSize: 11, color: '#94a3b8', fontWeight: 500 }}>
+                            No resource changes
+                          </div>
+                        );
+                      }
+                      return (
+                        <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          {proposed.map((ch, ci) => (
+                            <span
+                              key={ci}
+                              style={{
+                                fontSize: 11,
+                                fontWeight: 600,
+                                color: ch.direction === 'decrease' || ch.direction === 'removed'
+                                  ? '#dc2626'
+                                  : (ch.direction === 'increase' || ch.direction === 'new' ? '#15803d' : '#b45309'),
+                              }}
+                            >
+                              {ch.summary || `${ch.name}: ${ch.before} → ${ch.after} (${ch.delta_text})`}
+                            </span>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </td>
                   {isCycleTimeGoal && (
                     <td style={{ padding: '10px 8px', color: '#334155' }}>
@@ -1199,6 +1238,22 @@ function EvidenceCard({ evidenceMsg, isExpanded, onApplyVariant, onOpenScenario 
           </tbody>
         </table>
       </div>
+
+      {/* After creation: show confirmed resource changes for any scenario created in this card */}
+      {Object.entries(scenarioState).map(([label, s]) => {
+        if (!s?.created) return null;
+        const changesToShow = s.resource_changes || [];
+        return (
+          <div key={label} style={{ marginTop: 8 }}>
+            <ResourceChangesView
+              changes={changesToShow}
+              target={evidence?.target}
+              title={`Resource changes applied for "${label}"`}
+              isCompact={true}
+            />
+          </div>
+        );
+      })}
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <p style={{ margin: 0, color: '#64748b', fontSize: 11.5 }}>

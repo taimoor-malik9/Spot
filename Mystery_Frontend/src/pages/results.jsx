@@ -17,6 +17,8 @@ import { useLanguage } from '@/context/LanguageContext';
 import { getScenarios, listRuns, getRun, deleteRun, runSimulation, runScenarioSimulation } from '../lib/apiService';
 import AIInsightsPanel from './AIInsightsPanel';
 import AIChatWidget from './AIChatWidget';
+import ResourceChangesView from '../components/ResourceChangesView';
+import { computeResourceChanges } from '../lib/resourceDiff';
 import { computeComparisonMetrics } from '../lib/whatIfComparison';
 import { getBottleneckView, prepareResultForMetrics } from '../lib/resultsHelper';
 import { useAnalystView, Hint, LABELS, formatPlainLanguage } from '../lib/labels';
@@ -1044,6 +1046,55 @@ export default function ResultsPage() {
     const safeWI = prepareResultForMetrics(whatifResults, idToLabel);
     return computeComparisonMetrics(safeBase, safeWI, idToLabel);
   }, [hasWhatIf, baselineResults, whatifResults, idToLabel]);
+
+  // Determine if currently viewing a scenario run
+  const isScenarioRun = useMemo(() => {
+    if (selectedRun) {
+      return Boolean(selectedRun.scenarioId);
+    }
+    if (activeScenarioKey && activeScenarioKey !== 'baseline') {
+      return true;
+    }
+    if (hasWhatIf) {
+      return true;
+    }
+    if (results && (results.resource_changes !== undefined || results.is_scenario)) {
+      return true;
+    }
+    return false;
+  }, [selectedRun, activeScenarioKey, hasWhatIf, results]);
+
+  const currentResourceChanges = useMemo(() => {
+    if (!isScenarioRun) return [];
+    if (results && Array.isArray(results.resource_changes)) {
+      return results.resource_changes;
+    }
+    if (selectedRun && Array.isArray(selectedRun.results?.resource_changes)) {
+      return selectedRun.results.resource_changes;
+    }
+    if (selectedRun && Array.isArray(selectedRun.resource_changes)) {
+      return selectedRun.resource_changes;
+    }
+    if (whatifResults && Array.isArray(whatifResults.resource_changes)) {
+      return whatifResults.resource_changes;
+    }
+    // Check active scenario entry in scenarioList
+    if (activeScenarioKey && activeScenarioKey !== 'baseline') {
+      const entry = scenarioList.find((s) => s.id === activeScenarioKey);
+      if (entry?.results && Array.isArray(entry.results.resource_changes)) {
+        return entry.results.resource_changes;
+      }
+    }
+    // Fallback: compare scenario resources vs baseline resources if available
+    try {
+      const rawBase = localStorage.getItem('spot:baselineResults');
+      const baseProc = rawBase ? JSON.parse(rawBase) : null;
+      if (baseProc?.resources && results?.resources) {
+        return computeResourceChanges(baseProc, results);
+      }
+    } catch {}
+    return [];
+  }, [isScenarioRun, results, selectedRun, whatifResults, activeScenarioKey, scenarioList]);
   
   const { id: bnId, label: bnLabel, data: bnData } = getPrimaryBottleneck(results, idToLabel);
 
@@ -1329,6 +1380,15 @@ export default function ResultsPage() {
 
       {/* DASHBOARD CONTAINER */}
       <main style={{ padding: '32px', display: 'flex', flexDirection: 'column', gap: 24 }}>
+
+        {/* Changes from baseline section (shown for any scenario run, hidden for baseline) */}
+        {isScenarioRun && (
+          <ResourceChangesView
+            changes={currentResourceChanges}
+            title={isAnalystView ? "Changes from baseline" : "Changes from current setup"}
+            target={results?.target || selectedRun?.config?.target}
+          />
+        )}
 
         {/* TABS */}
         <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e2e8f0', overflowX: 'auto' }}>

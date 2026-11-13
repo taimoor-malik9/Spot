@@ -62,6 +62,15 @@ router.put('/:scenarioId', async (req, res) => {
         if (req.body.resources !== undefined) scenario.resources = req.body.resources;
         if (req.body.layoutElements !== undefined) scenario.layoutElements = req.body.layoutElements;
 
+        try {
+            const baseProcess = await requireOwnedProcess(req, scenario.baseProcessId);
+            const { getComputeResourceChanges } = require('../utils/resourceDiffHelper');
+            const diffFn = await getComputeResourceChanges();
+            scenario.resource_changes = diffFn(baseProcess, scenario);
+        } catch (diffErr) {
+            console.warn('Failed to update scenario resource changes:', diffErr.message);
+        }
+
         await scenario.save();
         res.json({ message: 'Scenario updated!', scenario });
     } catch (err) {
@@ -137,6 +146,45 @@ router.post('/simulate/:scenarioId', async (req, res) => {
         }
 
         const realResults = await response.json();
+
+        // Compute resource changes against baseProcess
+        let resourceChanges = scenario.resource_changes || [];
+        try {
+            const baseProcess = await requireOwnedProcess(req, scenario.baseProcessId);
+            const engineBase = (process.env.SIMULATION_ENGINE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
+            const diffResp = await fetch(`${engineBase}/resource_changes`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    baseline_process_json: { nodes: baseProcess.nodes, edges: baseProcess.edges, resources: baseProcess.resources },
+                    scenario_process_json: { nodes: scenario.nodes, edges: scenario.edges, resources: scenario.resources }
+                })
+            }).catch(() => null);
+
+            if (diffResp && diffResp.ok) {
+                const diffData = await diffResp.json();
+                if (Array.isArray(diffData.resource_changes)) {
+                    resourceChanges = diffData.resource_changes;
+                }
+            } else {
+                const { getComputeResourceChanges } = require('../utils/resourceDiffHelper');
+                const diffFn = await getComputeResourceChanges();
+                resourceChanges = diffFn(baseProcess, scenario);
+            }
+        } catch (diffErr) {
+            console.warn('[ResourceDiff] Failed to fetch diff, using fallback:', diffErr.message);
+            if (!resourceChanges || resourceChanges.length === 0) {
+                try {
+                    const { getComputeResourceChanges } = require('../utils/resourceDiffHelper');
+                    const diffFn = await getComputeResourceChanges();
+                    const baseProcess = await requireOwnedProcess(req, scenario.baseProcessId);
+                    resourceChanges = diffFn(baseProcess, scenario);
+                } catch {}
+            }
+        }
+
+        realResults.resource_changes = resourceChanges;
+        scenario.resource_changes = resourceChanges;
         scenario.simulationResults = realResults;
         await scenario.save();
 
@@ -154,7 +202,7 @@ router.post('/simulate/:scenarioId', async (req, res) => {
             console.warn('[SimulationRun] Failed to save scenario simulation run:', runErr.message);
         }
 
-        res.json({ message: 'Scenario simulated!', results: realResults });
+        res.json({ message: 'Scenario simulated!', results: realResults, resource_changes: resourceChanges });
 
     } catch (err) {
         if (err.status) return res.status(err.status).json({ error: err.message });
@@ -207,9 +255,21 @@ router.get('/', async (req, res) => {
             }
         }
 
+        const { getComputeResourceChanges } = require('../utils/resourceDiffHelper');
+        const diffFn = await getComputeResourceChanges();
+
         const enriched = scenarios.map(s => {
             const sIdStr = s._id.toString();
             const runInfo = runMap[sIdStr];
+
+            let resourceChanges = Array.isArray(s.resource_changes) && s.resource_changes.length > 0
+                ? s.resource_changes
+                : (s.simulationResults?.resource_changes || []);
+            if ((!resourceChanges || resourceChanges.length === 0) && s.baseProcessId && s.resources) {
+                try {
+                    resourceChanges = diffFn(s.baseProcessId, s);
+                } catch {}
+            }
 
             let lastRun = null;
             if (runInfo) {
@@ -218,6 +278,7 @@ router.get('/', async (req, res) => {
                     title: runInfo.title,
                     config: runInfo.config,
                     summary: runInfo.summary,
+                    resource_changes: resourceChanges || [],
                     createdAt: runInfo.createdAt
                 };
             } else if (s.simulationResults) {
@@ -235,12 +296,14 @@ router.get('/', async (req, res) => {
                         ) : null,
                         total_cost: sr.financial_summary?.total_cost != null ? Number(sr.financial_summary.total_cost) : null
                     },
+                    resource_changes: resourceChanges || [],
                     createdAt: s.updatedAt || s.createdAt
                 };
             }
 
             return {
                 ...s,
+                resource_changes: resourceChanges || [],
                 lastRun
             };
         });
@@ -278,7 +341,10 @@ router.post('/:scenarioId/duplicate', async (req, res) => {
 // 3. Sab scenarios dekho ek base process ke
 router.get('/:baseProcessId', async (req, res) => {
     try {
-        await requireOwnedProcess(req, req.params.baseProcessId);
+        const baseProcess = await requireOwnedProcess(req, req.params.baseProcessId);
+        const { getComputeResourceChanges } = require('../utils/resourceDiffHelper');
+        const diffFn = await getComputeResourceChanges();
+
         const scenarios = await Scenario.find({ 
             baseProcessId: req.params.baseProcessId,
             userId: req.user._id
@@ -286,6 +352,11 @@ router.get('/:baseProcessId', async (req, res) => {
         const normalizedScenarios = scenarios.map(s => {
             const doc = s.toObject ? s.toObject() : s;
             doc.edges = normalizeEdges(doc.edges);
+            if (!doc.resource_changes || doc.resource_changes.length === 0) {
+                try {
+                    doc.resource_changes = diffFn(baseProcess, doc);
+                } catch {}
+            }
             return doc;
         });
         res.json(normalizedScenarios);

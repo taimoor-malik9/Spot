@@ -311,6 +311,30 @@ router.post('/solve-problem', async (req, res) => {
       withTimeout(summarizeExperiment(experiment, preferredLanguage || 'en'), fallbackExperimentSummary(experiment), 15000),
       withTimeout(explainTargetGap(experiment, preferredLanguage || 'en'), experiment.reason, 15000),
     ]);
+    // Ensure variant_definitions and variants have resource_changes attached
+    if (Array.isArray(experiment.variant_definitions)) {
+      try {
+        const { getComputeResourceChanges } = require('../utils/resourceDiffHelper');
+        const diffFn = await getComputeResourceChanges();
+        for (const def of experiment.variant_definitions) {
+          if (!def.resource_changes || def.resource_changes.length === 0) {
+            const baseRes = processDoc.resources || [];
+            const tempRes = JSON.parse(JSON.stringify(baseRes));
+            if (Array.isArray(def.resourceChanges)) {
+              for (const ch of def.resourceChanges) {
+                const wanted = String(ch.name || ch.id || '').trim().toLowerCase();
+                const target = tempRes.find(r => String(r.name || r.id || '').trim().toLowerCase() === wanted);
+                if (target) target.quantity = Number(ch.quantity ?? ch.qty);
+              }
+            }
+            def.resource_changes = diffFn(processDoc, { resources: tempRes, nodes: processDoc.nodes });
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to ensure variant_definitions resource_changes:', err.message);
+      }
+    }
+
     return res.json({
       type: 'evidence',
       summary,
