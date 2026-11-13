@@ -366,6 +366,12 @@ router.post('/solve-problem', async (req, res) => {
           if (!v.task_changes || v.task_changes.length === 0) {
             v.task_changes = matchingDef.task_changes;
           }
+          if (!v.action && matchingDef.action) v.action = matchingDef.action;
+          if (!v.how_to_do && matchingDef.how_to_do) v.how_to_do = matchingDef.how_to_do;
+          if (!v.option_type && matchingDef.option_type) v.option_type = matchingDef.option_type;
+          if (v.is_realistic === undefined && matchingDef.is_realistic !== undefined) v.is_realistic = matchingDef.is_realistic;
+          if (v.trade_off_exceeded === undefined && matchingDef.trade_off_exceeded !== undefined) v.trade_off_exceeded = matchingDef.trade_off_exceeded;
+          if (!v.trade_off_summary && matchingDef.trade_off_summary) v.trade_off_summary = matchingDef.trade_off_summary;
         }
       }
     }

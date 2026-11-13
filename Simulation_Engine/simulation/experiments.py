@@ -16,6 +16,15 @@ TASK_TYPES = {
 }
 
 
+def safe_float(val, default=0.0):
+    try:
+        if val is None:
+            return float(default)
+        return float(val)
+    except (ValueError, TypeError):
+        return float(default)
+
+
 def _data(node):
     return node.setdefault("data", {}) if isinstance(node.get("data"), dict) else node
 
@@ -171,6 +180,98 @@ def _add_resource(process_json, resource_name, delta=1):
                 resources[name] = new_quantity
                 return variant, {"id": name, "name": name, "quantity": new_quantity, "delta": delta}
     return None, None
+
+
+def _reduce_resource(process_json, resource_name, delta=1):
+    """Reduce count of an under-utilized resource, down to minimum 1."""
+    variant = deepcopy(process_json)
+    resources = variant.get("resources")
+    target = resource_name.strip().lower()
+    if isinstance(resources, list):
+        for resource in resources:
+            r_name = str(resource.get("name") or resource.get("displayName") or resource.get("id") or "").strip().lower()
+            if r_name == target or str(resource.get("id", "")).strip().lower() == target:
+                curr_qty = int(resource.get("quantity", 1))
+                new_qty = max(1, curr_qty - delta)
+                if new_qty == curr_qty:
+                    return None, None
+                resource["quantity"] = new_qty
+                res_id = resource.get("id") or resource.get("name", resource_name)
+                res_name = resource.get("name") or resource.get("displayName") or resource_name
+                return variant, {"id": res_id, "name": res_name, "quantity": new_qty, "delta": -delta}
+    elif isinstance(resources, dict):
+        for name, quantity in resources.items():
+            if str(name).strip().lower() == target:
+                curr_qty = int(quantity)
+                new_qty = max(1, curr_qty - delta)
+                if new_qty == curr_qty:
+                    return None, None
+                resources[name] = new_qty
+                return variant, {"id": name, "name": name, "quantity": new_qty, "delta": -delta}
+    return None, None
+
+
+def _reduce_resource_shift(process_json, resource_name, new_hours=4.0):
+    """Reduce daily hours for a resource (e.g. 8h to 4h part-time or eliminate overtime)."""
+    variant = deepcopy(process_json)
+    resources = variant.get("resources")
+    target = resource_name.strip().lower()
+    if isinstance(resources, list):
+        for resource in resources:
+            r_name = str(resource.get("name") or resource.get("displayName") or resource.get("id") or "").strip().lower()
+            if r_name == target or str(resource.get("id", "")).strip().lower() == target:
+                curr_hours = safe_float(resource.get("hours_per_day"), 8.0)
+                if curr_hours <= new_hours:
+                    return None, None
+                resource["hours_per_day"] = new_hours
+                if resource.get("monthly_salary"):
+                    salary = safe_float(resource.get("monthly_salary"))
+                    resource["monthly_salary"] = round(salary * (new_hours / curr_hours), 2)
+                res_id = resource.get("id") or resource.get("name", resource_name)
+                res_name = resource.get("name") or resource.get("displayName") or resource_name
+                return variant, {"id": res_id, "name": res_name, "hours_per_day": new_hours}
+    return None, None
+
+
+def _calculate_resource_utilizations(results):
+    """Calculate mean utilization percentage for each resource across replication runs."""
+    totals = {}
+    counts = {}
+    for result in results:
+        for name, values in result.get("resource_utilization", {}).items():
+            key = name.strip()
+            totals[key] = totals.get(key, 0.0) + values.get("utilization_pct", 0.0)
+            counts[key] = counts.get(key, 0) + 1
+    return {name: round(totals[name] / counts[name], 1) for name in totals}
+
+
+def _concrete_lever_for_task(task_label):
+    """Concrete lever, realistic 20-25% speedup cap, and action statement for bottleneck tasks."""
+    lbl = (task_label or "").strip().lower()
+    if any(k in lbl for k in ["register", "intake", "form", "triage", "check-in", "checkin", "reception", "desk", "ticket", "order", "entry", "document"]):
+        return {
+            "lever_type": "software",
+            "speedup_pct": 20,
+            "mult": 0.80,
+            "action": f"Deploy digital intake & self-service kiosk for {task_label}",
+            "how_to_do": f"Install digital self-service intake software to streamline patient data entry and cut triage time by 20% (est. software license Rs 12,000/mo).",
+        }
+    elif any(k in lbl for k in ["lab", "test", "scan", "x-ray", "xray", "blood", "urine", "ecg", "mri", "imaging", "diagnostic"]):
+        return {
+            "lever_type": "equipment",
+            "speedup_pct": 25,
+            "mult": 0.75,
+            "action": f"Upgrade diagnostic equipment for {task_label}",
+            "how_to_do": f"Lease high-throughput diagnostic equipment to accelerate sample analysis by 25% (est. lease cost Rs 20,000/mo).",
+        }
+    else:
+        return {
+            "lever_type": "training",
+            "speedup_pct": 20,
+            "mult": 0.80,
+            "action": f"Staff training on standardized protocol for {task_label}",
+            "how_to_do": f"Conduct structured clinical protocol training for staff performing {task_label} to reduce processing variation by 20% (est. Rs 8,000/mo amortized).",
+        }
 
 
 def _speed_up_task(process_json, node_id, multiplier=0.8):
@@ -405,72 +506,337 @@ def run_experiment(process_json, config, goal, run_process, target=None):
 
     # Ladder of candidate options
     candidates_to_test = []
+    is_cost_goal = (goal == "cost" or target_metric == "cost")
+    res_utilizations = _calculate_resource_utilizations(baseline_runs)
 
-    # 1. Staffing additions on bottleneck (+1, +2, +3) — ONLY when waiting > 0
-    if not waiting_is_zero and resource_name:
-        for delta in [1, 2, 3]:
-            proc, change = _add_resource(process_json, resource_name, delta=delta)
-            if proc:
-                label = f"Add {delta} {change['name']}"
-                definition = {"label": label, "resourceChanges": [change], "nodeChanges": []}
-                candidates_to_test.append({"label": label, "proc": proc, "definition": definition, "category": "staffing", "staff_delta": delta, "min_mult": 1.0})
+    # A. Cost-oriented realistic levers (tested first for cost goals)
+    if is_cost_goal:
+        # Rule 2: test realistic levers first:
+        # 1. Reduce count of under-utilized resources (utilization < 40%)
+        # 2. Reduce shifts/overtime
+        raw_resources = process_json.get("resources", [])
+        res_list = raw_resources if isinstance(raw_resources, list) else [{"id": k, "name": k, "quantity": v} for k, v in raw_resources.items()]
 
-    # 2. Duration multiplier on primary staff task (0.9, 0.8, 0.7, 0.6, 0.5)
-    if primary_staff_task:
-        pid = primary_staff_task["id"]
-        plabel = _task_label(process_json, pid)
-        for mult in [0.9, 0.8, 0.7, 0.6, 0.5]:
-            proc, change = _speed_up_task(process_json, pid, multiplier=mult)
-            if proc:
-                pct = int(round((1.0 - mult) * 100))
-                label = f"Speed up {plabel} by {pct}%"
-                definition = {"label": label, "resourceChanges": [], "nodeChanges": [change]}
-                candidates_to_test.append({"label": label, "proc": proc, "definition": definition, "category": "duration", "staff_delta": 0, "min_mult": mult})
+        util_entries = []
+        for r in res_list:
+            r_id = str(r.get("id") or r.get("name") or "").strip()
+            r_name = str(r.get("name") or r.get("displayName") or r_id).strip()
+            u = None
+            for uk, uv in res_utilizations.items():
+                if uk.lower() == r_name.lower() or uk.lower() == r_id.lower():
+                    u = uv
+                    break
+            if u is None:
+                u = 0.0
+            util_entries.append((r, r_id, r_name, u))
 
-    # 3. Duration multiplier on secondary staff task (if distinct from primary and contribution > 0)
-    if len(eligible_staff_tasks) > 1:
-        sec_task = eligible_staff_tasks[1]
-        if sec_task["id"] != (primary_staff_task["id"] if primary_staff_task else None):
-            s_pid = sec_task["id"]
-            s_label = _task_label(process_json, s_pid)
-            for mult in [0.8, 0.6, 0.5]:
-                proc, change = _speed_up_task(process_json, s_pid, multiplier=mult)
+        # Sort by utilization ascending
+        util_entries.sort(key=lambda x: x[3])
+
+        # 1. Resource count reductions for under-utilized resources
+        found_cost_lever = False
+        for r, r_id, r_name, u in util_entries:
+            qty = int(r.get("quantity", 1))
+            if qty >= 2 and (u < 40.0 or not found_cost_lever):
+                proc, change = _reduce_resource(process_json, r_id, delta=1)
                 if proc:
-                    pct = int(round((1.0 - mult) * 100))
-                    label = f"Speed up {s_label} by {pct}%"
-                    definition = {"label": label, "resourceChanges": [], "nodeChanges": [change]}
-                    candidates_to_test.append({"label": label, "proc": proc, "definition": definition, "category": "duration", "staff_delta": 0, "min_mult": mult})
+                    label = f"Remove 1 {r_name} (utilization {u}%)"
+                    action = f"Remove 1 {r_name} (utilization {u}%)"
+                    how_to = f"Downsize {r_name} count from {qty} to {qty - 1} based on low {u}% utilization, cutting idle staffing cost."
+                    definition = {
+                        "label": label,
+                        "action": action,
+                        "how_to_do": how_to,
+                        "option_type": "realistic",
+                        "resourceChanges": [change],
+                        "nodeChanges": []
+                    }
+                    candidates_to_test.append({
+                        "label": label,
+                        "action": action,
+                        "how_to_do": how_to,
+                        "proc": proc,
+                        "definition": definition,
+                        "category": "staffing",
+                        "staff_delta": -1,
+                        "min_mult": 1.0,
+                        "option_type": "realistic",
+                        "is_realistic": True
+                    })
+                    found_cost_lever = True
 
-    # 4. Duration multiplier on ALL eligible staff tasks (if >1 eligible staff tasks exist)
-    if len(eligible_staff_tasks) > 1:
-        for mult in [0.8, 0.7, 0.6, 0.5]:
-            mult_map = {t["id"]: mult for t in eligible_staff_tasks}
-            proc, changes = _speed_up_multiple_tasks(process_json, mult_map)
+            if qty >= 3 and u < 25.0:
+                proc, change = _reduce_resource(process_json, r_id, delta=2)
+                if proc:
+                    label = f"Remove 2 {r_name} (utilization {u}%)"
+                    action = f"Remove 2 {r_name} (utilization {u}%)"
+                    how_to = f"Downsize {r_name} count from {qty} to {qty - 2} due to very low {u}% utilization."
+                    definition = {
+                        "label": label,
+                        "action": action,
+                        "how_to_do": how_to,
+                        "option_type": "realistic",
+                        "resourceChanges": [change],
+                        "nodeChanges": []
+                    }
+                    candidates_to_test.append({
+                        "label": label,
+                        "action": action,
+                        "how_to_do": how_to,
+                        "proc": proc,
+                        "definition": definition,
+                        "category": "staffing",
+                        "staff_delta": -2,
+                        "min_mult": 1.0,
+                        "option_type": "realistic",
+                        "is_realistic": True
+                    })
+
+        # 2. Shift and overtime reductions
+        for r, r_id, r_name, u in util_entries:
+            curr_hours = safe_float(r.get("hours_per_day"), 8.0)
+            if curr_hours > 8.0:
+                proc, change = _reduce_resource_shift(process_json, r_id, new_hours=8.0)
+                if proc:
+                    label = f"Eliminate overtime for {r_name} (from {int(curr_hours)}h to 8h/day)"
+                    action = f"Eliminate overtime for {r_name}"
+                    how_to = f"Cap {r_name} shift at 8 hours/day to eliminate overtime pay premiums."
+                    definition = {
+                        "label": label,
+                        "action": action,
+                        "how_to_do": how_to,
+                        "option_type": "realistic",
+                        "resourceChanges": [change],
+                        "nodeChanges": []
+                    }
+                    candidates_to_test.append({
+                        "label": label,
+                        "action": action,
+                        "how_to_do": how_to,
+                        "proc": proc,
+                        "definition": definition,
+                        "category": "shifts",
+                        "staff_delta": 0,
+                        "min_mult": 1.0,
+                        "option_type": "realistic",
+                        "is_realistic": True
+                    })
+                    found_cost_lever = True
+            elif int(r.get("quantity", 1)) == 1 and u < 40.0:
+                proc, change = _reduce_resource_shift(process_json, r_id, new_hours=4.0)
+                if proc:
+                    label = f"Shift {r_name} to part-time (4h/day, utilization {u}%)"
+                    action = f"Transition {r_name} to part-time 4-hour shift"
+                    how_to = f"Shift {r_name} schedule to part-time (4 hours/day) to match low {u}% workload."
+                    definition = {
+                        "label": label,
+                        "action": action,
+                        "how_to_do": how_to,
+                        "option_type": "realistic",
+                        "resourceChanges": [change],
+                        "nodeChanges": []
+                    }
+                    candidates_to_test.append({
+                        "label": label,
+                        "action": action,
+                        "how_to_do": how_to,
+                        "proc": proc,
+                        "definition": definition,
+                        "category": "shifts",
+                        "staff_delta": 0,
+                        "min_mult": 1.0,
+                        "option_type": "realistic",
+                        "is_realistic": True
+                    })
+                    found_cost_lever = True
+
+        if not found_cost_lever and util_entries:
+            r, r_id, r_name, u = util_entries[0]
+            proc, change = _reduce_resource_shift(process_json, r_id, new_hours=4.0)
             if proc:
-                pct = int(round((1.0 - mult) * 100))
-                label = f"Speed up all staff tasks by {pct}%"
-                definition = {"label": label, "resourceChanges": [], "nodeChanges": changes}
-                candidates_to_test.append({"label": label, "proc": proc, "definition": definition, "category": "duration", "staff_delta": 0, "min_mult": mult})
+                label = f"Shift {r_name} to part-time (4h/day, utilization {u}%)"
+                action = f"Transition {r_name} to part-time 4-hour shift"
+                how_to = f"Shift {r_name} schedule to part-time (4 hours/day) to reduce payroll."
+                definition = {
+                    "label": label,
+                    "action": action,
+                    "how_to_do": how_to,
+                    "option_type": "realistic",
+                    "resourceChanges": [change],
+                    "nodeChanges": []
+                }
+                candidates_to_test.append({
+                    "label": label,
+                    "action": action,
+                    "how_to_do": how_to,
+                    "proc": proc,
+                    "definition": definition,
+                    "category": "shifts",
+                    "staff_delta": 0,
+                    "min_mult": 1.0,
+                    "option_type": "realistic",
+                    "is_realistic": True
+                })
 
-    # 5. Combinations (+1..+3 staff AND 0.8..0.5 duration multiplier) — ONLY when waiting > 0
-    if not waiting_is_zero and resource_name and primary_staff_task:
-        pid = primary_staff_task["id"]
-        plabel = _task_label(process_json, pid)
-        for delta in [1, 2]:
-            for mult in [0.8, 0.6]:
-                proc1, rchange = _add_resource(process_json, resource_name, delta=delta)
-                if not proc1:
-                    continue
-                proc2, nchange = _speed_up_task(proc1, pid, multiplier=mult)
+        # Bottleneck task speed-up with concrete lever only (Rule 1)
+        if primary_staff_task:
+            pid = primary_staff_task["id"]
+            plabel = _task_label(process_json, pid)
+            lever = _concrete_lever_for_task(plabel)
+            proc, change = _speed_up_task(process_json, pid, multiplier=lever["mult"])
+            if proc:
+                label = f"{lever['action']} ({lever['speedup_pct']}% faster)"
+                action = lever["action"]
+                how_to = lever["how_to_do"]
+                definition = {
+                    "label": label,
+                    "action": action,
+                    "how_to_do": how_to,
+                    "option_type": "realistic",
+                    "resourceChanges": [],
+                    "nodeChanges": [change]
+                }
+                candidates_to_test.append({
+                    "label": label,
+                    "action": action,
+                    "how_to_do": how_to,
+                    "proc": proc,
+                    "definition": definition,
+                    "category": "duration",
+                    "staff_delta": 0,
+                    "min_mult": lever["mult"],
+                    "option_type": "realistic",
+                    "is_realistic": True
+                })
+
+    else:
+        # Non-cost goals (waiting, cycle_time, throughput)
+        # 1. Staffing additions on bottleneck (+1, +2) — ONLY when waiting > 0
+        if not waiting_is_zero and resource_name:
+            for delta in [1, 2]:
+                proc, change = _add_resource(process_json, resource_name, delta=delta)
+                if proc:
+                    label = f"Add {delta} {change['name']}"
+                    action = f"Add {delta} {change['name']} to active shift"
+                    how_to = f"Schedule {delta} additional {change['name']} to relieve the bottleneck and reduce queue times."
+                    definition = {
+                        "label": label,
+                        "action": action,
+                        "how_to_do": how_to,
+                        "option_type": "realistic",
+                        "resourceChanges": [change],
+                        "nodeChanges": []
+                    }
+                    candidates_to_test.append({
+                        "label": label,
+                        "action": action,
+                        "how_to_do": how_to,
+                        "proc": proc,
+                        "definition": definition,
+                        "category": "staffing",
+                        "staff_delta": delta,
+                        "min_mult": 1.0,
+                        "option_type": "realistic",
+                        "is_realistic": True
+                    })
+
+        # 2. Speed up ONLY bottleneck task with concrete lever capped at 20-25% (Rule 1)
+        if primary_staff_task:
+            pid = primary_staff_task["id"]
+            plabel = _task_label(process_json, pid)
+            lever = _concrete_lever_for_task(plabel)
+            proc, change = _speed_up_task(process_json, pid, multiplier=lever["mult"])
+            if proc:
+                label = f"{lever['action']} ({lever['speedup_pct']}% faster)"
+                action = lever["action"]
+                how_to = lever["how_to_do"]
+                definition = {
+                    "label": label,
+                    "action": action,
+                    "how_to_do": how_to,
+                    "option_type": "realistic",
+                    "resourceChanges": [],
+                    "nodeChanges": [change]
+                }
+                candidates_to_test.append({
+                    "label": label,
+                    "action": action,
+                    "how_to_do": how_to,
+                    "proc": proc,
+                    "definition": definition,
+                    "category": "duration",
+                    "staff_delta": 0,
+                    "min_mult": lever["mult"],
+                    "option_type": "realistic",
+                    "is_realistic": True
+                })
+
+            # What-if candidate: theoretical speed-up beyond 25% without concrete lever (Rule 4)
+            proc_whatif, change_whatif = _speed_up_task(process_json, pid, multiplier=0.6)
+            if proc_whatif:
+                wi_label = f"What-if: Speed up {plabel} by 40% (needs custom redesign)"
+                wi_action = f"Theoretical 40% speed-up on {plabel}"
+                wi_how_to = f"What-if scenario requiring custom operational redesign to achieve 40% faster processing on {plabel}."
+                definition_wi = {
+                    "label": wi_label,
+                    "action": wi_action,
+                    "how_to_do": wi_how_to,
+                    "option_type": "what_if",
+                    "resourceChanges": [],
+                    "nodeChanges": [change_whatif]
+                }
+                candidates_to_test.append({
+                    "label": wi_label,
+                    "action": wi_action,
+                    "how_to_do": wi_how_to,
+                    "proc": proc_whatif,
+                    "definition": definition_wi,
+                    "category": "duration",
+                    "staff_delta": 0,
+                    "min_mult": 0.6,
+                    "option_type": "what_if",
+                    "is_realistic": False
+                })
+
+        # 3. Combinations (+1 staff AND concrete lever speedup) — ONLY when waiting > 0
+        if not waiting_is_zero and resource_name and primary_staff_task:
+            pid = primary_staff_task["id"]
+            plabel = _task_label(process_json, pid)
+            lever = _concrete_lever_for_task(plabel)
+            proc1, rchange = _add_resource(process_json, resource_name, delta=1)
+            if proc1:
+                proc2, nchange = _speed_up_task(proc1, pid, multiplier=lever["mult"])
                 if proc2:
-                    pct = int(round((1.0 - mult) * 100))
-                    label = f"Add {delta} {rchange['name']} and speed up {plabel} by {pct}%"
-                    definition = {"label": label, "resourceChanges": [rchange], "nodeChanges": [nchange]}
-                    candidates_to_test.append({"label": label, "proc": proc2, "definition": definition, "category": "combined", "staff_delta": delta, "min_mult": mult})
+                    label = f"Add 1 {rchange['name']} and {lever['action']}"
+                    action = f"Add 1 {rchange['name']} and {lever['action']}"
+                    how_to = f"Add 1 {rchange['name']} while implementing {lever['how_to_do']}"
+                    definition = {
+                        "label": label,
+                        "action": action,
+                        "how_to_do": how_to,
+                        "option_type": "realistic",
+                        "resourceChanges": [rchange],
+                        "nodeChanges": [nchange]
+                    }
+                    candidates_to_test.append({
+                        "label": label,
+                        "action": action,
+                        "how_to_do": how_to,
+                        "proc": proc2,
+                        "definition": definition,
+                        "category": "combined",
+                        "staff_delta": 1,
+                        "min_mult": lever["mult"],
+                        "option_type": "realistic",
+                        "is_realistic": True
+                    })
 
     # Run simulations for candidate options
     tested_candidates = []
     seen_labels = set()
+    base_wait = baseline["avg_wait_time"]
+    base_cycle = baseline["avg_cycle_time"]
+
     for item in candidates_to_test:
         if item["label"] in seen_labels:
             continue
@@ -483,8 +849,46 @@ def run_experiment(process_json, config, goal, run_process, target=None):
         task_changes = compute_task_changes(process_json, item["proc"])
         item["definition"]["resource_changes"] = res_changes
         item["definition"]["task_changes"] = task_changes
+
+        # Rule 2: Evaluate trade-offs (+15% limit on waiting or total cycle time)
+        cand_wait = metrics["avg_wait_time"]
+        cand_cycle = metrics["avg_cycle_time"]
+
+        wait_deg_pct = 0.0
+        if base_wait >= 0.05:
+            wait_deg_pct = ((cand_wait - base_wait) / base_wait) * 100.0
+        elif cand_wait > 1.0:
+            wait_deg_pct = (cand_wait / max(base_cycle, 1.0)) * 100.0
+
+        cycle_deg_pct = 0.0
+        if base_cycle > 0:
+            cycle_deg_pct = ((cand_cycle - base_cycle) / base_cycle) * 100.0
+
+        trade_off_exceeded = False
+        if wait_deg_pct > 15.0 or cycle_deg_pct > 15.0:
+            trade_off_exceeded = True
+
+        is_realistic = item.get("is_realistic", True) and not trade_off_exceeded
+        option_type = "what_if" if not is_realistic else item.get("option_type", "realistic")
+
+        wait_delta_abs = round(cand_wait - base_wait, 1)
+        if trade_off_exceeded:
+            trade_off_summary = f"Wait time worsens by +{wait_delta_abs} min (+{round(wait_deg_pct, 1)}%) [exceeds +15% limit]"
+        elif abs(wait_delta_abs) >= 0.05:
+            sign = "+" if wait_delta_abs > 0 else ""
+            trade_off_summary = f"Wait time: {sign}{wait_delta_abs} min ({sign}{round(wait_deg_pct, 1)}%)"
+        else:
+            trade_off_summary = "Wait time unchanged"
+
+        item["definition"]["option_type"] = option_type
+        item["definition"]["is_realistic"] = is_realistic
+        item["definition"]["trade_off_exceeded"] = trade_off_exceeded
+        item["definition"]["trade_off_summary"] = trade_off_summary
+
         tested_candidates.append({
             "label": item["label"],
+            "action": item.get("action", item["label"]),
+            "how_to_do": item.get("how_to_do", ""),
             "metrics": metrics,
             "delta_vs_baseline": delta_vs,
             "improvement_pct": round(impr, 2),
@@ -494,6 +898,10 @@ def run_experiment(process_json, config, goal, run_process, target=None):
             "category": item["category"],
             "staff_delta": item["staff_delta"],
             "min_mult": item["min_mult"],
+            "option_type": option_type,
+            "is_realistic": is_realistic,
+            "trade_off_exceeded": trade_off_exceeded,
+            "trade_off_summary": trade_off_summary,
         })
 
     # Evaluate against target
@@ -504,17 +912,55 @@ def run_experiment(process_json, config, goal, run_process, target=None):
     best_candidate = None
 
     wait_str = "waiting is 0" if baseline["avg_wait_time"] < 0.05 else f"waiting is {baseline['avg_wait_time']:.1f} min"
+    realistic_candidates = [c for c in tested_candidates if c["is_realistic"] and not c["trade_off_exceeded"]]
+    max_realistic_saving = max((c["improvement_pct"] for c in realistic_candidates), default=0.0)
 
     if tested_candidates:
         best_measured = max(c["improvement_pct"] for c in tested_candidates)
         ceiling_pct = min(100.0, max(ceiling_pct, round(best_measured, 1)))
 
     if target_pct is not None:
-        if target_metric == "cycle_time" and target_pct > (ceiling_pct + 0.1):
+        if is_cost_goal:
+            # Rule 2 & 3: For cost goals, test realistic levers first.
+            # If target can't be reached realistically, say so plainly.
+            reaching_realistic = [c for c in realistic_candidates if c["improvement_pct"] >= (target_pct - 0.5)]
+            if reaching_realistic:
+                reaching_realistic.sort(key=lambda c: (
+                    c["metrics"]["total_cost"],
+                    c["delta_vs_baseline"]["cost_abs"],
+                    -c["improvement_pct"],
+                ))
+                best_candidate = reaching_realistic[0]
+                target_met = True
+                achieved_pct = best_candidate["improvement_pct"]
+            else:
+                target_met = False
+                achieved_pct = max_realistic_saving
+                positive_realistic = [c for c in realistic_candidates if c["improvement_pct"] > 0]
+                if positive_realistic:
+                    best_candidate = max(positive_realistic, key=lambda c: c["improvement_pct"])
+                elif realistic_candidates:
+                    best_candidate = max(realistic_candidates, key=lambda c: c["improvement_pct"])
+                else:
+                    best_candidate = tested_candidates[0] if tested_candidates else None
+
+                if best_candidate:
+                    best_candidate["recommended"] = False
+
+                reason = (
+                    f"The maximum realistic cost saving is {max_realistic_saving}%, short of your {target_pct}% target. "
+                    f"Reaching a {target_pct}% reduction would require cutting core operational staff beyond safe limits, "
+                    f"which degrades patient wait times by more than the acceptable +15% threshold."
+                )
+                realism = f"Reaching {target_pct}% cost reduction requires cutting essential staff or eliminating clinical departments, which degrades wait times by >15%."
+
+        elif target_metric == "cycle_time" and target_pct > (ceiling_pct + 0.1):
             # Target exceeds honest ceiling!
-            best_candidate = max(tested_candidates, key=lambda c: c["improvement_pct"]) if tested_candidates else None
+            best_candidate = max(realistic_candidates, key=lambda c: c["improvement_pct"]) if realistic_candidates else (tested_candidates[0] if tested_candidates else None)
             target_met = False
             achieved_pct = best_candidate["improvement_pct"] if best_candidate else 0.0
+            if best_candidate:
+                best_candidate["recommended"] = False
 
             reason = (
                 f"Staff-handled steps are only {round(X, 1)} of {round(Y, 1)} minutes, "
@@ -532,9 +978,8 @@ def run_experiment(process_json, config, goal, run_process, target=None):
             else:
                 realism = "all steps are customer-paced or fixed and cannot be accelerated by staff"
         else:
-            reaching = [c for c in tested_candidates if c["improvement_pct"] >= (target_pct - 0.5)]
+            reaching = [c for c in realistic_candidates if c["improvement_pct"] >= (target_pct - 0.5)]
             if reaching:
-                # Pick lowest-cost option that reaches target
                 reaching.sort(key=lambda c: (
                     c["metrics"]["total_cost"],
                     c["delta_vs_baseline"]["cost_abs"],
@@ -549,10 +994,11 @@ def run_experiment(process_json, config, goal, run_process, target=None):
                     names = ", ".join([f'"{_task_label(process_json, nc["id"])}"' for nc in best_candidate["definition"]["nodeChanges"]])
                     realism = f"requires steps {names} to be {pct}% faster"
             else:
-                # Nothing reaches target: pick highest achievable
-                best_candidate = max(tested_candidates, key=lambda c: c["improvement_pct"]) if tested_candidates else None
+                best_candidate = max(realistic_candidates, key=lambda c: c["improvement_pct"]) if realistic_candidates else (tested_candidates[0] if tested_candidates else None)
                 target_met = False
                 achieved_pct = best_candidate["improvement_pct"] if best_candidate else 0.0
+                if best_candidate:
+                    best_candidate["recommended"] = False
 
                 work_time = round(max(0.0, baseline["avg_cycle_time"] - baseline["avg_wait_time"]), 1)
                 best_wait = round(best_candidate["metrics"]["avg_wait_time"], 1) if best_candidate else 0.0
@@ -578,25 +1024,27 @@ def run_experiment(process_json, config, goal, run_process, target=None):
                     reason = f"the best achievable result under tested configurations is a {achieved_pct}% improvement"
                     realism = None
     else:
-        # No target given -> choose best according to goal
-        best_candidate = _choose_best(tested_candidates, goal)
+        # No target given -> choose best realistic candidate
+        best_candidate = _choose_best(realistic_candidates or tested_candidates, goal)
         target_met = True
         achieved_pct = best_candidate["improvement_pct"] if best_candidate else 0.0
 
     # Meaningful change check:
     # No "Recommended" badge unless goal metric improves by >= 5% with non-overlapping intervals
-    # and is NOT identical to baseline.
+    # and is NOT identical to baseline, and candidate is realistic.
     is_meaningful = False
     if best_candidate is not None:
         impr = best_candidate.get("improvement_pct", 0.0)
         is_identical = _is_identical_to_baseline(best_candidate["metrics"], baseline)
-        if impr >= 5.0 and not is_identical:
+        is_real = best_candidate.get("is_realistic", True) and not best_candidate.get("trade_off_exceeded", False)
+        if impr >= 5.0 and not is_identical and is_real and (target_pct is None or target_met is True):
             is_meaningful = True
 
     if not is_meaningful:
         if best_candidate:
             best_candidate["recommended"] = False
-        target_met = False
+        if target_met is not True:
+            target_met = False
         if not reason:
             if waiting_is_zero:
                 reason = "No option changed your cycle time; nobody waits at this load and work steps cannot be reduced further."
@@ -616,8 +1064,8 @@ def run_experiment(process_json, config, goal, run_process, target=None):
         selected_definitions.append(best_candidate["definition"])
         seen_candidate_labels.add(best_candidate["label"])
 
-    for cat in ["staffing", "duration", "combined"]:
-        cat_candidates = [c for c in tested_candidates if c["category"] == cat and c["label"] not in seen_candidate_labels]
+    for cat in ["staffing", "shifts", "duration", "combined"]:
+        cat_candidates = [c for c in realistic_candidates if c["category"] == cat and c["label"] not in seen_candidate_labels]
         if cat_candidates:
             cat_candidates.sort(key=lambda c: -c["improvement_pct"])
             pick = cat_candidates[0]
@@ -626,9 +1074,18 @@ def run_experiment(process_json, config, goal, run_process, target=None):
                 selected_definitions.append(pick["definition"])
                 seen_candidate_labels.add(pick["label"])
 
-    remaining = [c for c in tested_candidates if c["label"] not in seen_candidate_labels]
-    remaining.sort(key=lambda c: -c["improvement_pct"])
-    for pick in remaining:
+    remaining_real = [c for c in realistic_candidates if c["label"] not in seen_candidate_labels]
+    remaining_real.sort(key=lambda c: -c["improvement_pct"])
+    for pick in remaining_real:
+        if len(selected_variants) >= 4:
+            break
+        selected_variants.append(pick)
+        selected_definitions.append(pick["definition"])
+        seen_candidate_labels.add(pick["label"])
+
+    what_if_candidates = [c for c in tested_candidates if not c["is_realistic"] and c["label"] not in seen_candidate_labels]
+    what_if_candidates.sort(key=lambda c: -c["improvement_pct"])
+    for pick in what_if_candidates:
         if len(selected_variants) >= 4:
             break
         selected_variants.append(pick)
@@ -638,10 +1095,17 @@ def run_experiment(process_json, config, goal, run_process, target=None):
     variants_formatted = [
         {
             "label": v["label"],
+            "action": v.get("action", v["label"]),
+            "how_to_do": v.get("how_to_do", ""),
+            "option_type": v.get("option_type", "realistic"),
+            "is_realistic": v.get("is_realistic", True),
+            "trade_off_exceeded": v.get("trade_off_exceeded", False),
+            "trade_off_summary": v.get("trade_off_summary", ""),
             "metrics": v["metrics"],
             "delta_vs_baseline": v["delta_vs_baseline"],
             "resource_changes": v.get("resource_changes", []),
             "task_changes": v.get("task_changes", []),
+            "recommended": v.get("recommended", False),
         }
         for v in selected_variants
     ]
@@ -650,12 +1114,18 @@ def run_experiment(process_json, config, goal, run_process, target=None):
     if best_candidate:
         best_formatted = {
             "label": best_candidate["label"],
+            "action": best_candidate.get("action", best_candidate["label"]),
+            "how_to_do": best_candidate.get("how_to_do", ""),
+            "option_type": best_candidate.get("option_type", "realistic"),
+            "is_realistic": best_candidate.get("is_realistic", True),
+            "trade_off_exceeded": best_candidate.get("trade_off_exceeded", False),
+            "trade_off_summary": best_candidate.get("trade_off_summary", ""),
             "metrics": best_candidate["metrics"],
             "delta_vs_baseline": best_candidate["delta_vs_baseline"],
             "resource_changes": best_candidate.get("resource_changes", []),
             "task_changes": best_candidate.get("task_changes", []),
             "variant_definition": best_candidate["definition"],
-            "recommended": is_meaningful,
+            "recommended": is_meaningful and best_candidate.get("recommended", False),
         }
 
     return {

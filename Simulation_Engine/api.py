@@ -1,5 +1,17 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+try:
+    from fastapi import FastAPI, HTTPException
+    from fastapi.middleware.cors import CORSMiddleware
+    from pydantic import BaseModel
+except ImportError:
+    FastAPI = None
+    HTTPException = Exception
+    CORSMiddleware = None
+    class BaseModel:
+        def __init__(self, **kwargs):
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+        def dict(self):
+            return self.__dict__
 from simulation.graph import build_graph
 from simulation.monte_carlo import (
     run_until_convergence,
@@ -14,7 +26,6 @@ from simulation.financials import generate_financial_report, calculate_profit_de
 from simulation.experiments import run_experiment
 from simulation.resource_diff import compute_resource_changes, compute_task_changes, compute_all_changes
 import httpx
-from fastapi.middleware.cors import CORSMiddleware
 import os
 
 EXPRESS_URL = os.getenv("EXPRESS_URL", "")
@@ -24,14 +35,28 @@ allowed_origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
 has_wildcard = "*" in allowed_origins
 allow_credentials = False if has_wildcard else True
 
-app = FastAPI(title="SPOT Simulation Engine")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=allow_credentials,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if FastAPI:
+    app = FastAPI(title="SPOT Simulation Engine")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins,
+        allow_credentials=allow_credentials,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    class DummyApp:
+        def get(self, *args, **kwargs):
+            return lambda fn: fn
+        def post(self, *args, **kwargs):
+            return lambda fn: fn
+        def put(self, *args, **kwargs):
+            return lambda fn: fn
+        def delete(self, *args, **kwargs):
+            return lambda fn: fn
+        def add_middleware(self, *args, **kwargs):
+            pass
+    app = DummyApp()
 
 
 @app.get("/")

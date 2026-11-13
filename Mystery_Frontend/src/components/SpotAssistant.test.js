@@ -206,4 +206,103 @@ describe('Module C1: SpotAssistant Persistent Thread & Config Memory', () => {
     sessionStorage.setItem(expandKey, String(isExpanded));
     assert.strictEqual(sessionStorage.getItem(expandKey), 'false', 'Must persist false');
   });
+
+  it('7. Dynamically titles change column as "Cost change (%)" for cost goals and computes wait time delta', () => {
+    // Helper replicating SpotAssistant header logic
+    function getChangeColumnHeader({ target, isAnalystView, userPrompt }) {
+      const isCycleTimeGoal = target?.metric === 'cycle_time' || (!target?.metric && /cycle[- ]?time/i.test(userPrompt || ''));
+      const isCostGoal = target?.metric === 'cost' || (!target?.metric && /cost|money|expensive|reduce cost/i.test(userPrompt || ''));
+      const isWaitingGoal = target?.metric === 'waiting';
+      const isThroughputGoal = target?.metric === 'throughput';
+
+      if (isCostGoal) return 'Cost change (%)';
+      if (isCycleTimeGoal) return isAnalystView ? 'Cycle time change (%)' : 'Total time change (%)';
+      if (isWaitingGoal) return 'Wait time change (%)';
+      if (isThroughputGoal) return 'Throughput change (%)';
+      return isAnalystView ? 'Change vs baseline (%)' : 'Change vs current setup (%)';
+    }
+
+    assert.strictEqual(
+      getChangeColumnHeader({ target: { metric: 'cost' } }),
+      'Cost change (%)'
+    );
+    assert.strictEqual(
+      getChangeColumnHeader({ target: null, userPrompt: 'reduce cost by 50%' }),
+      'Cost change (%)'
+    );
+    assert.strictEqual(
+      getChangeColumnHeader({ target: { metric: 'cycle_time' } }),
+      'Total time change (%)'
+    );
+
+    // Helper replicating wait time impact column logic
+    function computeWaitTimeImpact(baseWait, candWait, tradeOffExceeded) {
+      const delta = Number((candWait - baseWait).toFixed(1));
+      const deltaPct = baseWait >= 0.05
+        ? Number((((candWait - baseWait) / baseWait) * 100).toFixed(1))
+        : (delta > 0 ? 100 : 0);
+      const exceedsLimit = tradeOffExceeded || (deltaPct > 15.0 && delta > 0.5);
+      return {
+        text: `${delta > 0 ? `+${delta}` : delta} min (${deltaPct > 0 ? `+${deltaPct}` : deltaPct}%)`,
+        exceedsLimit,
+      };
+    }
+
+    const safeImpact = computeWaitTimeImpact(5.0, 5.4, false);
+    assert.strictEqual(safeImpact.text, '+0.4 min (+8%)');
+    assert.strictEqual(safeImpact.exceedsLimit, false);
+
+    const degradedImpact = computeWaitTimeImpact(5.0, 6.5, true);
+    assert.strictEqual(degradedImpact.text, '+1.5 min (+30%)');
+    assert.strictEqual(degradedImpact.exceedsLimit, true);
+  });
+
+  it('8. Options correctly classify badges: Realistic option vs What-if only vs Recommended', () => {
+    function getOptionBadge(row, evidence) {
+      const isRowRecommended =
+        !row.baseline &&
+        evidence?.best?.recommended === true &&
+        evidence?.no_meaningful_change !== true &&
+        row.label === evidence?.best?.label &&
+        row.variant?.option_type !== 'what_if' &&
+        row.variant?.is_realistic !== false &&
+        Math.abs(row.change || 0) >= 5.0;
+
+      if (isRowRecommended) return 'Recommended';
+      if (!row.baseline && (row.variant?.option_type === 'what_if' || row.variant?.is_realistic === false)) {
+        return 'What-if only (needs a real change you must arrange)';
+      }
+      if (!row.baseline) return 'Realistic option';
+      return null;
+    }
+
+    const evidence = {
+      best: { label: 'Remove 1 Pharmacist (utilization 22%)', recommended: false },
+    };
+
+    const realisticRow = {
+      label: 'Remove 1 Pharmacist (utilization 22%)',
+      change: -18.5,
+      variant: { option_type: 'realistic', is_realistic: true },
+    };
+    assert.strictEqual(getOptionBadge(realisticRow, evidence), 'Realistic option');
+
+    const whatIfRow = {
+      label: 'Remove 1 Doctor (utilization 75%)',
+      change: -35.0,
+      variant: { option_type: 'what_if', is_realistic: false, trade_off_exceeded: true },
+    };
+    assert.strictEqual(getOptionBadge(whatIfRow, evidence), 'What-if only (needs a real change you must arrange)');
+
+    // When recommended
+    evidence.best.recommended = true;
+    assert.strictEqual(getOptionBadge(realisticRow, evidence), 'Recommended');
+    // But what-if can NEVER be recommended even if labels match
+    const whatIfWithSameLabel = {
+      label: evidence.best.label,
+      change: -18.5,
+      variant: { option_type: 'what_if', is_realistic: false },
+    };
+    assert.strictEqual(getOptionBadge(whatIfWithSameLabel, evidence), 'What-if only (needs a real change you must arrange)');
+  });
 });

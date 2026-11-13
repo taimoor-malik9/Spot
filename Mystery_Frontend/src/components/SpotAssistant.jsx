@@ -891,9 +891,33 @@ function EvidenceCard({ evidenceMsg, isExpanded, onApplyVariant, onOpenScenario 
     evidence?.target?.metric === 'cycle_time' ||
     (target?.metric !== 'waiting' && target?.metric !== 'throughput' && target?.metric !== 'cost' && (evidenceMsg?.userPrompt && /cycle[- ]?time/i.test(evidenceMsg.userPrompt)));
 
+  const isCostGoal =
+    target?.metric === 'cost' ||
+    evidence?.target?.metric === 'cost' ||
+    (!target?.metric && /cost|money|expensive|reduce cost/i.test(evidenceMsg?.userPrompt || ''));
+
+  const isWaitingGoal =
+    target?.metric === 'waiting' ||
+    evidence?.target?.metric === 'waiting';
+
+  const isThroughputGoal =
+    target?.metric === 'throughput' ||
+    evidence?.target?.metric === 'throughput';
+
+  let changeColumnHeader = isAnalystView ? 'Change vs baseline (%)' : 'Change vs current setup (%)';
+  if (isCostGoal) {
+    changeColumnHeader = 'Cost change (%)';
+  } else if (isCycleTimeGoal) {
+    changeColumnHeader = isAnalystView ? 'Cycle time change (%)' : 'Total time change (%)';
+  } else if (isWaitingGoal) {
+    changeColumnHeader = 'Wait time change (%)';
+  } else if (isThroughputGoal) {
+    changeColumnHeader = 'Throughput change (%)';
+  }
+
   const getMetricChange = (variant) => {
     if (!variant || !variant.delta_vs_baseline) return null;
-    const metric = target?.metric || (isCycleTimeGoal ? 'cycle_time' : 'waiting');
+    const metric = target?.metric || (isCostGoal ? 'cost' : (isCycleTimeGoal ? 'cycle_time' : 'waiting'));
     if (metric === 'cycle_time') return variant.delta_vs_baseline.cycle_time_pct;
     if (metric === 'throughput') return variant.delta_vs_baseline.throughput_pct ?? variant.delta_vs_baseline.wait_pct;
     if (metric === 'cost') {
@@ -908,12 +932,26 @@ function EvidenceCard({ evidenceMsg, isExpanded, onApplyVariant, onOpenScenario 
   const rows = evidence
     ? [
         { label: isAnalystView ? 'Baseline' : 'Current setup', metrics: evidence.baseline, change: null, baseline: true },
-        ...evidence.variants.map((variant) => ({
-          label: variant.label,
-          metrics: variant.metrics,
-          change: getMetricChange(variant),
-          variant,
-        })),
+        ...evidence.variants.map((variant) => {
+          const matchingDef = evidence?.variant_definitions?.find((d) => d.label === variant.label || d.name === variant.label);
+          const fullVariant = {
+            ...variant,
+            action: variant.action || matchingDef?.action || variant.label,
+            how_to_do: variant.how_to_do || matchingDef?.how_to_do,
+            option_type: variant.option_type || matchingDef?.option_type || 'realistic',
+            is_realistic: variant.is_realistic ?? matchingDef?.is_realistic ?? true,
+            trade_off_exceeded: variant.trade_off_exceeded ?? matchingDef?.trade_off_exceeded ?? false,
+            trade_off_summary: variant.trade_off_summary || matchingDef?.trade_off_summary || '',
+          };
+          return {
+            label: variant.label,
+            action: fullVariant.action,
+            how_to_do: fullVariant.how_to_do,
+            metrics: variant.metrics,
+            change: getMetricChange(variant),
+            variant: fullVariant,
+          };
+        }),
       ]
     : [];
 
@@ -1038,7 +1076,7 @@ function EvidenceCard({ evidenceMsg, isExpanded, onApplyVariant, onOpenScenario 
         <table
           style={{
             width: '100%',
-            minWidth: isExpanded ? 720 : 600,
+            minWidth: isExpanded ? 820 : 700,
             borderCollapse: 'collapse',
             fontSize: isExpanded ? 13.5 : 12.5,
           }}
@@ -1047,8 +1085,9 @@ function EvidenceCard({ evidenceMsg, isExpanded, onApplyVariant, onOpenScenario 
             <tr style={{ background: '#f8fafc', color: '#475569', textAlign: 'left' }}>
               <th style={{ padding: '10px 12px' }}>Option</th>
               <th style={{ padding: '10px 8px' }}>Avg wait time</th>
+              <th style={{ padding: '10px 8px' }}>Wait time change</th>
               <th style={{ padding: '10px 8px' }}>Total time per patient (start to finish)</th>
-              <th style={{ padding: '10px 8px' }}>{isAnalystView ? 'Change vs baseline (%)' : 'Change vs current setup (%)'}</th>
+              <th style={{ padding: '10px 8px' }}>{changeColumnHeader}</th>
               <th style={{ padding: '10px 8px' }}>{isAnalystView ? 'Throughput' : <Hint term="throughput">Customers served / hr</Hint>}</th>
               <th style={{ padding: '10px 8px' }}>Cost for this run</th>
               <th style={{ padding: '10px 12px' }} />
@@ -1061,6 +1100,8 @@ function EvidenceCard({ evidenceMsg, isExpanded, onApplyVariant, onOpenScenario 
                 evidence?.best?.recommended === true &&
                 evidence?.no_meaningful_change !== true &&
                 row.label === recommendedLabel &&
+                row.variant?.option_type !== 'what_if' &&
+                row.variant?.is_realistic !== false &&
                 Math.abs(row.change || 0) >= 5.0;
               const state = scenarioState[row.label] || {};
               const isCreating = Boolean(state.loading);
@@ -1082,12 +1123,11 @@ function EvidenceCard({ evidenceMsg, isExpanded, onApplyVariant, onOpenScenario 
                       color: '#334155',
                     }}
                   >
-                    <div>
-                      {formatPlainLanguage(row.label, { isAnalystView })}
+                    <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+                      <span>{formatPlainLanguage(row.action || row.label, { isAnalystView })}</span>
                       {isRowRecommended && (
                         <span
                           style={{
-                            marginLeft: 6,
                             color: '#166534',
                             background: '#dcfce7',
                             borderRadius: 999,
@@ -1099,7 +1139,44 @@ function EvidenceCard({ evidenceMsg, isExpanded, onApplyVariant, onOpenScenario 
                           Recommended
                         </span>
                       )}
+                      {!row.baseline && !isRowRecommended && (row.variant?.option_type === 'what_if' || row.variant?.is_realistic === false) && (
+                        <span
+                          style={{
+                            color: '#92400e',
+                            background: '#fef3c7',
+                            borderRadius: 999,
+                            padding: '2px 8px',
+                            fontSize: 10.5,
+                            fontWeight: 700,
+                          }}
+                        >
+                          What-if only (needs a real change you must arrange)
+                        </span>
+                      )}
+                      {!row.baseline && !isRowRecommended && (row.variant?.option_type === 'realistic' || row.variant?.is_realistic === true) && (
+                        <span
+                          style={{
+                            color: '#1e40af',
+                            background: '#dbeafe',
+                            borderRadius: 999,
+                            padding: '2px 8px',
+                            fontSize: 10.5,
+                            fontWeight: 600,
+                          }}
+                        >
+                          Realistic option
+                        </span>
+                      )}
                     </div>
+
+                    {/* Short "How to do this" line per option */}
+                    {!row.baseline && (row.how_to_do || row.variant?.how_to_do) && (
+                      <div style={{ marginTop: 4, color: '#475569', fontSize: 11.5, fontWeight: 500, lineHeight: 1.4 }}>
+                        <strong style={{ color: '#334155' }}>How to do this: </strong>
+                        {formatPlainLanguage(row.how_to_do || row.variant?.how_to_do, { isAnalystView })}
+                      </div>
+                    )}
+
                     {/* Before creation: show proposed resource and task changes */}
                     {!row.baseline && (() => {
                       const def = evidence?.variant_definitions?.find((d) => d.label === row.label);
@@ -1157,17 +1234,33 @@ function EvidenceCard({ evidenceMsg, isExpanded, onApplyVariant, onOpenScenario 
                   </td>
                   <td style={{ padding: '10px 8px', color: '#334155' }}>
                     {number(row.metrics?.avg_wait_time, 1)} min
-                    {!row.baseline && evidence.baseline?.avg_wait_time != null && row.metrics?.avg_wait_time != null && (
-                      (() => {
-                        const delta = Number((row.metrics.avg_wait_time - evidence.baseline.avg_wait_time).toFixed(1));
-                        if (delta === 0) return null;
-                        return (
-                          <span style={{ marginLeft: 4, fontSize: 11, color: delta < 0 ? '#15803d' : '#dc2626' }}>
-                            ({delta > 0 ? `+${delta}` : delta} min)
+                  </td>
+                  <td style={{ padding: '10px 8px', color: '#334155' }}>
+                    {row.baseline ? (
+                      '—'
+                    ) : (() => {
+                      const baseWait = evidence.baseline?.avg_wait_time ?? 0;
+                      const candWait = row.metrics?.avg_wait_time ?? 0;
+                      const delta = Number((candWait - baseWait).toFixed(1));
+                      const deltaPct = baseWait >= 0.05
+                        ? Number((((candWait - baseWait) / baseWait) * 100).toFixed(1))
+                        : (delta > 0 ? 100 : 0);
+                      const isWorse = delta > 0;
+                      const exceedsLimit = row.variant?.trade_off_exceeded || (deltaPct > 15.0 && delta > 0.5);
+
+                      return (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          <span style={{ fontWeight: 600, color: delta === 0 ? '#64748b' : (isWorse ? '#dc2626' : '#15803d') }}>
+                            {delta > 0 ? `+${delta}` : delta} min ({deltaPct > 0 ? `+${deltaPct}` : deltaPct}%)
                           </span>
-                        );
-                      })()
-                    )}
+                          {exceedsLimit && (
+                            <span style={{ fontSize: 10, fontWeight: 700, color: '#dc2626' }}>
+                              ⚠️ Exceeds +15% limit
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </td>
                   <td style={{ padding: '10px 8px', color: '#334155' }}>
                     {number(row.metrics?.avg_cycle_time, 1)} min
