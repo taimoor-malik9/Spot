@@ -12,7 +12,7 @@ from simulation.monte_carlo import (
 from simulation.results import compute_results
 from simulation.financials import generate_financial_report, calculate_profit_delta
 from simulation.experiments import run_experiment
-from simulation.resource_diff import compute_resource_changes
+from simulation.resource_diff import compute_resource_changes, compute_task_changes, compute_all_changes
 import httpx
 from fastapi.middleware.cors import CORSMiddleware
 import os
@@ -406,8 +406,9 @@ class DiffInput(BaseModel):
 
 @app.post("/resource_changes")
 def get_resource_changes(input: DiffInput):
-    diff = compute_resource_changes(input.baseline_process_json, input.scenario_process_json)
-    return {"resource_changes": diff}
+    res_diff = compute_resource_changes(input.baseline_process_json, input.scenario_process_json)
+    task_diff = compute_task_changes(input.baseline_process_json, input.scenario_process_json)
+    return {"resource_changes": res_diff, "task_changes": task_diff}
 
 @app.post("/what_if_scenario")
 def what_if_scenario(what_if: WhatIfModel):
@@ -418,10 +419,12 @@ def what_if_scenario(what_if: WhatIfModel):
         baseline_result["financial_summary"],
         scenario_result["financial_summary"]
     )
-    diff = compute_resource_changes(what_if.baseline.process_json, what_if.scenario.process_json)
-    scenario_result["resource_changes"] = diff
+    res_diff = compute_resource_changes(what_if.baseline.process_json, what_if.scenario.process_json)
+    task_diff = compute_task_changes(what_if.baseline.process_json, what_if.scenario.process_json)
+    scenario_result["resource_changes"] = res_diff
+    scenario_result["task_changes"] = task_diff
 
-    return {"baseline": baseline_result, "scenario": scenario_result, "resource_changes": diff}
+    return {"baseline": baseline_result, "scenario": scenario_result, "resource_changes": res_diff, "task_changes": task_diff}
 
 
 @app.post("/baseline/save")

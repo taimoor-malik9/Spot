@@ -43,6 +43,10 @@ const ScenarioSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.Mixed,
         default: []
     },
+    task_changes: {
+        type: mongoose.Schema.Types.Mixed,
+        default: []
+    },
     simulationResults: {
         type: mongoose.Schema.Types.Mixed,
         default: null

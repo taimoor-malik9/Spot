@@ -322,6 +322,7 @@ export default function SpotAssistant({ open, onClose, processId, ensureProcessS
       const scenario = await applyAiOption(id, definition);
       const scenarioId = scenario?._id || scenario?.id;
       const resource_changes = scenario?.resource_changes || definition.resource_changes || [];
+      const task_changes = scenario?.task_changes || definition.task_changes || [];
 
       setMessages((prev) => {
         const next = prev.map((m) => {
@@ -336,6 +337,7 @@ export default function SpotAssistant({ open, onClose, processId, ensureProcessS
                   created: true,
                   scenarioId,
                   resource_changes,
+                  task_changes,
                 },
               },
             };
@@ -1044,8 +1046,8 @@ function EvidenceCard({ evidenceMsg, isExpanded, onApplyVariant, onOpenScenario 
           <thead>
             <tr style={{ background: '#f8fafc', color: '#475569', textAlign: 'left' }}>
               <th style={{ padding: '10px 12px' }}>Option</th>
-              {isCycleTimeGoal && <th style={{ padding: '10px 8px' }}>{isAnalystView ? 'Cycle time (min)' : <Hint term="cycle_time">Completion time (min)</Hint>}</th>}
-              <th style={{ padding: '10px 8px' }}>{isAnalystView ? 'Avg wait (min)' : <Hint term="bottleneck">Avg wait (min)</Hint>}</th>
+              <th style={{ padding: '10px 8px' }}>Avg wait time</th>
+              <th style={{ padding: '10px 8px' }}>Total time per patient (start to finish)</th>
               <th style={{ padding: '10px 8px' }}>{isAnalystView ? 'Change vs baseline (%)' : 'Change vs current setup (%)'}</th>
               <th style={{ padding: '10px 8px' }}>{isAnalystView ? 'Throughput' : <Hint term="throughput">Customers served / hr</Hint>}</th>
               <th style={{ padding: '10px 8px' }}>Cost for this run</th>
@@ -1098,62 +1100,84 @@ function EvidenceCard({ evidenceMsg, isExpanded, onApplyVariant, onOpenScenario 
                         </span>
                       )}
                     </div>
-                    {/* Before creation: show proposed resource changes */}
+                    {/* Before creation: show proposed resource and task changes */}
                     {!row.baseline && (() => {
                       const def = evidence?.variant_definitions?.find((d) => d.label === row.label);
-                      const proposed = def?.resource_changes || row.variant?.resource_changes || [];
-                      if (proposed.length === 0) {
-                        return (
-                          <div style={{ marginTop: 3, fontSize: 11, color: '#94a3b8', fontWeight: 500 }}>
-                            No resource changes
-                          </div>
-                        );
-                      }
+                      const resChanges = def?.resource_changes || row.variant?.resource_changes || [];
+                      const taskChanges = def?.task_changes || row.variant?.task_changes || [];
+
                       return (
-                        <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                          {proposed.map((ch, ci) => (
-                            <span
-                              key={ci}
-                              style={{
-                                fontSize: 11,
-                                fontWeight: 600,
-                                color: ch.direction === 'decrease' || ch.direction === 'removed'
-                                  ? '#dc2626'
-                                  : (ch.direction === 'increase' || ch.direction === 'new' ? '#15803d' : '#b45309'),
-                              }}
-                            >
-                              {ch.summary || `${ch.name}: ${ch.before} → ${ch.after} (${ch.delta_text})`}
-                            </span>
-                          ))}
+                        <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11 }}>
+                          <div>
+                            <span style={{ fontWeight: 700, color: '#475569' }}>Resource changes: </span>
+                            {resChanges.length === 0 ? (
+                              <span style={{ color: '#94a3b8' }}>None</span>
+                            ) : (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 2, paddingLeft: 6 }}>
+                                {resChanges.map((ch, ci) => (
+                                  <span
+                                    key={ci}
+                                    style={{
+                                      fontWeight: 600,
+                                      color: ch.direction === 'decrease' || ch.direction === 'removed'
+                                        ? '#dc2626'
+                                        : (ch.direction === 'increase' || ch.direction === 'new' ? '#15803d' : '#b45309'),
+                                    }}
+                                  >
+                                    {ch.summary || `${ch.name}: ${ch.before} → ${ch.after} (${ch.delta_text})`}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          <div>
+                            <span style={{ fontWeight: 700, color: '#475569' }}>Task changes: </span>
+                            {taskChanges.length === 0 ? (
+                              <span style={{ color: '#94a3b8' }}>None</span>
+                            ) : (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 2, paddingLeft: 6 }}>
+                                {taskChanges.map((tch, ti) => (
+                                  <span
+                                    key={ti}
+                                    style={{
+                                      fontWeight: 600,
+                                      color: tch.direction === 'decrease' ? '#15803d' : '#dc2626',
+                                    }}
+                                  >
+                                    {tch.summary || `${tch.task}: ${tch.before} → ${tch.after} (${tch.delta_text})`}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       );
                     })()}
                   </td>
-                  {isCycleTimeGoal && (
-                    <td style={{ padding: '10px 8px', color: '#334155' }}>
-                      {number(row.metrics?.avg_cycle_time, 1)}
-                      {!row.baseline && evidence.baseline?.avg_cycle_time != null && row.metrics?.avg_cycle_time != null && (
-                        (() => {
-                          const delta = Number((row.metrics.avg_cycle_time - evidence.baseline.avg_cycle_time).toFixed(1));
-                          if (delta === 0) return null;
-                          return (
-                            <span style={{ marginLeft: 4, fontSize: 11, color: delta < 0 ? '#15803d' : '#dc2626' }}>
-                              ({delta > 0 ? `+${delta}` : delta})
-                            </span>
-                          );
-                        })()
-                      )}
-                    </td>
-                  )}
                   <td style={{ padding: '10px 8px', color: '#334155' }}>
-                    {number(row.metrics?.avg_wait_time, 1)}
-                    {!row.baseline && !isCycleTimeGoal && evidence.baseline?.avg_wait_time != null && row.metrics?.avg_wait_time != null && (
+                    {number(row.metrics?.avg_wait_time, 1)} min
+                    {!row.baseline && evidence.baseline?.avg_wait_time != null && row.metrics?.avg_wait_time != null && (
                       (() => {
                         const delta = Number((row.metrics.avg_wait_time - evidence.baseline.avg_wait_time).toFixed(1));
                         if (delta === 0) return null;
                         return (
                           <span style={{ marginLeft: 4, fontSize: 11, color: delta < 0 ? '#15803d' : '#dc2626' }}>
-                            ({delta > 0 ? `+${delta}` : delta})
+                            ({delta > 0 ? `+${delta}` : delta} min)
+                          </span>
+                        );
+                      })()
+                    )}
+                  </td>
+                  <td style={{ padding: '10px 8px', color: '#334155' }}>
+                    {number(row.metrics?.avg_cycle_time, 1)} min
+                    {!row.baseline && evidence.baseline?.avg_cycle_time != null && row.metrics?.avg_cycle_time != null && (
+                      (() => {
+                        const delta = Number((row.metrics.avg_cycle_time - evidence.baseline.avg_cycle_time).toFixed(1));
+                        if (delta === 0) return null;
+                        return (
+                          <span style={{ marginLeft: 4, fontSize: 11, color: delta < 0 ? '#15803d' : '#dc2626' }}>
+                            ({delta > 0 ? `+${delta}` : delta} min)
                           </span>
                         );
                       })()
@@ -1239,16 +1263,18 @@ function EvidenceCard({ evidenceMsg, isExpanded, onApplyVariant, onOpenScenario 
         </table>
       </div>
 
-      {/* After creation: show confirmed resource changes for any scenario created in this card */}
+      {/* After creation: show confirmed resource and task changes for any scenario created in this card */}
       {Object.entries(scenarioState).map(([label, s]) => {
         if (!s?.created) return null;
-        const changesToShow = s.resource_changes || [];
+        const resChanges = s.resource_changes || [];
+        const taskChanges = s.task_changes || [];
         return (
           <div key={label} style={{ marginTop: 8 }}>
             <ResourceChangesView
-              changes={changesToShow}
+              changes={resChanges}
+              taskChanges={taskChanges}
               target={evidence?.target}
-              title={`Resource changes applied for "${label}"`}
+              title={`Changes applied for "${label}"`}
               isCompact={true}
             />
           </div>

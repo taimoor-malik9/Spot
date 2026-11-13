@@ -1160,9 +1160,21 @@ export default function DashboardPage() {
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                         <span>{formatPlainLanguage(scen.title, { isAnalystView })}</span>
                         {(() => {
-                          const changesCount = Array.isArray(scen.resource_changes)
+                          const resCount = Array.isArray(scen.resource_changes)
                             ? scen.resource_changes.length
                             : (Array.isArray(scen.lastRun?.resource_changes) ? scen.lastRun.resource_changes.length : 0);
+                          const taskCount = Array.isArray(scen.task_changes)
+                            ? scen.task_changes.length
+                            : (Array.isArray(scen.lastRun?.task_changes) ? scen.lastRun.task_changes.length : 0);
+                          const totalCount = resCount + taskCount;
+                          let text = 'No changes';
+                          if (resCount > 0 && taskCount > 0) {
+                            text = `${resCount} res, ${taskCount} task changed`;
+                          } else if (resCount > 0) {
+                            text = `${resCount} ${resCount === 1 ? 'resource changed' : 'resources changed'}`;
+                          } else if (taskCount > 0) {
+                            text = `${taskCount} ${taskCount === 1 ? 'task changed' : 'tasks changed'}`;
+                          }
                           return (
                             <span
                               style={{
@@ -1172,14 +1184,12 @@ export default function DashboardPage() {
                                 fontWeight: 600,
                                 padding: '1px 7px',
                                 borderRadius: 999,
-                                background: changesCount > 0 ? '#ede9fe' : '#f1f5f9',
-                                color: changesCount > 0 ? '#6b4de6' : '#64748b',
-                                border: `1px solid ${changesCount > 0 ? '#ddd6fe' : '#e2e8f0'}`,
+                                background: totalCount > 0 ? '#ede9fe' : '#f1f5f9',
+                                color: totalCount > 0 ? '#6b4de6' : '#64748b',
+                                border: `1px solid ${totalCount > 0 ? '#ddd6fe' : '#e2e8f0'}`,
                               }}
                             >
-                              {changesCount > 0
-                                ? `${changesCount} ${changesCount === 1 ? 'resource changed' : 'resources changed'}`
-                                : 'No resource changes'}
+                              {text}
                             </span>
                           );
                         })()}

@@ -46,7 +46,7 @@ import {
   Users
 } from 'lucide-react';
 import ResourceChangesView from '../components/ResourceChangesView';
-import { computeResourceChanges } from '../lib/resourceDiff';
+import { computeResourceChanges, computeTaskChanges } from '../lib/resourceDiff';
 import {
   createScenario,
   updateScenario,
@@ -2634,6 +2634,23 @@ export default function ScenariosPage() {
     );
   }, [activeId, scenarios, resourceAllocations, elements]);
 
+  // Task duration changes for the currently active scenario compared to baseline
+  const currentScenarioTaskChanges = useMemo(() => {
+    if (activeId === 'baseline') return [];
+    const cur = scenarios.find((s) => s.id === activeId);
+    if (cur && Array.isArray(cur.task_changes) && cur.task_changes.length > 0) {
+      return cur.task_changes;
+    }
+    if (cur?.simulationResults && Array.isArray(cur.simulationResults.task_changes)) {
+      return cur.simulationResults.task_changes;
+    }
+    const baseScen = scenarios.find((s) => s._isBaseline || s.id === 'baseline');
+    return computeTaskChanges(
+      { nodes: baseScen?.nodes || elements },
+      { nodes: elements }
+    );
+  }, [activeId, scenarios, elements]);
+
   const changedResourceKeys = useMemo(() => {
     const keys = new Set();
     for (const c of currentScenarioResourceChanges) {
@@ -2651,8 +2668,13 @@ export default function ScenariosPage() {
         for (const t of c.affected_tasks) names.add(String(t).toLowerCase());
       }
     }
+    for (const tc of currentScenarioTaskChanges) {
+      if (tc.task) names.add(String(tc.task).toLowerCase());
+      if (tc.name) names.add(String(tc.name).toLowerCase());
+      if (tc.id) names.add(String(tc.id).toLowerCase());
+    }
     return names;
-  }, [currentScenarioResourceChanges]);
+  }, [currentScenarioResourceChanges, currentScenarioTaskChanges]);
 
   const getElementBoundaryPoint = useCallback((element, direction) => {
     if (!element) return { x: 0, y: 0 };
@@ -3181,21 +3203,31 @@ export default function ScenariosPage() {
                             </span>
                             <div className="flex items-center gap-1 shrink-0">
                               {!s._isBaseline && (() => {
-                                const changesCount = Array.isArray(s.resource_changes)
+                                const resCount = Array.isArray(s.resource_changes)
                                   ? s.resource_changes.length
                                   : (Array.isArray(s.simulationResults?.resource_changes) ? s.simulationResults.resource_changes.length : 0);
+                                const taskCount = Array.isArray(s.task_changes)
+                                  ? s.task_changes.length
+                                  : (Array.isArray(s.simulationResults?.task_changes) ? s.simulationResults.task_changes.length : 0);
+                                const totalCount = resCount + taskCount;
+                                let badgeText = '0 changes';
+                                if (resCount > 0 && taskCount > 0) {
+                                  badgeText = `${resCount} res, ${taskCount} task`;
+                                } else if (resCount > 0) {
+                                  badgeText = `${resCount} resource${resCount === 1 ? '' : 's'} changed`;
+                                } else if (taskCount > 0) {
+                                  badgeText = `${taskCount} task${taskCount === 1 ? '' : 's'} changed`;
+                                }
                                 return (
                                   <span
                                     className="text-[9px] px-1.5 py-0.5 rounded-full font-semibold shrink-0"
                                     style={{
-                                      background: changesCount > 0 ? '#ede9fe' : '#f1f5f9',
-                                      color: changesCount > 0 ? '#6b4de6' : '#64748b',
-                                      border: `1px solid ${changesCount > 0 ? '#ddd6fe' : '#e2e8f0'}`,
+                                      background: totalCount > 0 ? '#ede9fe' : '#f1f5f9',
+                                      color: totalCount > 0 ? '#6b4de6' : '#64748b',
+                                      border: `1px solid ${totalCount > 0 ? '#ddd6fe' : '#e2e8f0'}`,
                                     }}
                                   >
-                                    {changesCount > 0
-                                      ? `${changesCount} ${changesCount === 1 ? 'change' : 'changes'}`
-                                      : '0 changes'}
+                                    {badgeText}
                                   </span>
                                 );
                               })()}
@@ -4407,6 +4439,7 @@ export default function ScenariosPage() {
 
             <ResourceChangesView
               changes={currentScenarioResourceChanges}
+              taskChanges={currentScenarioTaskChanges}
               showTitle={false}
             />
 

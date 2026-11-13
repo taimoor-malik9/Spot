@@ -1,8 +1,15 @@
 /**
- * shared/resourceDiff.js
+ * shared/resourceDiff.js / Mystery_Frontend/src/lib/resourceDiff.js
  *
- * Computes exact diffs between baseline model resources and scenario resources.
- * Matched strictly by ID so renames are detected as renames rather than remove + add.
+ * Computes exact diffs between baseline model and scenario model for
+ * both resources and task durations.
+ *
+ * Rules:
+ * - Resources are matched by stable single identity across baseline and scenario:
+ *   matching by ID, name, displayName, or cross-matching ID to Name.
+ * - Resource changes are ONLY reported when count, cost/hr, or schedule/shift actually differs.
+ * - No raw IDs (res_0...) appear in user-facing summaries.
+ * - Task changes detect duration edits on task nodes, reporting old -> new (pct%).
  */
 
 const TASK_TYPES = new Set([
@@ -11,18 +18,34 @@ const TASK_TYPES = new Set([
   'subprocess', 'call-activity'
 ]);
 
-function getResourceId(res, fallbackIdx) {
-  if (!res || typeof res !== 'object') return String(res || '').trim();
-  const id = res.id || res._id;
-  if (id != null && String(id).trim()) return String(id).trim();
-  const name = res.name || res.displayName;
-  if (name != null && String(name).trim()) return String(name).trim();
-  return fallbackIdx != null ? `res_${fallbackIdx}` : 'unknown_res';
+function cleanStr(val) {
+  if (val == null) return '';
+  return String(val).trim();
 }
 
-function getResourceName(res) {
-  if (!res || typeof res !== 'object') return String(res || '');
-  return String(res.displayName || res.name || res.id || 'Unnamed Resource').trim();
+function isGenericId(val) {
+  const s = cleanStr(val).toLowerCase();
+  if (!s || s === 'unknown_res' || s === 'unnamed resource' || s === 'none' || s === 'null') {
+    return true;
+  }
+  if (s.startsWith('res_') && /\d/.test(s)) {
+    return true;
+  }
+  return false;
+}
+
+function getResourceName(res, fallbackName = '') {
+  if (!res || typeof res !== 'object') return cleanStr(res);
+  for (const field of ['name', 'displayName', 'label']) {
+    const val = cleanStr(res[field]);
+    if (val && !isGenericId(val)) return val;
+  }
+  if (fallbackName && !isGenericId(fallbackName)) return fallbackName;
+  for (const field of ['name', 'displayName', 'label', 'id']) {
+    const val = cleanStr(res[field]);
+    if (val) return val;
+  }
+  return 'Staff / Specialist';
 }
 
 function normalizeResourcesList(resources) {
@@ -30,19 +53,19 @@ function normalizeResourcesList(resources) {
   if (Array.isArray(resources)) {
     return resources.map((r, idx) => {
       if (!r || typeof r !== 'object') {
-        const str = String(r || '').trim();
-        return { id: str || `res_${idx}`, name: str, displayName: str, quantity: 1, type: 'staff' };
+        const s = cleanStr(r);
+        return { id: s, name: s, displayName: s, quantity: 1, type: 'staff' };
       }
       const copy = { ...r };
-      if (!copy.id) copy.id = copy.name || `res_${idx}`;
+      if (!copy.name && copy.displayName) copy.name = copy.displayName;
       return copy;
     });
   }
   if (typeof resources === 'object') {
     return Object.entries(resources).map(([name, qty]) => ({
-      id: name,
-      name,
-      displayName: name,
+      id: cleanStr(name),
+      name: cleanStr(name),
+      displayName: cleanStr(name),
       quantity: Number(qty) || 1,
       type: 'staff'
     }));
@@ -60,7 +83,7 @@ function extractTaskAssignments(processDoc) {
     if (!TASK_TYPES.has(nType) && !nType.includes('task') && !nType.includes('activity')) continue;
 
     const data = node.data && typeof node.data === 'object' ? node.data : node;
-    const taskLabel = String(data.label || node.label || data.name || node.name || node.id || 'Task').trim();
+    const taskLabel = cleanStr(data.label || node.label || data.name || node.name || node.id || 'Task');
 
     if (data.resources && typeof data.resources === 'object' && !Array.isArray(data.resources)) {
       for (const [rKey, qty] of Object.entries(data.resources)) {
@@ -88,11 +111,9 @@ function extractTaskAssignments(processDoc) {
 
 function getAssignedTasksForResource(assignments, res) {
   const tasks = [];
-  const keys = [
-    res.id ? String(res.id).trim().toLowerCase() : null,
-    res.name ? String(res.name).trim().toLowerCase() : null,
-    res.displayName ? String(res.displayName).trim().toLowerCase() : null,
-  ].filter(Boolean);
+  const keys = ['id', 'name', 'displayName']
+    .map(f => cleanStr(res[f]).toLowerCase())
+    .filter(Boolean);
 
   for (const k of keys) {
     for (const t of (assignments[k] || [])) {
@@ -136,12 +157,57 @@ function getHourlyRate(res) {
   return 0;
 }
 
+function matchResource(bRes, scenResources, matchedScenIndices) {
+  const bId = cleanStr(bRes.id).toLowerCase();
+  const bName = cleanStr(bRes.name || bRes.displayName).toLowerCase();
+
+  // 1. Non-generic ID match
+  if (bId && !isGenericId(bId)) {
+    for (let idx = 0; idx < scenResources.length; idx++) {
+      if (matchedScenIndices.has(idx)) continue;
+      const sId = cleanStr(scenResources[idx].id).toLowerCase();
+      if (sId && sId === bId) return [idx, scenResources[idx]];
+    }
+  }
+
+  // 2. Non-generic Name match
+  if (bName && !isGenericId(bName)) {
+    for (let idx = 0; idx < scenResources.length; idx++) {
+      if (matchedScenIndices.has(idx)) continue;
+      const sName = cleanStr(scenResources[idx].name || scenResources[idx].displayName).toLowerCase();
+      if (sName && sName === bName) return [idx, scenResources[idx]];
+    }
+  }
+
+  // 3. Cross match b.name == s.id or b.id == s.name
+  for (let idx = 0; idx < scenResources.length; idx++) {
+    if (matchedScenIndices.has(idx)) continue;
+    const sId = cleanStr(scenResources[idx].id).toLowerCase();
+    const sName = cleanStr(scenResources[idx].name || scenResources[idx].displayName).toLowerCase();
+
+    if (bName && !isGenericId(bName) && sId && sId === bName) {
+      return [idx, scenResources[idx]];
+    }
+    if (bId && !isGenericId(bId) && sName && sName === bId) {
+      return [idx, scenResources[idx]];
+    }
+  }
+
+  // 4. Fallback exact ID match even if generic (e.g. res_0 == res_0)
+  if (bId) {
+    for (let idx = 0; idx < scenResources.length; idx++) {
+      if (matchedScenIndices.has(idx)) continue;
+      const sId = cleanStr(scenResources[idx].id).toLowerCase();
+      if (sId && sId === bId) return [idx, scenResources[idx]];
+    }
+  }
+
+  return null;
+}
+
 /**
  * Computes exact diffs between baseline model resources and scenario resources.
- *
- * @param {object} baselineProcess
- * @param {object} scenarioProcess
- * @returns {Array<object>} resource_changes list
+ * Only reports changes when count, cost/hr, or schedule actually differs.
  */
 export function computeResourceChanges(baselineProcess, scenarioProcess) {
   const baseResources = normalizeResourcesList(baselineProcess?.resources);
@@ -150,44 +216,25 @@ export function computeResourceChanges(baselineProcess, scenarioProcess) {
   const baseAssignments = extractTaskAssignments(baselineProcess);
   const scenAssignments = extractTaskAssignments(scenarioProcess);
 
-  const baseById = new Map();
-  const baseByName = new Map();
-  baseResources.forEach((r, idx) => {
-    const id = getResourceId(r, idx);
-    baseById.set(id, r);
-    const name = getResourceName(r).toLowerCase();
-    if (name) baseByName.set(name, r);
-  });
-
-  const scenById = new Map();
-  const scenByName = new Map();
-  scenResources.forEach((r, idx) => {
-    const id = getResourceId(r, idx);
-    scenById.set(id, r);
-    const name = getResourceName(r).toLowerCase();
-    if (name) scenByName.set(name, r);
-  });
-
   const changes = [];
-  const matchedScenIds = new Set();
+  const matchedScenIndices = new Set();
 
-  baseResources.forEach((bRes, idx) => {
-    const bId = getResourceId(bRes, idx);
-    const bName = getResourceName(bRes);
+  for (let idx = 0; idx < baseResources.length; idx++) {
+    const bRes = baseResources[idx];
     const bTasks = getAssignedTasksForResource(baseAssignments, bRes);
+    const bName = getResourceName(bRes);
+    const bId = cleanStr(bRes.id || bName);
 
-    let sRes = scenById.get(bId);
-    if (!sRes) {
-      sRes = scenByName.get(bName.toLowerCase());
-    }
+    const match = matchResource(bRes, scenResources, matchedScenIndices);
 
-    if (!sRes) {
+    if (!match) {
       // Resource removed
-      const bQty = Number(bRes.quantity) || 1;
+      const bQty = Number(bRes.quantity != null ? bRes.quantity : 1);
+      const displayName = !isGenericId(bName) ? bName : (bTasks[0] ? `${bTasks[0]} Staff` : 'Staff');
       changes.push({
         id: bId,
         resource_id: bId,
-        name: bName,
+        name: displayName,
         property: 'count',
         property_label: 'Count',
         before: bQty,
@@ -195,23 +242,25 @@ export function computeResourceChanges(baselineProcess, scenarioProcess) {
         delta: -bQty,
         delta_text: `-${bQty}`,
         direction: 'removed',
-        change_text: `${bName}: removed (was ${bQty})`,
-        summary: `${bName}: ${bQty} → 0 (-${bQty})`,
+        change_text: `${displayName}: removed (was ${bQty})`,
+        summary: `${displayName}: ${bQty} → 0 (-${bQty})`,
         affected_tasks: bTasks,
         tasks_display: bTasks.length > 0 ? bTasks.join(', ') : 'None',
       });
-      return;
+      continue;
     }
 
-    const sId = getResourceId(sRes);
-    matchedScenIds.add(sId);
-    const sName = getResourceName(sRes);
+    const [sIdx, sRes] = match;
+    matchedScenIndices.add(sIdx);
+
+    const sName = getResourceName(sRes, bName);
+    const displayName = !isGenericId(sName) ? sName : getResourceName(bRes);
     const sTasks = getAssignedTasksForResource(scenAssignments, sRes);
     const allAffectedTasks = Array.from(new Set([...bTasks, ...sTasks])).sort();
     const tasksDisplay = allAffectedTasks.length > 0 ? allAffectedTasks.join(', ') : 'None';
 
-    // 1. Rename check (matched by ID, name differs)
-    if (bName.trim().toLowerCase() !== sName.trim().toLowerCase()) {
+    // 1. Rename check (only if neither is a generic ID and names actually differ)
+    if (bName.trim().toLowerCase() !== sName.trim().toLowerCase() && !isGenericId(bName) && !isGenericId(sName)) {
       changes.push({
         id: bId,
         resource_id: bId,
@@ -240,7 +289,7 @@ export function computeResourceChanges(baselineProcess, scenarioProcess) {
       changes.push({
         id: bId,
         resource_id: bId,
-        name: sName,
+        name: displayName,
         property: 'count',
         property_label: 'Count',
         before: bQty,
@@ -248,8 +297,8 @@ export function computeResourceChanges(baselineProcess, scenarioProcess) {
         delta: diff,
         delta_text: diffSign,
         direction,
-        change_text: `${sName}: count ${bQty} → ${sQty} (${diffSign})`,
-        summary: `${sName}: ${bQty} → ${sQty} (${diffSign})`,
+        change_text: `${displayName}: count ${bQty} → ${sQty} (${diffSign})`,
+        summary: `${displayName}: ${bQty} → ${sQty} (${diffSign})`,
         affected_tasks: allAffectedTasks,
         tasks_display: tasksDisplay,
       });
@@ -258,62 +307,45 @@ export function computeResourceChanges(baselineProcess, scenarioProcess) {
     // 3. Cost per hour check
     const bRate = Math.round(getHourlyRate(bRes) * 100) / 100;
     const sRate = Math.round(getHourlyRate(sRes) * 100) / 100;
-    if (Math.abs(bRate - sRate) >= 0.01) {
-      const rateDiff = Math.round((sRate - bRate) * 100) / 100;
-      const rateDiffSign = rateDiff > 0 ? `+$${rateDiff}` : `-$${Math.abs(rateDiff)}`;
-      const direction = 'edit';
+    if (bRate !== sRate) {
+      const diffCost = Math.round((sRate - bRate) * 100) / 100;
+      const direction = diffCost > 0 ? 'increase' : 'decrease';
+      const bStr = Number.isInteger(bRate) ? `$${bRate}` : `$${bRate.toFixed(2)}`;
+      const sStr = Number.isInteger(sRate) ? `$${sRate}` : `$${sRate.toFixed(2)}`;
+      const diffSign = Number.isInteger(diffCost)
+        ? (diffCost > 0 ? `+$${diffCost}` : `-$${Math.abs(diffCost)}`)
+        : (diffCost > 0 ? `+$${diffCost.toFixed(2)}` : `-$${Math.abs(diffCost).toFixed(2)}`);
       changes.push({
         id: bId,
         resource_id: bId,
-        name: sName,
+        name: displayName,
         property: 'cost_per_hour',
         property_label: 'Cost / hr',
-        before: `$${bRate}`,
-        after: `$${sRate}`,
-        delta: rateDiff,
-        delta_text: rateDiffSign,
-        direction,
-        change_text: `${sName}: cost/hr $${bRate} → $${sRate} (${rateDiffSign})`,
-        summary: `${sName}: cost/hr $${bRate} → $${sRate}`,
+        before: bStr,
+        after: sStr,
+        delta: diffCost,
+        delta_text: diffSign,
+        direction: 'edit',
+        change_text: `${displayName}: cost/hr ${bStr} → ${sStr} (${diffSign})`,
+        summary: `${displayName}: cost/hr ${bStr} → ${sStr}`,
         affected_tasks: allAffectedTasks,
         tasks_display: tasksDisplay,
       });
     }
 
     // 4. Schedule / Shift check
-    const bHpd = bRes.hours_per_day;
-    const sHpd = sRes.hours_per_day;
-    const bWd = bRes.working_days_per_month;
-    const sWd = sRes.working_days_per_month;
-    const bShift = bRes.shift || bRes.schedule;
-    const sShift = sRes.shift || sRes.schedule;
+    const bHpd = bRes.hours_per_day != null ? Number(bRes.hours_per_day) : 8;
+    const sHpd = sRes.hours_per_day != null ? Number(sRes.hours_per_day) : 8;
+    const bWdm = bRes.working_days_per_month != null ? Number(bRes.working_days_per_month) : 22;
+    const sWdm = sRes.working_days_per_month != null ? Number(sRes.working_days_per_month) : 22;
 
-    let schedChanged = false;
-    const bSched = [];
-    const sSched = [];
-    if (bHpd !== sHpd && (bHpd != null || sHpd != null)) {
-      schedChanged = true;
-      bSched.push(bHpd != null ? `${bHpd}h/day` : 'default');
-      sSched.push(sHpd != null ? `${sHpd}h/day` : 'default');
-    }
-    if (bWd !== sWd && (bWd != null || sWd != null)) {
-      schedChanged = true;
-      bSched.push(bWd != null ? `${bWd}d/mo` : 'default');
-      sSched.push(sWd != null ? `${sWd}d/mo` : 'default');
-    }
-    if (bShift !== sShift && (bShift || sShift)) {
-      schedChanged = true;
-      bSched.push(String(bShift || 'standard'));
-      sSched.push(String(sShift || 'standard'));
-    }
-
-    if (schedChanged) {
-      const bStr = bSched.join(', ');
-      const sStr = sSched.join(', ');
+    if ((bHpd !== sHpd || bWdm !== sWdm) && (bRes.hours_per_day != null || sRes.hours_per_day != null)) {
+      const bStr = `${bHpd}h/day, ${bWdm}d/mo`;
+      const sStr = `${sHpd}h/day, ${sWdm}d/mo`;
       changes.push({
         id: bId,
         resource_id: bId,
-        name: sName,
+        name: displayName,
         property: 'schedule_shift',
         property_label: 'Schedule / Shift',
         before: bStr,
@@ -321,50 +353,19 @@ export function computeResourceChanges(baselineProcess, scenarioProcess) {
         delta: 0,
         delta_text: 'modified',
         direction: 'edit',
-        change_text: `${sName}: schedule ${bStr} → ${sStr}`,
-        summary: `${sName}: schedule ${bStr} → ${sStr}`,
+        change_text: `${displayName}: schedule ${bStr} → ${sStr}`,
+        summary: `${displayName}: schedule ${bStr} → ${sStr}`,
         affected_tasks: allAffectedTasks,
         tasks_display: tasksDisplay,
       });
     }
+  }
 
-    // 5. Assigned tasks changed
-    const bTaskSet = new Set(bTasks);
-    const sTaskSet = new Set(sTasks);
-    if (bTasks.length !== sTasks.length || bTasks.some(t => !sTaskSet.has(t))) {
-      const added = sTasks.filter(t => !bTaskSet.has(t));
-      const removed = bTasks.filter(t => !sTaskSet.has(t));
-      const bTasksStr = bTasks.length > 0 ? bTasks.join(', ') : 'None';
-      const sTasksStr = sTasks.length > 0 ? sTasks.join(', ') : 'None';
-      const direction = added.length > removed.length ? 'increase' : (removed.length > added.length ? 'decrease' : 'edit');
-      const details = [];
-      if (added.length > 0) details.push(`+${added.join(', ')}`);
-      if (removed.length > 0) details.push(`-${removed.join(', ')}`);
-      const deltaDetail = details.join('; ');
-      changes.push({
-        id: bId,
-        resource_id: bId,
-        name: sName,
-        property: 'assigned_tasks',
-        property_label: 'Assigned Tasks',
-        before: bTasksStr,
-        after: sTasksStr,
-        delta: sTasks.length - bTasks.length,
-        delta_text: deltaDetail,
-        direction,
-        change_text: `${sName}: assigned tasks ${bTasksStr} → ${sTasksStr}`,
-        summary: `${sName}: assigned tasks changed (${deltaDetail})`,
-        affected_tasks: allAffectedTasks,
-        tasks_display: tasksDisplay,
-      });
-    }
-  });
-
-  // Check for NEW resources added in scenario
+  // Check for NEW resources in scenario
   scenResources.forEach((sRes, idx) => {
-    const sId = getResourceId(sRes, idx);
-    if (matchedScenIds.has(sId)) return;
+    if (matchedScenIndices.has(idx)) return;
     const sName = getResourceName(sRes);
+    const sId = cleanStr(sRes.id || sName);
     const sQty = Number(sRes.quantity != null ? sRes.quantity : 1);
     const sTasks = getAssignedTasksForResource(scenAssignments, sRes);
     changes.push({
@@ -386,4 +387,113 @@ export function computeResourceChanges(baselineProcess, scenarioProcess) {
   });
 
   return changes;
+}
+
+function taskDurationInfo(node) {
+  const data = node?.data && typeof node.data === 'object' ? node.data : node || {};
+  let unit = data.duration_unit || node?.duration_unit || 'min';
+  if (unit.startsWith('minute')) unit = 'min';
+
+  const dMin = data.duration_min;
+  const dMax = data.duration_max;
+  const d = data.duration;
+
+  if (dMin !== undefined && dMin !== null && dMax !== undefined && dMax !== null) {
+    return [Math.round(Number(dMin) * 100) / 100, Math.round(Number(dMax) * 100) / 100, unit, true];
+  }
+  if (d !== undefined && d !== null) {
+    return [Math.round(Number(d) * 100) / 100, null, unit, false];
+  }
+  return [null, null, unit, false];
+}
+
+/**
+ * Computes duration changes on task nodes between baseline and scenario.
+ * Format example: "Triage and check vitals: 6 → 3 min (-50%)"
+ */
+export function computeTaskChanges(baselineProcess, scenarioProcess) {
+  const baseNodes = Array.isArray(baselineProcess?.nodes) ? baselineProcess.nodes : [];
+  const scenNodes = Array.isArray(scenarioProcess?.nodes) ? scenarioProcess.nodes : [];
+
+  const baseMap = new Map();
+  for (const n of baseNodes) {
+    if (n && n.id) {
+      baseMap.set(String(n.id).trim().toLowerCase(), n);
+    }
+  }
+
+  const taskChanges = [];
+
+  for (const sNode of scenNodes) {
+    if (!sNode || !sNode.id) continue;
+    const nid = String(sNode.id).trim().toLowerCase();
+    const bNode = baseMap.get(nid);
+    if (!bNode) continue;
+
+    const rawType = String(sNode.type || 'task').toLowerCase().trim();
+    if (!TASK_TYPES.has(rawType) && !rawType.includes('task') && !rawType.includes('activity')) continue;
+
+    const [bMin, bMax, bUnit, bIsRange] = taskDurationInfo(bNode);
+    const [sMin, sMax, sUnit, sIsRange] = taskDurationInfo(sNode);
+
+    if (bMin === null || sMin === null) continue;
+
+    const data = sNode.data && typeof sNode.data === 'object' ? sNode.data : sNode;
+    const bData = bNode.data && typeof bNode.data === 'object' ? bNode.data : bNode;
+    const label = cleanStr(data.label || sNode.label || bData.label || bNode.label || sNode.id);
+
+    if (!bIsRange && !sIsRange) {
+      if (bMin !== sMin) {
+        const pct = bMin > 0 ? Math.round(((sMin - bMin) / bMin) * 100) : 0;
+        const pctSign = pct > 0 ? `+${pct}%` : `${pct}%`;
+        const direction = sMin < bMin ? 'decrease' : 'increase';
+        taskChanges.push({
+          id: sNode.id,
+          task: label,
+          property: 'duration',
+          property_label: 'Duration',
+          before: `${bMin} ${bUnit}`,
+          after: `${sMin} ${bUnit}`,
+          delta_pct: pct,
+          delta_text: pctSign,
+          direction,
+          summary: `${label}: ${bMin} → ${sMin} ${bUnit} (${pctSign})`,
+        });
+      }
+    } else {
+      const bLow = bMin;
+      const bHigh = bMax != null ? bMax : bMin;
+      const sLow = sMin;
+      const sHigh = sMax != null ? sMax : sMin;
+
+      if (bLow !== sLow || bHigh !== sHigh) {
+        const avgB = (bLow + bHigh) / 2.0;
+        const avgS = (sLow + sHigh) / 2.0;
+        const pct = avgB > 0 ? Math.round(((avgS - avgB) / avgB) * 100) : 0;
+        const pctSign = pct > 0 ? `+${pct}%` : `${pct}%`;
+        const direction = avgS < avgB ? 'decrease' : 'increase';
+        taskChanges.push({
+          id: sNode.id,
+          task: label,
+          property: 'duration',
+          property_label: 'Duration',
+          before: `${bLow}-${bHigh} ${bUnit}`,
+          after: `${sLow}-${sHigh} ${bUnit}`,
+          delta_pct: pct,
+          delta_text: pctSign,
+          direction,
+          summary: `${label}: ${bLow}-${bHigh} → ${sLow}-${sHigh} ${bUnit} (${pctSign})`,
+        });
+      }
+    }
+  }
+
+  return taskChanges;
+}
+
+export function computeAllChanges(baselineProcess, scenarioProcess) {
+  return {
+    resource_changes: computeResourceChanges(baselineProcess, scenarioProcess),
+    task_changes: computeTaskChanges(baselineProcess, scenarioProcess),
+  };
 }

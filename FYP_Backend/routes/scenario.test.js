@@ -589,4 +589,109 @@ describe('MODULE S1: Process & Scenario Cloning & Isolation Tests', async () => 
     assert.strictEqual(handleEdit(true), 'already_forked'); // second edit does not fork
     assert.strictEqual(whatIfCreated, 1, 'Single baseline edit gives exactly 1 new scenario');
   });
+
+  it('10. Resource Changes Diff & Persistence: Loan Officer 2 -> 1 shows Loan Officer: 2 → 1 (-1)', async () => {
+    const { getComputeResourceChanges } = require('../utils/resourceDiffHelper');
+    const computeResourceChanges = await getComputeResourceChanges();
+
+    const baseline = {
+      _id: 'proc_loan',
+      title: 'Loan Approval Baseline',
+      resources: [
+        { id: 'res_loan_officer', name: 'Loan Officer', quantity: 2, type: 'staff', hours_per_day: 8, monthly_salary: 3000 },
+        { id: 'res_clerk', name: 'Clerk', quantity: 2, type: 'staff', hours_per_day: 8, monthly_salary: 1500 }
+      ],
+      nodes: [
+        { id: 'n1', type: 'start', data: { label: 'Start' } },
+        { id: 'n2', type: 'task', data: { label: 'Manual Review', resource: 'Loan Officer' } },
+        { id: 'n3', type: 'task', data: { label: 'Prepare Contract', resources: { res_loan_officer: 1 } } },
+        { id: 'n4', type: 'end', data: { label: 'End' } }
+      ],
+      edges: [
+        { id: 'e1', fromId: 'n1', toId: 'n2', data: { type: 'sequence-flow' } },
+        { id: 'e2', fromId: 'n2', toId: 'n3', data: { type: 'sequence-flow' } },
+        { id: 'e3', fromId: 'n3', toId: 'n4', data: { type: 'sequence-flow' } }
+      ]
+    };
+
+    // Scenario: Loan Officer count 2 -> 1
+    const cloned = await cloneProcessToScenario(baseline, {
+      title: 'Reduced Staffing What-If',
+      resourceChanges: [
+        { id: 'res_loan_officer', name: 'Loan Officer', quantity: 1 }
+      ]
+    });
+
+    assert(Array.isArray(cloned.resource_changes), 'Cloned scenario must have resource_changes array');
+    assert.strictEqual(cloned.resource_changes.length, 1, 'Exactly one resource changed');
+
+    const change = cloned.resource_changes[0];
+    assert.strictEqual(change.name, 'Loan Officer');
+    assert.strictEqual(change.property, 'count');
+    assert.strictEqual(change.before, 2);
+    assert.strictEqual(change.after, 1);
+    assert.strictEqual(change.delta, -1);
+    assert.strictEqual(change.direction, 'decrease');
+    assert.strictEqual(change.summary, 'Loan Officer: 2 → 1 (-1)');
+    assert(change.affected_tasks.includes('Manual Review'));
+    assert(change.affected_tasks.includes('Prepare Contract'));
+  });
+
+  it('11. Speed up all staff tasks by 50% shows 0 resource changes and all task changes', async () => {
+    const baseline = {
+      _id: 'proc_hosp',
+      title: 'Hospital Process',
+      resources: [
+        { id: 'res_0', name: 'Receptionist', quantity: 1, type: 'staff' },
+        { id: 'res_1', name: 'Nurse', quantity: 2, type: 'staff' },
+        { id: 'res_2', name: 'Doctor', quantity: 1, type: 'staff' }
+      ],
+      nodes: [
+        { id: 'n1', type: 'task', data: { label: 'Triage and check vitals', duration: 6, resource: 'Nurse' } },
+        { id: 'n2', type: 'task', data: { label: 'Consult doctor', duration: 15, resource: 'Doctor' } }
+      ],
+      edges: []
+    };
+
+    const cloned = await cloneProcessToScenario(baseline, {
+      title: 'Speed up all staff tasks by 50%',
+      nodeChanges: [
+        { id: 'n1', duration_multiplier: 0.5 },
+        { id: 'n2', duration_multiplier: 0.5 }
+      ]
+    });
+
+    assert.strictEqual(cloned.resource_changes.length, 0, 'No resource changes for pure duration option');
+    assert.strictEqual(cloned.task_changes.length, 2, 'Both tasks show duration changes');
+    assert.strictEqual(cloned.task_changes[0].summary, 'Triage and check vitals: 6 → 3 min (-50%)');
+    assert.strictEqual(cloned.task_changes[1].summary, 'Consult doctor: 15 → 7.5 min (-50%)');
+  });
+
+  it('12. Add 1 Radiologist shows only Radiologist: 1 → 2 (+1) and no raw res_0 IDs', async () => {
+    const baseline = {
+      _id: 'proc_rad',
+      title: 'Radiology Clinic',
+      resources: [
+        { id: 'res_0', name: 'Receptionist', quantity: 1, type: 'staff' },
+        { id: 'res_1', name: 'Radiologist', quantity: 1, type: 'staff' }
+      ],
+      nodes: [
+        { id: 't1', type: 'task', data: { label: 'X-ray scan', duration: 20, resource: 'Radiologist' } }
+      ],
+      edges: []
+    };
+
+    const cloned = await cloneProcessToScenario(baseline, {
+      title: 'Add 1 Radiologist',
+      resourceChanges: [
+        { name: 'Radiologist', quantity: 2 }
+      ]
+    });
+
+    assert.strictEqual(cloned.resource_changes.length, 1, 'Only one resource change');
+    assert.strictEqual(cloned.resource_changes[0].name, 'Radiologist');
+    assert.strictEqual(cloned.resource_changes[0].summary, 'Radiologist: 1 → 2 (+1)');
+    assert(!cloned.resource_changes.some(c => String(c.name).includes('res_0')), 'No raw res_0 ID in names');
+    assert.strictEqual(cloned.task_changes.length, 0, 'No task changes');
+  });
 });

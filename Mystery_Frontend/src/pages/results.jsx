@@ -18,7 +18,7 @@ import { getScenarios, listRuns, getRun, deleteRun, runSimulation, runScenarioSi
 import AIInsightsPanel from './AIInsightsPanel';
 import AIChatWidget from './AIChatWidget';
 import ResourceChangesView from '../components/ResourceChangesView';
-import { computeResourceChanges } from '../lib/resourceDiff';
+import { computeResourceChanges, computeTaskChanges } from '../lib/resourceDiff';
 import { computeComparisonMetrics } from '../lib/whatIfComparison';
 import { getBottleneckView, prepareResultForMetrics } from '../lib/resultsHelper';
 import { useAnalystView, Hint, LABELS, formatPlainLanguage } from '../lib/labels';
@@ -1084,6 +1084,9 @@ export default function ResultsPage() {
       if (entry?.results && Array.isArray(entry.results.resource_changes)) {
         return entry.results.resource_changes;
       }
+      if (entry && Array.isArray(entry.resource_changes)) {
+        return entry.resource_changes;
+      }
     }
     // Fallback: compare scenario resources vs baseline resources if available
     try {
@@ -1091,6 +1094,39 @@ export default function ResultsPage() {
       const baseProc = rawBase ? JSON.parse(rawBase) : null;
       if (baseProc?.resources && results?.resources) {
         return computeResourceChanges(baseProc, results);
+      }
+    } catch {}
+    return [];
+  }, [isScenarioRun, results, selectedRun, whatifResults, activeScenarioKey, scenarioList]);
+
+  const currentTaskChanges = useMemo(() => {
+    if (!isScenarioRun) return [];
+    if (results && Array.isArray(results.task_changes)) {
+      return results.task_changes;
+    }
+    if (selectedRun && Array.isArray(selectedRun.results?.task_changes)) {
+      return selectedRun.results.task_changes;
+    }
+    if (selectedRun && Array.isArray(selectedRun.task_changes)) {
+      return selectedRun.task_changes;
+    }
+    if (whatifResults && Array.isArray(whatifResults.task_changes)) {
+      return whatifResults.task_changes;
+    }
+    if (activeScenarioKey && activeScenarioKey !== 'baseline') {
+      const entry = scenarioList.find((s) => s.id === activeScenarioKey);
+      if (entry?.results && Array.isArray(entry.results.task_changes)) {
+        return entry.results.task_changes;
+      }
+      if (entry && Array.isArray(entry.task_changes)) {
+        return entry.task_changes;
+      }
+    }
+    try {
+      const rawBase = localStorage.getItem('spot:baselineResults');
+      const baseProc = rawBase ? JSON.parse(rawBase) : null;
+      if (baseProc?.nodes && results?.nodes) {
+        return computeTaskChanges(baseProc, results);
       }
     } catch {}
     return [];
@@ -1385,6 +1421,7 @@ export default function ResultsPage() {
         {isScenarioRun && (
           <ResourceChangesView
             changes={currentResourceChanges}
+            taskChanges={currentTaskChanges}
             title={isAnalystView ? "Changes from baseline" : "Changes from current setup"}
             target={results?.target || selectedRun?.config?.target}
           />

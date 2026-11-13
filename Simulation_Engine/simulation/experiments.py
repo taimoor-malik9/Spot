@@ -7,7 +7,7 @@ runner supplied by the API layer.
 
 from copy import deepcopy
 from statistics import mean
-from simulation.resource_diff import compute_resource_changes
+from simulation.resource_diff import compute_resource_changes, compute_task_changes
 
 TASK_TYPES = {
     "task", "user-task", "service-task", "script-task",
@@ -79,10 +79,10 @@ def _average_wait(result):
 def _metrics(results):
     """Average the engine's independently-run replication results."""
     return {
-        "avg_cycle_time": round(mean(r["time_in_system"]["avg"] for r in results), 3),
-        "avg_wait_time": round(mean(_average_wait(r) for r in results), 3),
-        "throughput_per_hour": round(mean(r.get("throughput_rates", 0.0) * 60 for r in results), 3),
-        "total_cost": round(mean(r.get("financial_summary", {}).get("total_cost", 0.0) for r in results), 2),
+        "avg_cycle_time": round(mean(r["time_in_system"]["avg"] for r in results), 1),
+        "avg_wait_time": round(mean(_average_wait(r) for r in results), 1),
+        "throughput_per_hour": round(mean(r.get("throughput_rates", 0.0) * 60 for r in results), 1),
+        "total_cost": round(mean(r.get("financial_summary", {}).get("total_cost", 0.0) for r in results), 1),
     }
 
 
@@ -161,13 +161,15 @@ def _add_resource(process_json, resource_name, delta=1):
             if str(resource.get("name", "")).strip().lower() == target or str(resource.get("id", "")).strip().lower() == target:
                 quantity = int(resource.get("quantity", 1)) + delta
                 resource["quantity"] = quantity
-                return variant, {"name": resource.get("name", resource_name), "quantity": quantity, "delta": delta}
+                res_id = resource.get("id") or resource.get("name", resource_name)
+                res_name = resource.get("name") or resource.get("displayName") or resource_name
+                return variant, {"id": res_id, "name": res_name, "quantity": quantity, "delta": delta}
     elif isinstance(resources, dict):
         for name, quantity in resources.items():
             if str(name).strip().lower() == target:
                 new_quantity = int(quantity) + delta
                 resources[name] = new_quantity
-                return variant, {"name": name, "quantity": new_quantity, "delta": delta}
+                return variant, {"id": name, "name": name, "quantity": new_quantity, "delta": delta}
     return None, None
 
 
@@ -478,7 +480,9 @@ def run_experiment(process_json, config, goal, run_process, target=None):
         delta_vs = _delta(metrics, baseline)
         impr = _calc_improvement(baseline, metrics, target_metric, target_direction)
         res_changes = compute_resource_changes(process_json, item["proc"])
+        task_changes = compute_task_changes(process_json, item["proc"])
         item["definition"]["resource_changes"] = res_changes
+        item["definition"]["task_changes"] = task_changes
         tested_candidates.append({
             "label": item["label"],
             "metrics": metrics,
@@ -486,6 +490,7 @@ def run_experiment(process_json, config, goal, run_process, target=None):
             "improvement_pct": round(impr, 2),
             "definition": item["definition"],
             "resource_changes": res_changes,
+            "task_changes": task_changes,
             "category": item["category"],
             "staff_delta": item["staff_delta"],
             "min_mult": item["min_mult"],
@@ -636,6 +641,7 @@ def run_experiment(process_json, config, goal, run_process, target=None):
             "metrics": v["metrics"],
             "delta_vs_baseline": v["delta_vs_baseline"],
             "resource_changes": v.get("resource_changes", []),
+            "task_changes": v.get("task_changes", []),
         }
         for v in selected_variants
     ]
@@ -647,6 +653,7 @@ def run_experiment(process_json, config, goal, run_process, target=None):
             "metrics": best_candidate["metrics"],
             "delta_vs_baseline": best_candidate["delta_vs_baseline"],
             "resource_changes": best_candidate.get("resource_changes", []),
+            "task_changes": best_candidate.get("task_changes", []),
             "variant_definition": best_candidate["definition"],
             "recommended": is_meaningful,
         }
