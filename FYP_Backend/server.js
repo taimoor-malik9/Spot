@@ -544,6 +544,7 @@ app.post('/api/process/:id', requireAuth, async (req, res) => {
 
 // ==================== HEALTH CHECK ====================
 app.get('/health', (req, res) => res.json({ status: 'Server running' }));
+app.head('/health', (req, res) => res.sendStatus(200));
 
 const PORT = process.env.PORT || 5000;
 if (require.main === module) {
