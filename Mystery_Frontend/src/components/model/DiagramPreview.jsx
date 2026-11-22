@@ -40,20 +40,27 @@ export default function DiagramPreview({
   const modelNodes = effectiveNodes.filter(
     (n) => n.type !== 'pool' && n.type !== 'lane'
   );
-
-  // If there are model nodes, use them for bounding calculations; otherwise use all nodes
   const targetNodes = modelNodes.length > 0 ? modelNodes : effectiveNodes;
 
   const PAD = isFullView ? 40 : 16;
   const NODE_W = isFullView ? 110 : 54;
   const NODE_H = isFullView ? 46 : 28;
 
-  const xs = targetNodes.map((n) => n.position?.x ?? 0);
-  const ys = targetNodes.map((n) => n.position?.y ?? 0);
-  const minX = Math.min(...xs) - PAD;
-  const minY = Math.min(...ys) - PAD;
-  const maxX = Math.max(...xs) + (isFullView ? 140 : NODE_W) + PAD;
-  const maxY = Math.max(...ys) + (isFullView ? 70 : NODE_H) + PAD;
+  const xs = [];
+  const ys = [];
+  effectiveNodes.forEach((n) => {
+    const x = n.position?.x ?? 0;
+    const y = n.position?.y ?? 0;
+    const w = n.width || (n.type === 'pool' || n.type === 'lane' ? 600 : (isFullView ? 110 : NODE_W));
+    const h = n.height || (n.type === 'pool' ? 150 : n.type === 'lane' ? 100 : (isFullView ? 46 : 28));
+    xs.push(x, x + w);
+    ys.push(y, y + h);
+  });
+
+  const minX = (xs.length > 0 ? Math.min(...xs) : 0) - PAD;
+  const minY = (ys.length > 0 ? Math.min(...ys) : 0) - PAD;
+  const maxX = (xs.length > 0 ? Math.max(...xs) : 600) + PAD;
+  const maxY = (ys.length > 0 ? Math.max(...ys) : 300) + PAD;
 
   const rawW = Math.max(120, maxX - minX);
   const rawH = Math.max(80, maxY - minY);
@@ -130,41 +137,76 @@ export default function DiagramPreview({
           </marker>
         </defs>
 
-        {/* Optional Swimlane Background Bands in Full View */}
-        {isFullView &&
-          swimlanes
-            .filter((l) => l.type === 'lane' && !l.implicitLane && !l.data?.implicitLane)
-            .map((lane) => {
-              const lx = tx(lane.position?.x ?? minX);
-              const ly = ty(lane.position?.y ?? 0);
-              const lw = (lane.width || rawW) * scale;
-              const lh = (lane.height || 120) * scale;
-              return (
-                <g key={lane.id}>
-                  <rect
-                    x={lx}
-                    y={ly}
-                    width={lw}
-                    height={lh}
-                    fill="#f8fafc"
-                    stroke="#e2e8f0"
-                    strokeWidth={1}
-                    rx={6}
-                  />
-                  <text
-                    x={lx + 10}
-                    y={ly + 18}
-                    fill="#64748b"
-                    fontSize={11}
-                    fontWeight="700"
-                  >
-                    {lane.label || 'Lane'}
-                  </text>
-                </g>
-              );
-            })}
+        {/* Pools and Lanes */}
+        {swimlanes
+          .filter((p) => p.type === 'pool')
+          .map((pool) => {
+            const px = tx(pool.position?.x ?? minX);
+            const py = ty(pool.position?.y ?? 0);
+            const pw = (pool.width || rawW) * scale;
+            const ph = (pool.height || 150) * scale;
+            const isExternal = Boolean(pool.isExternal || pool.data?.isExternal);
 
-        {/* Sequence Flow Edges */}
+            return (
+              <g key={pool.id}>
+                <rect
+                  x={px}
+                  y={py}
+                  width={pw}
+                  height={ph}
+                  fill={isExternal ? '#f8fafc' : '#ffffff'}
+                  stroke={isExternal ? '#94a3b8' : '#cbd5e1'}
+                  strokeWidth={isExternal ? 1.5 : 1}
+                  strokeDasharray={isExternal ? '4 3' : undefined}
+                  rx={4}
+                />
+                <text
+                  x={isExternal ? px + pw / 2 : px + 8}
+                  y={py + (isExternal ? ph / 2 + 4 : 14)}
+                  textAnchor={isExternal ? 'middle' : 'start'}
+                  fill={isExternal ? '#475569' : '#1e293b'}
+                  fontSize={isFullView ? 11 : 9}
+                  fontWeight="600"
+                >
+                  {pool.label || pool.data?.label || (isExternal ? 'External' : 'Process')}
+                </text>
+              </g>
+            );
+          })}
+
+        {swimlanes
+          .filter((l) => l.type === 'lane' && !l.implicitLane && !l.data?.implicitLane)
+          .map((lane) => {
+            const lx = tx(lane.position?.x ?? minX);
+            const ly = ty(lane.position?.y ?? 0);
+            const lw = (lane.width || rawW) * scale;
+            const lh = (lane.height || 120) * scale;
+            return (
+              <g key={lane.id}>
+                <rect
+                  x={lx}
+                  y={ly}
+                  width={lw}
+                  height={lh}
+                  fill="#f8fafc"
+                  stroke="#e2e8f0"
+                  strokeWidth={1}
+                  rx={3}
+                />
+                <text
+                  x={lx + 8}
+                  y={ly + 16}
+                  fill="#64748b"
+                  fontSize={isFullView ? 10 : 8}
+                  fontWeight="700"
+                >
+                  {lane.label || lane.data?.label || 'Lane'}
+                </text>
+              </g>
+            );
+          })}
+
+        {/* Edges */}
         {effectiveConnections.map((c) => {
           const f = nodeMap[c.fromId];
           const t = nodeMap[c.toId];
@@ -178,6 +220,7 @@ export default function DiagramPreview({
           // Center coordinate for edge label (if any, e.g. "Yes", "No")
           const midX = (startX + endX) / 2;
           const midY = (startY + endY) / 2;
+          const isMessage = c.type === 'message-flow' || c.flowType === 'message' || c.data?.type === 'message-flow';
 
           return (
             <g key={c.id || `${c.fromId}-${c.toId}`}>
@@ -186,8 +229,9 @@ export default function DiagramPreview({
                 y1={startY}
                 x2={endX}
                 y2={endY}
-                stroke="#a5b4fc"
+                stroke={isMessage ? '#64748b' : '#a5b4fc'}
                 strokeWidth={isFullView ? 2 : 1}
+                strokeDasharray={isMessage ? '4 3' : undefined}
                 markerEnd={`url(#arr_${version}_${isFullView ? 'full' : 'mini'})`}
               />
               {isFullView && c.label && (
@@ -227,6 +271,7 @@ export default function DiagramPreview({
           const y = ty(n.position?.y ?? 0);
 
           const rawLabel = n.data?.label || n.label || '';
+          const isHighlighted = Boolean(n.isHighlighted || n.data?.isHighlighted || n.data?.changed || n.changed);
           const label = isFullView
             ? rawLabel
             : rawLabel.length > 10
@@ -246,6 +291,17 @@ export default function DiagramPreview({
             return (
               <g key={n.id}>
                 <title>{rawLabel}</title>
+                {isHighlighted && (
+                  <circle
+                    cx={x + w / 2}
+                    cy={y + r}
+                    r={r + 3}
+                    fill="none"
+                    stroke="#f59e0b"
+                    strokeWidth={2}
+                    strokeDasharray="3 2"
+                  />
+                )}
                 <circle
                   cx={x + w / 2}
                   cy={y + r}
@@ -287,6 +343,15 @@ export default function DiagramPreview({
             return (
               <g key={n.id}>
                 <title>{isMergeGw ? 'Dono raaste yahan milte hain' : rawLabel}</title>
+                {isHighlighted && (
+                  <polygon
+                    points={`${mx},${y - 4} ${x + w + 4},${my} ${mx},${y + h + 4} ${x - 4},${my}`}
+                    fill="none"
+                    stroke="#f59e0b"
+                    strokeWidth={2}
+                    strokeDasharray="3 2"
+                  />
+                )}
                 <polygon
                   points={`${mx},${y} ${x + w},${my} ${mx},${y + h} ${x},${my}`}
                   fill={col.fill}
@@ -322,6 +387,19 @@ export default function DiagramPreview({
 
           return (
             <g key={n.id}>
+              {isHighlighted && (
+                <rect
+                  x={x - 3}
+                  y={y - 3}
+                  width={w + 6}
+                  height={h + 6}
+                  rx={(isFullView ? 6 : 3 * scale) + 2}
+                  fill="none"
+                  stroke="#f59e0b"
+                  strokeWidth={2}
+                  strokeDasharray="3 2"
+                />
+              )}
               <rect
                 x={x}
                 y={y}

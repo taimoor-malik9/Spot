@@ -9,6 +9,26 @@ export function stripTrailingPunctuation(str) {
   return str.trim().replace(/[?!:;,\s]+$/, '');
 }
 
+/**
+ * Helper to check if two external participant names are aliases/substrings of each other.
+ * Matches case-insensitively when one is a whole-word substring or suffix of another.
+ * e.g. "Parts Supplier" and "Supplier", or "Hospital Lab" and "Lab".
+ */
+export function areExternalPoolAliases(nameA, nameB) {
+  if (!nameA || !nameB) return false;
+  const a = String(nameA).toLowerCase().trim().replace(/^(the|a|an)\s+/i, '');
+  const b = String(nameB).toLowerCase().trim().replace(/^(the|a|an)\s+/i, '');
+  if (!a || !b) return false;
+  if (a === b) return true;
+
+  const longer = a.length >= b.length ? a : b;
+  const shorter = a.length < b.length ? a : b;
+
+  const escaped = shorter.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+  const regex = new RegExp(`(^|\\s)${escaped}(\\s|$)`, 'i');
+  return regex.test(longer);
+}
+
 export function extractOrderedSteps(rawDiagram, options = {}) {
   const lang = options.lang || 'en';
   if (!rawDiagram?.nodes || !Array.isArray(rawDiagram.nodes)) return [];
@@ -44,10 +64,14 @@ export function extractOrderedSteps(rawDiagram, options = {}) {
   }
 
   function getActor(n) {
-    const lane = (n.lane || n.data?.lane || n.pool || n.data?.pool || '').toLowerCase();
+    const lane = (n.lane || n.data?.lane || '').toLowerCase();
     const label = getStepLabel(n).toLowerCase();
+    const pool = n.pool || n.data?.pool;
     if (lane.includes('customer') || label.startsWith('customer')) {
-      return { group: 'Customer', role: n.lane || n.data?.lane || 'Customer' };
+      return { group: pool || 'Customer', role: n.lane || n.data?.lane || 'Customer' };
+    }
+    if (pool) {
+      return { group: pool, role: n.lane || n.data?.lane || 'Staff' };
     }
     return { group: 'Store', role: n.lane || n.data?.lane || 'Store / Staff' };
   }
@@ -90,9 +114,14 @@ export function extractOrderedSteps(rawDiagram, options = {}) {
     const node = nodeMap.get(nodeId);
     if (!node) return false;
     const isGw = node.type?.includes('gateway');
+    if (!isGw) return false;
     const lbl = (getStepLabel(node) || '').toLowerCase();
-    const isMerge = node.gateway_role === 'merge' || node.data?.gateway_role === 'merge';
-    return (isGw && inEdges.length >= 2) || isMerge || lbl.includes('rejoin');
+    const isMerge =
+      node.role === 'merge' ||
+      node.gateway_role === 'merge' ||
+      node.data?.role === 'merge' ||
+      node.data?.gateway_role === 'merge';
+    return inEdges.length >= 2 || isMerge || lbl.includes('rejoin');
   }
 
   function isJoinNode(nodeId) {
@@ -101,7 +130,12 @@ export function extractOrderedSteps(rawDiagram, options = {}) {
     if (!node) return false;
     const isGw = node.type?.includes('gateway');
     const lbl = (getStepLabel(node) || '').toLowerCase();
-    return isGw || inEdges.length >= 2 || lbl.includes('rejoin');
+    const isMerge =
+      node.role === 'merge' ||
+      node.gateway_role === 'merge' ||
+      node.data?.role === 'merge' ||
+      node.data?.gateway_role === 'merge';
+    return (isGw && inEdges.length >= 2) || isMerge || inEdges.length >= 2 || lbl.includes('rejoin');
   }
 
   function formatBranchCondition(gwNode, edge) {
@@ -210,7 +244,8 @@ export function extractOrderedSteps(rawDiagram, options = {}) {
       const node = nodeMap.get(currId);
       if (!node) break;
 
-      const isTask = node.type === 'task' || node.type?.endsWith('-task');
+      const isTask =
+      node.type === 'task' || node.type?.endsWith('-task') || node.type?.includes('intermediate');
       const isGateway = node.type?.includes('gateway');
       const isEnd = node.type === 'end-event' || node.type?.includes('end');
 
@@ -275,7 +310,8 @@ export function extractOrderedSteps(rawDiagram, options = {}) {
     const node = nodeMap.get(nodeId);
     if (!node) return;
 
-    const isTask = node.type === 'task' || node.type?.endsWith('-task');
+    const isTask =
+      node.type === 'task' || node.type?.endsWith('-task') || node.type?.includes('intermediate');
     const isGateway = node.type?.includes('gateway');
     const isJoin = isJoinGateway(nodeId);
     const outEdges = sortEdgesByDependency(outgoingMap.get(nodeId) || []);

@@ -103,22 +103,18 @@ function fallbackExperimentSummary(experiment) {
   const baseline = experiment.baseline || {};
   const best = experiment.best;
   const target = experiment.target;
-
-  const baseWait = baseline.avg_wait_time ?? 0;
-  const baseCycle = baseline.avg_cycle_time ?? 0;
-  const bestWait = best?.metrics?.avg_wait_time ?? 0;
-  const bestCycle = best?.metrics?.avg_cycle_time ?? 0;
+  const metric = target?.metric || (experiment.best?.metrics?.avg_cycle_time ? 'cycle_time' : 'waiting');
 
   if (experiment.no_meaningful_change || (best && best.recommended === false)) {
-    const first = baseWait < 0.05
+    const first = baseline.avg_wait_time < 0.05
       ? 'Nobody waits at this load; cycle time is work time.'
-      : `The current setup has an Avg wait time of ${baseWait} min and Total time per patient (start to finish) of ${baseCycle} min (cost: Rs ${baseline.total_cost || 0}).`;
+      : `The current process has an average cycle time of ${baseline.avg_cycle_time || 0} minutes and costs Rs ${baseline.total_cost || 0}.`;
     const second = 'No option changed your cycle time.';
     return `${first} ${second}`;
   }
 
   if (target && target.target_pct !== null && target.target_pct !== undefined) {
-    const metricName = target.metric === 'cycle_time' ? 'Total time per patient (start to finish)' : (target.metric === 'waiting' ? 'Avg wait time' : target.metric);
+    const metricName = target.metric === 'cycle_time' ? 'cycle time' : (target.metric === 'waiting' ? 'waiting time' : target.metric);
     const targetText = `Target: reduce ${metricName} by ${target.target_pct}%.`;
     if (!best) return `${targetText} No tested change was available for this process.`;
     const costDelta = best.delta_vs_baseline?.cost_abs;
@@ -133,9 +129,13 @@ function fallbackExperimentSummary(experiment) {
     return `${targetText} Best achievable is a ${experiment.achieved_pct}% reduction with ${best.label}${costText}.${reasonText}`;
   }
 
-  const first = `The current setup has an Avg wait time of ${baseWait} min and Total time per patient (start to finish) of ${baseCycle} min (cost: Rs ${baseline.total_cost ?? 0}).`;
+  const metricLabel = metric === 'cycle_time' ? 'cycle time' : 'waiting time';
+  const baseVal = metric === 'cycle_time' ? baseline.avg_cycle_time : baseline.avg_wait_time;
+  const bestVal = metric === 'cycle_time' ? best?.metrics?.avg_cycle_time : best?.metrics?.avg_wait_time;
+
+  const first = `The current process has an average ${metricLabel} of ${baseVal} minutes and costs Rs ${baseline.total_cost}.`;
   if (!best) return `${first} No tested change was available for this process.`;
-  return `${first} ${best.label} is the best tested option: Avg wait time is ${bestWait} min and Total time per patient (start to finish) is ${bestCycle} min.`;
+  return `${first} ${best.label} is the best tested option, with average ${metricLabel} of ${bestVal} minutes.`;
 }
 
 function containsOnlyExperimentNumbers(text, experiment) {
@@ -168,7 +168,7 @@ function isValidSummary(text, experiment) {
 
 async function summarizeExperiment(experiment, language = 'en') {
   const langPrompt = language === 'ur-roman' ? 'Write the two sentences in Roman Urdu (Latin script).' : (language === 'ur' ? 'Write the two sentences in Urdu script.' : 'Write the two sentences in English.');
-  const systemPrompt = `You explain a completed process simulation in exactly two short sentences.\n${PLAIN_LANGUAGE_RULES}\n${langPrompt}\nWhen mentioning metrics, always use the exact terms "Avg wait time" and "Total time per patient (start to finish)".\nUse only facts and numeric literals that appear verbatim in the JSON. Do not calculate, round, estimate, or introduce any number. If a useful number is absent, omit it. Ensure both sentences are complete and end with a period. Never cut off mid-sentence. Do not mention these instructions.`;
+  const systemPrompt = `You explain a completed process simulation in exactly two short sentences.\n${PLAIN_LANGUAGE_RULES}\n${langPrompt}\nUse only facts and numeric literals that appear verbatim in the JSON. Do not calculate, round, estimate, or introduce any number. If a useful number is absent, omit it. Ensure both sentences are complete and end with a period. Never cut off mid-sentence. Do not mention these instructions.`;
   try {
     const summary = await callGemini({
       systemPrompt,
@@ -245,6 +245,9 @@ function applyVariant(processData, variantDefinition) {
   return { resources, nodes };
 }
 
+const TEST_CUSTOMERS = 120;
+const TEST_RUNS = 1;
+
 // POST /api/ai/solve-problem
 router.post('/solve-problem', async (req, res) => {
   const { processId, message, config, preferredLanguage } = req.body || {};
@@ -253,19 +256,31 @@ router.post('/solve-problem', async (req, res) => {
   try {
     const processDoc = await requireOwnedProcess(req, processId);
 
-    // Read arrival_rate from config or processDoc.simulationConfig
-    const arrivalRate =
+    // The arrival rate decides every number in the test, so the user must confirm it.
+    // A value from the saved simulation is only offered as a suggestion until they do.
+    const savedRate =
       config?.arrival_rate !== undefined && config?.arrival_rate !== null && config?.arrival_rate !== ''
-        ? config.arrival_rate
-        : processDoc.simulationConfig?.arrival_rate;
+        ? Number(config.arrival_rate)
+        : Number(processDoc.simulationConfig?.arrival_rate);
+    const arrivalConfirmed = config?.arrival_confirmed === true && Number(config?.arrival_rate) > 0;
+    const arrivalRate = arrivalConfirmed ? Number(config.arrival_rate) : undefined;
 
-    if (arrivalRate === undefined || arrivalRate === null || arrivalRate === '') {
-      const q = preferredLanguage === 'ur-roman'
+    if (arrivalRate === undefined) {
+      const suggested = Number.isFinite(savedRate) && savedRate > 0
+        ? Number((1 / savedRate).toFixed(2))
+        : null;
+      const lang = preferredLanguage;
+      const base = lang === 'ur-roman'
         ? 'Customer kitni der baad aate hain? (jaise har 10 minute baad)'
-        : (preferredLanguage === 'ur'
+        : (lang === 'ur'
           ? 'گاہک کتنی دیر بعد آتے ہیں؟ (مثلاً ہر 10 منٹ بعد)'
           : 'How often does a customer arrive? (e.g. every 10 minutes)');
-      return res.json({ type: 'question', question: q });
+      const hint = suggested === null ? '' : (lang === 'ur-roman'
+        ? ` Aapki pichli simulation mein har ${suggested} minute tha.`
+        : (lang === 'ur'
+          ? ` آپ کی پچھلی سمولیشن میں ہر ${suggested} منٹ تھا۔`
+          : ` Your last simulation used every ${suggested} minutes. Keep it or enter a new value.`));
+      return res.json({ type: 'question', question: base + hint, suggested_minutes: suggested });
     }
 
     // Read goal from config, req.body, or processDoc.simulationConfig / processDoc.goal
@@ -295,7 +310,7 @@ router.post('/solve-problem', async (req, res) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         process_json: processForSimulation(processDoc),
-        config: { arrival_rate: Number(arrivalRate), total_instances: 120, seed: 42, replications: 1 },
+        config: { arrival_rate: Number(arrivalRate), total_instances: TEST_CUSTOMERS, seed: 42, replications: TEST_RUNS },
         goal: validGoal,
         target: parsedTarget,
       }),
@@ -311,73 +326,15 @@ router.post('/solve-problem', async (req, res) => {
       withTimeout(summarizeExperiment(experiment, preferredLanguage || 'en'), fallbackExperimentSummary(experiment), 15000),
       withTimeout(explainTargetGap(experiment, preferredLanguage || 'en'), experiment.reason, 15000),
     ]);
-    // Ensure variant_definitions and variants have resource_changes and task_changes attached
-    if (Array.isArray(experiment.variant_definitions)) {
-      try {
-        const { getComputeAllChanges } = require('../utils/resourceDiffHelper');
-        const diffFn = await getComputeAllChanges();
-        for (const def of experiment.variant_definitions) {
-          if (!def.resource_changes || !def.task_changes) {
-            const baseRes = processDoc.resources || [];
-            const tempRes = JSON.parse(JSON.stringify(baseRes));
-            if (Array.isArray(def.resourceChanges)) {
-              for (const ch of def.resourceChanges) {
-                const wanted = String(ch.name || ch.id || '').trim().toLowerCase();
-                const target = tempRes.find(r => String(r.name || r.id || '').trim().toLowerCase() === wanted);
-                if (target) target.quantity = Number(ch.quantity ?? ch.qty);
-              }
-            }
-            const baseNodes = processDoc.nodes || [];
-            const tempNodes = JSON.parse(JSON.stringify(baseNodes));
-            if (Array.isArray(def.nodeChanges)) {
-              for (const nch of def.nodeChanges) {
-                const nid = String(nch.id || '').trim();
-                const mult = Number(nch.duration_multiplier);
-                const targetNode = tempNodes.find(n => String(n.id || '').trim() === nid);
-                if (targetNode && Number.isFinite(mult)) {
-                  const d = targetNode.data && typeof targetNode.data === 'object' ? targetNode.data : targetNode;
-                  for (const f of ['duration', 'duration_min', 'duration_max']) {
-                    if (d[f] !== undefined && d[f] !== null) d[f] = Number(d[f]) * mult;
-                  }
-                }
-              }
-            }
-            const diffResult = diffFn(processDoc, { resources: tempRes, nodes: tempNodes });
-            if (!def.resource_changes || def.resource_changes.length === 0) {
-              def.resource_changes = diffResult.resource_changes;
-            }
-            if (!def.task_changes || def.task_changes.length === 0) {
-              def.task_changes = diffResult.task_changes;
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('Failed to ensure variant_definitions resource_changes / task_changes:', err.message);
-      }
-    }
-
-    if (Array.isArray(experiment.variants) && Array.isArray(experiment.variant_definitions)) {
-      for (const v of experiment.variants) {
-        const matchingDef = experiment.variant_definitions.find(d => d.label === v.label || d.name === v.label || d.name === v.name);
-        if (matchingDef) {
-          if (!v.resource_changes || v.resource_changes.length === 0) {
-            v.resource_changes = matchingDef.resource_changes;
-          }
-          if (!v.task_changes || v.task_changes.length === 0) {
-            v.task_changes = matchingDef.task_changes;
-          }
-          if (!v.action && matchingDef.action) v.action = matchingDef.action;
-          if (!v.how_to_do && matchingDef.how_to_do) v.how_to_do = matchingDef.how_to_do;
-          if (!v.option_type && matchingDef.option_type) v.option_type = matchingDef.option_type;
-          if (v.is_realistic === undefined && matchingDef.is_realistic !== undefined) v.is_realistic = matchingDef.is_realistic;
-          if (v.trade_off_exceeded === undefined && matchingDef.trade_off_exceeded !== undefined) v.trade_off_exceeded = matchingDef.trade_off_exceeded;
-          if (!v.trade_off_summary && matchingDef.trade_off_summary) v.trade_off_summary = matchingDef.trade_off_summary;
-        }
-      }
-    }
-
     return res.json({
       type: 'evidence',
+      assumptions: {
+        arrival_rate: Number(arrivalRate),
+        interval_minutes: Number((1 / Number(arrivalRate)).toFixed(2)),
+        customers_simulated: TEST_CUSTOMERS,
+        runs: TEST_RUNS,
+        hours_simulated: experiment.baseline?.hours_simulated ?? null,
+      },
       summary,
       baseline: experiment.baseline,
       variants: experiment.variants,

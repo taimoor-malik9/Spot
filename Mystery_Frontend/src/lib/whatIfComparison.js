@@ -119,6 +119,26 @@ export function extractMetricWithCI(results, metricType = 'cycle_time') {
   return { mean: 0, ciLow: 0, ciHigh: 0, runs };
 }
 
+export function extractCostMetrics(results) {
+  if (!results) return { mean: 0, ciLow: 0, ciHigh: 0, runs: 1, hasCI: false, perCustomer: 0, idle: 0 };
+  const rs = results.replication_stats || {};
+  const fin = results.financial_summary || {};
+  // With replications, financial_summary.total_cost is pooled across all replications,
+  // so the per-replication mean is the comparable number.
+  const mean = Number(rs.mean_total_cost ?? fin.total_cost ?? 0);
+  const hasCI = rs.cost_ci_95_low != null && rs.cost_ci_95_high != null;
+  const runs = results.runs ?? rs.n ?? 1;
+  return {
+    mean,
+    ciLow: hasCI ? Number(rs.cost_ci_95_low) : mean,
+    ciHigh: hasCI ? Number(rs.cost_ci_95_high) : mean,
+    runs,
+    hasCI,
+    perCustomer: Number(fin.cost_per_customer ?? 0),
+    idle: Number(fin.total_idle_cost ?? 0),
+  };
+}
+
 export function checkMeaningfulChange(baseMetric, wiMetric) {
   if (!baseMetric || !wiMetric || baseMetric.mean === 0) {
     return { delta: 0, absDelta: 0, isMeaningful: false, overlap: true };
@@ -163,6 +183,13 @@ export function computeComparisonMetrics(baselineResults, whatifResults, idToLab
   const baseThroughput = extractMetricWithCI(baselineResults, 'throughput');
   const wiThroughput = extractMetricWithCI(whatifResults, 'throughput');
   const throughputChange = checkMeaningfulChange(baseThroughput, wiThroughput);
+
+  // 2b. Cost extraction & comparison
+  const baseCost = extractCostMetrics(baselineResults);
+  const wiCost = extractCostMetrics(whatifResults);
+  const costChange = checkMeaningfulChange(baseCost, wiCost);
+  const costAbs = wiCost.mean - baseCost.mean;
+  const hasCost = baseCost.mean > 0 || wiCost.mean > 0;
 
   // 3. Bottleneck extraction
   const getBn = (res) => {
@@ -238,6 +265,20 @@ export function computeComparisonMetrics(baselineResults, whatifResults, idToLab
     );
   }
 
+  // Cost narrative
+  if (hasCost) {
+    const noBenefit = !cycleImproved && !tpImproved;
+    if (costChange.isMeaningful && costChange.delta >= 5.0 && noBenefit) {
+      narrativeParts.push(`**Costs more with no meaningful improvement** (+${costChange.delta.toFixed(1)}% cost).`);
+    } else if (costChange.isMeaningful && costChange.delta >= 5.0) {
+      narrativeParts.push(`Cost rose by **${costChange.delta.toFixed(1)}%**.`);
+    } else if (costChange.isMeaningful) {
+      narrativeParts.push(`Cost fell by **${Math.abs(costChange.delta).toFixed(1)}%**.`);
+    } else {
+      narrativeParts.push(`Cost showed no meaningful change (${costChange.delta > 0 ? '+' : ''}${costChange.delta.toFixed(1)}%).`);
+    }
+  }
+
   // Bottleneck narrative
   if (wiBnLabel === 'None') {
     // If the bottleneck becomes None, say "No queue formed in this run", never "resolved"
@@ -272,6 +313,17 @@ export function computeComparisonMetrics(baselineResults, whatifResults, idToLab
     cycleMeaningful: cycleChange.isMeaningful,
     throughputDelta: throughputChange.delta,
     throughputMeaningful: throughputChange.isMeaningful,
+    hasCost,
+    baseCost: baseCost.mean,
+    wiCost: wiCost.mean,
+    costDelta: costChange.delta,
+    costAbs,
+    costMeaningful: costChange.isMeaningful,
+    costHasCI: baseCost.hasCI && wiCost.hasCI,
+    baseCostPerCustomer: baseCost.perCustomer,
+    wiCostPerCustomer: wiCost.perCustomer,
+    baseIdleCost: baseCost.idle,
+    wiIdleCost: wiCost.idle,
     baseBnLabel,
     wiBnLabel,
     descText,

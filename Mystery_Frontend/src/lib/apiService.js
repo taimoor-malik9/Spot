@@ -63,6 +63,7 @@ export async function request(path, options = {}) {
       const error = new Error(errorMsg);
       error.status = res.status;
       error.code = data?.code;
+      error.details = Array.isArray(data?.details) ? data.details : (data?.detail ? [data.detail] : []);
       throw error;
     }
 
@@ -112,14 +113,16 @@ function inferSwimlaneAssignments(elements) {
       return;
     }
 
-    // 2. Check if the element falls inside a pool
-    const hitPool = pools.find(pool => {
-      const px = pool.position?.x ?? 0;
-      const py = pool.position?.y ?? 0;
-      const pw = pool.width ?? 600;
-      const ph = pool.height ?? 300;
-      return cx >= px && cx <= px + pw && cy >= py && cy <= py + ph;
-    });
+    // 2. Check if the element falls inside an internal process pool (never match external black-box pools)
+    const hitPool = pools
+      .filter(p => !p.data?.isExternal && !p.isExternal && !p.id?.includes('ext'))
+      .find(pool => {
+        const px = pool.position?.x ?? 0;
+        const py = pool.position?.y ?? 0;
+        const pw = pool.width ?? 600;
+        const ph = pool.height ?? 300;
+        return cx >= px && cx <= px + pw && cy >= py && cy <= py + ph;
+      });
 
     if (hitPool) {
       poolMap[el.id] = hitPool.id;
@@ -265,6 +268,36 @@ export function shapeFrontendToBackend(elements, connections, title, globalResou
       };
     });
 
+  // Preserve all pools (main process pool + external pools) and lanes so swimlanes render on canvas
+  const poolAndLaneNodes = elements
+    .filter(el => el.type === 'pool' || el.type === 'lane')
+    .map(el => ({
+      id: el.id,
+      type: el.type,
+      label: el.data?.label || el.label || el.id,
+      origin: el.origin || el.data?.origin || 'structural',
+      position: el.position ? { x: el.position.x, y: el.position.y } : null,
+      width: el.width ?? null,
+      height: el.height ?? null,
+      pool: el.pool || el.poolId || (el.type === 'lane' ? (el.parent || null) : null),
+      poolId: el.poolId || el.pool || (el.type === 'lane' ? (el.parent || null) : null),
+      lane: el.lane || (el.type === 'lane' ? el.id : null),
+      rowIndex: el.rowIndex,
+      isExternal: Boolean(el.isExternal || el.data?.isExternal || el.id?.includes('ext')),
+      data: {
+        label: el.data?.label || el.label || el.id,
+        isExternal: Boolean(el.isExternal || el.data?.isExternal || el.id?.includes('ext')),
+        collapsed: Boolean(el.isExternal || el.data?.isExternal || el.id?.includes('ext')),
+        origin: el.origin || el.data?.origin || 'structural',
+        pool: el.pool || el.poolId,
+        poolId: el.poolId || el.pool,
+        lane: el.lane || (el.type === 'lane' ? el.id : null),
+        rowIndex: el.rowIndex,
+      },
+    }));
+
+  const allNodes = [...nodes, ...poolAndLaneNodes];
+
   const edges = connections.map(conn => {
     const srcId = conn.fromId || conn.from || conn.source;
     const tgtId = conn.toId || conn.to || conn.target;
@@ -308,30 +341,54 @@ export function shapeFrontendToBackend(elements, connections, title, globalResou
       data: el.data || {},
     }));
 
-  return { title: title || getDefaultProcessTitle(), resources: resourcesList, nodes, edges, layoutElements };
+  return { title: title || getDefaultProcessTitle(), resources: resourcesList, nodes: allNodes, edges, layoutElements };
 }
 
 export function shapeBackendToFrontend(process) {
-  const layoutElements = (process.layoutElements || []).map(layout => ({
+  let layoutElements = (process.layoutElements || []).map(layout => ({
     id: layout.id,
     type: layout.type,
     label: layout.label || layout.data?.label || layout.id,
-    poolId: layout.poolId,
+    pool: layout.pool || layout.poolId,
+    poolId: layout.poolId || layout.pool,
     position: layout.position || { x: 100, y: 100 },
     width: layout.width,
     height: layout.height,
     rowIndex: layout.rowIndex,
+    isExternal: Boolean(layout.isExternal || layout.data?.isExternal),
     data: layout.data || {},
   }));
 
-  const nodeElements = (process.nodes || []).map(node => {
+  if (layoutElements.length === 0 && Array.isArray(process.nodes)) {
+    layoutElements = process.nodes
+      .filter(n => ['pool', 'lane'].includes(n.type))
+      .map(n => ({
+        id: n.id,
+        type: n.type,
+        label: n.label || n.data?.label || n.id,
+        pool: n.pool || n.poolId,
+        poolId: n.poolId || n.pool,
+        position: n.position || { x: 100, y: 100 },
+        width: n.width,
+        height: n.height,
+        rowIndex: n.rowIndex,
+        isExternal: Boolean(n.isExternal || n.data?.isExternal),
+        data: n.data || {},
+      }));
+  }
+
+  const nodeElements = (process.nodes || [])
+    .filter(node => !['pool', 'lane'].includes(node.type))
+    .map(node => {
     const origin = node.data?.origin || node.origin || 'user';
     const kept = node.data?.kept !== undefined ? Boolean(node.data.kept) : (node.kept !== undefined ? Boolean(node.kept) : false);
     const estimated = Boolean(node.data?.estimated ?? node.estimated);
+    const rawLabel = node.data?.label != null && node.data.label !== '' ? node.data.label : (node.label || '');
+    const cleanLabel = /^(gw_|task_|step_|node_|end_|start_).+|_\d+$/i.test(rawLabel || node.id) ? '' : rawLabel;
     return {
       id: node.id,
       type: node.data?.customType || backendTypeToFrontend(node.type),
-      label: node.data?.label || node.id,
+      label: cleanLabel,
       pool: node.pool || null,
       lane: node.lane || null,
       parent: node.parent || null,

@@ -647,7 +647,7 @@ describe('Module: AI Model Generation Pipeline & Deterministic Auto-Fixes (Secti
     const friendlyEn = friendlyError(rawError, 'en');
     const friendlyRu = friendlyError(rawError, 'ur-roman');
 
-    assert.equal(friendlyEn, "'Khana banana' isn't connected to the other steps.");
-    assert.equal(friendlyRu, "'Khana banana' baqi steps se jura nahi hai.");
+    assert.equal(friendlyEn, "We tidied up 'Khana banana' so your process can run.");
+    assert.equal(friendlyRu, "'Khana banana' ko theek karke process chalne ke qabil bana diya gaya hai.");
   });
 });

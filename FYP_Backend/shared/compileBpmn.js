@@ -56,7 +56,7 @@ export function getPoolRole(pool) {
     return pool.role.trim();
   }
   const name = String(pool.name || '').trim();
-  const nonPersonWords = /^(store|shop|system|organization|company|facility|hospital|clinic|warehouse|bank)$/i;
+  const nonPersonWords = /^(store|shop|system|organization|company|facility|hospital|clinic|warehouse|bank|department|division|enterprise)$/i;
   if (nonPersonWords.test(name)) {
     return null;
   }
@@ -466,6 +466,22 @@ export function compileBpmn(spec) {
     function compileBranchTree(currentBranch, entryNodeId, branchKey, targetNodeId, stepLane) {
       compiledBranches.add(currentBranch);
 
+      const options = currentBranch.options || [];
+      const allOptionsEmpty = options.length > 0 && options.every(opt => (opt.steps || []).length === 0 && opt.rejoin === true);
+      if (allOptionsEmpty) {
+        // Degenerate branch with 0 activities in all rejoining paths: bypass gateway pair completely
+        if (targetNodeId) {
+          edges.push({
+            id: `seq_${entryNodeId}_${targetNodeId}`,
+            source: entryNodeId,
+            target: targetNodeId,
+            flowType: 'sequence',
+            data: {},
+          });
+        }
+        return;
+      }
+
       const splitId = `gw_split_${sanitizeSlug(entryNodeId)}_${branchKey}`;
       const splitLabel = currentBranch.question || 'Decision?';
       nodes.push({
@@ -486,12 +502,36 @@ export function compileBpmn(spec) {
         data: {},
       });
 
-      const options = currentBranch.options || [];
-      const normalizedProbs = options.map((opt) =>
+      const rawProbs = options.map((opt) =>
         opt.probability != null && !isNaN(Number(opt.probability))
           ? Number(opt.probability)
           : undefined
       );
+
+      const statedProbs = rawProbs.filter((p) => p !== undefined);
+      let normalizedProbs = [...rawProbs];
+
+      // Auto-normalize probabilities:
+      // 1. Single stated branch in 2-branch split gets complement 1 - p
+      // 2. All branches stated with sum != 1.0 proportionally normalize to exactly 1.0
+      if (statedProbs.length === 1 && rawProbs.length === 2 && statedProbs[0] > 0 && statedProbs[0] < 1.0) {
+        const statedVal = statedProbs[0];
+        const complement = Number((1.0 - statedVal).toFixed(2));
+        normalizedProbs = rawProbs.map((p) => (p !== undefined ? p : complement));
+      } else if (statedProbs.length === rawProbs.length && rawProbs.length > 0) {
+        const sum = statedProbs.reduce((acc, v) => acc + v, 0);
+        if (Math.abs(sum - 1.0) > 0.001 && sum > 0) {
+          let running = 0;
+          normalizedProbs = rawProbs.map((p, idx) => {
+            if (idx === rawProbs.length - 1) {
+              return Number((1.0 - running).toFixed(2));
+            }
+            const norm = Number((p / sum).toFixed(2));
+            running += norm;
+            return norm;
+          });
+        }
+      }
 
       const rejoiningOptions = [];
       const nonRejoiningOptions = [];

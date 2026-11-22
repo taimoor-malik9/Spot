@@ -179,3 +179,18 @@ class TestFinancialFixture(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SoftwareLicenceCostTests(unittest.TestCase):
+    def test_software_licence_is_billed_as_running_cost_with_no_idle(self):
+        from simulation.financials import generate_financial_report
+        resources = [{
+            "id": "kiosk", "name": "Digital intake software", "type": "software",
+            "quantity": 1, "monthly_cost": 17600, "hours_per_day": 8, "working_days_per_month": 22,
+        }]
+        # 17,600 / (22*8) = Rs 100 per hour; 10 simulated hours = Rs 1,000
+        report = generate_financial_report(resources, {}, total_sim_minutes=600, customers=10)
+        self.assertEqual(report["total_cost"], 1000.0)
+        self.assertEqual(report["total_active_cost"], 1000.0)
+        self.assertEqual(report["total_idle_cost"], 0.0)
+        self.assertEqual(report["cost_per_customer"], 100.0)

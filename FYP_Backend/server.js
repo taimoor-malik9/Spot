@@ -1,5 +1,8 @@
 const dns = require('dns');
 dns.setServers(['8.8.8.8', '1.1.1.1']);
+if (dns.setDefaultResultOrder) {
+  dns.setDefaultResultOrder('ipv4first');
+}
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -65,6 +68,7 @@ app.use('/api/scenario', requireAuth, require('./routes/scenario'));
 app.use('/api/scenarios', requireAuth, require('./routes/scenario'));
 app.use('/api/runs', requireAuth, require('./routes/runs'));
 const { getValidateBpmn } = require('./utils/cloneProcessToScenario');
+const getDeterministicNormalizer = async () => (await import('./shared/deterministicNormalizer.js')).normalizeAndRepairBpmn;
 
 function assignLanesToNodes(nodes, layoutElements) {
     const lanes = (layoutElements || []).filter(el => el && el.type === 'lane');
@@ -92,7 +96,9 @@ function assignLanesToNodes(nodes, layoutElements) {
                 lane = hitLane.label || hitLane.id;
                 if (!pool && hitLane.poolId) pool = hitLane.poolId;
             } else {
-                const hitPool = pools.find(p => {
+                const hitPool = pools
+                    .filter(p => !p.data?.isExternal && !p.isExternal && !p.id?.includes('ext'))
+                    .find(p => {
                     const px = p.position?.x ?? 0;
                     const py = p.position?.y ?? 0;
                     const pw = p.width ?? 600;
@@ -132,6 +138,32 @@ function assignLanesToNodes(nodes, layoutElements) {
     });
 }
 
+function formatValidationErrorsForResponse(errors) {
+    if (!Array.isArray(errors)) return [];
+    return errors.map(err => {
+        if (typeof err !== 'string') return err;
+        let msg = err;
+        const minMaxMatch = msg.match(/(?:Step|Task)\s+["']?([^"']+)["']?\s+duration_min\s*\(([^)]+)\)\s*cannot be greater than\s*duration_max\s*\(([^)]+)\)/i);
+        if (minMaxMatch) {
+            return `Task '${minMaxMatch[1]}': minimum duration cannot be greater than maximum duration.`;
+        }
+        const boundsMatch = msg.match(/(?:Step|Task)\s+["']?([^"']+)["']?\s+duration\s*\(([^)]+)\)\s*must be between\s*duration_min\s*\(([^)]+)\)\s*and\s*duration_max\s*\(([^)]+)\)/i);
+        if (boundsMatch) {
+            return `Task '${boundsMatch[1]}': duration must be between minimum and maximum bounds.`;
+        }
+        const durationMatch = msg.match(/(?:Step|Task)\s+["']?([^"']+)["']?\s+needs a duration/i);
+        if (durationMatch) {
+            return `Task '${durationMatch[1]}': missing duration.`;
+        }
+        const probMatch = msg.match(/Exclusive gateway\s+["']?([^"']+)["']?\s+branch probabilities sum to\s*([^,]+),\s*must equal 100%/i) ||
+                          msg.match(/Branch probability total is\s*([^,]+),\s*must equal 100%/i);
+        if (probMatch) {
+            return `Decision '${probMatch[1] || 'Step'}': branch percentages total ${probMatch[2] || probMatch[1]}, must equal 100%.`;
+        }
+        return msg.replace(/\b(gateway|bpmn|token|sequence flow|same-pool|dangling edge)\b/gi, 'step');
+    });
+}
+
 app.post('/api/process', requireAuth, async (req, res) => {
     console.log('📥 POST /api/process hit!');
     try {
@@ -163,20 +195,34 @@ app.post('/api/process', requireAuth, async (req, res) => {
 
         // Run full validator on base process at save time
         const validateBpmn = await getValidateBpmn();
-        const validation = validateBpmn({ nodes: cleanNodes, edges: cleanEdges, resources: resources || [] });
+        let effectiveNodes = cleanNodes;
+        let effectiveEdges = cleanEdges;
+        let effectiveResources = resources || [];
+
+        let validation = validateBpmn({ nodes: effectiveNodes, edges: effectiveEdges, resources: effectiveResources });
         if (Array.isArray(validation.errors) && validation.errors.length > 0) {
-            return res.status(400).json({
-                error: `BPMN validation failed with ${validation.errors.length} error(s):\n- ${validation.errors.join('\n- ')}`,
-                details: validation.errors
-            });
+            // Auto-repair once before failing
+            const normalizeAndRepairBpmn = await getDeterministicNormalizer();
+            const repaired = normalizeAndRepairBpmn({ nodes: effectiveNodes, edges: effectiveEdges, resources: effectiveResources });
+            const revalidation = validateBpmn(repaired);
+            if (!revalidation.errors || revalidation.errors.length === 0) {
+                effectiveNodes = repaired.nodes;
+                effectiveEdges = repaired.edges;
+                effectiveResources = repaired.resources || effectiveResources;
+            } else {
+                return res.status(400).json({
+                    error: 'We could not save your process because some steps need attention. Please review and try again.',
+                    details: formatValidationErrorsForResponse(revalidation.errors)
+                });
+            }
         }
 
         const newProcess = new Process({ 
             title: title || 'Untitled Process', 
             userId: req.user._id,
-            resources: resources || [], 
-            nodes: cleanNodes, 
-            edges: cleanEdges,
+            resources: effectiveResources, 
+            nodes: effectiveNodes, 
+            edges: effectiveEdges,
             layoutElements: layoutElements || [],
             simulationConfig: simulationConfig || null,
             goal: goal || null
@@ -351,16 +397,33 @@ app.put('/api/process/:id', requireAuth, async (req, res) => {
         // Run full validator on base process at save/update time when diagram is modified
         if (nodes !== undefined || edges !== undefined || resources !== undefined) {
             const validateBpmn = await getValidateBpmn();
-            const validation = validateBpmn({
-                nodes: processDoc.nodes,
-                edges: processDoc.edges,
-                resources: processDoc.resources || []
+            let effectiveNodes = processDoc.nodes;
+            let effectiveEdges = processDoc.edges;
+            let effectiveResources = processDoc.resources || [];
+
+            let validation = validateBpmn({
+                nodes: effectiveNodes,
+                edges: effectiveEdges,
+                resources: effectiveResources
             });
             if (Array.isArray(validation.errors) && validation.errors.length > 0) {
-                return res.status(400).json({
-                    error: `BPMN validation failed with ${validation.errors.length} error(s):\n- ${validation.errors.join('\n- ')}`,
-                    details: validation.errors
+                const normalizeAndRepairBpmn = await getDeterministicNormalizer();
+                const repaired = normalizeAndRepairBpmn({
+                    nodes: effectiveNodes,
+                    edges: effectiveEdges,
+                    resources: effectiveResources
                 });
+                const revalidation = validateBpmn(repaired);
+                if (!revalidation.errors || revalidation.errors.length === 0) {
+                    processDoc.nodes = repaired.nodes;
+                    processDoc.edges = repaired.edges;
+                    processDoc.resources = repaired.resources || effectiveResources;
+                } else {
+                    return res.status(400).json({
+                        error: 'We could not update your process because some steps need attention. Please review and try again.',
+                        details: formatValidationErrorsForResponse(revalidation.errors)
+                    });
+                }
             }
         }
 

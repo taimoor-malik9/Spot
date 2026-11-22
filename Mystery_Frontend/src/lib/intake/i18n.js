@@ -126,6 +126,8 @@ export const STRINGS = {
     tryLabel: 'Try:',
     showProcessBtn: 'Show me my process',
     mappingProcess: 'Spot AI is mapping your process…',
+    updatingProcess: 'Updating your process…',
+    confirmError: "We couldn't open your process, tap to try again",
     identifyingSteps: 'Identifying activities, events, and flow connections…',
     generationIssue: 'Generation issue',
     tryAgain: 'Try again',
@@ -143,7 +145,7 @@ export const STRINGS = {
     assumptionsHeader: 'Assumptions & Auto-repairs:',
     processNeedsAdjustment: 'One thing is missing before we can run this',
     fixForMe: 'Fix for me',
-    isThisRight: 'Is this right?',
+    isThisRight: 'Does this match how your business works?',
     confirm: 'Confirm',
     confirmBlockedErrors: 'Confirm (answer the question above first)',
     whatShouldChange: 'What should change?',
@@ -157,7 +159,13 @@ export const STRINGS = {
     storeStaff: 'Store / Staff',
     estimated: 'estimated',
     branchesQuestion: 'Roughly what % choose each? (e.g. 60% / 40%)',
-    unconnectedError: "Some steps aren't connected properly.",
+    unconnectedError: 'We tidied up your process so it can run.',
+    whatChangedHeader: "We tidied up your process so it can run. Here's what we changed:",
+    undoChange: 'Undo',
+    assumedBadge: 'We assumed this, please check',
+    doesThisMatchBusiness: 'Does this match how your business works?',
+    unresolvedStepPrompt: (step) => `We couldn't work out how "${step}" connects. Tap here to tell us what happens after "${step}":`,
+    finishEndProcess: 'Finish / End process',
     keepWorking: 'Keep working',
     discard: 'Discard',
     discardModalTitle: 'Discard this draft and start over?',
@@ -189,9 +197,11 @@ export const STRINGS = {
     editProcess: 'Edit process',
     runSimulationHint: 'See where customers wait and where you can save time.',
     estimatesNote: 'Some numbers are estimates. You can refine them later.',
-    totalMustBe100: (sum) => `Total ${sum}%, must be 100`,
+    totalMustBe100: (sum, stepName) => stepName ? `The split at '${stepName}' totals ${sum}% instead of 100%` : `Total ${sum}%, must be 100`,
     totalIndicator: (sum) => `Total: ${sum}% (must be 100)`,
     autoBalance: 'Auto-balance',
+    autoBalanceTo100: 'Auto-balance to 100%',
+    resolveIssuesToContinue: 'Resolve checks to continue',
     rushHourPace: 'RUSH HOUR PACE',
     busyness_steady: 'Steady',
     busyness_quiet: 'Slow',
@@ -445,6 +455,8 @@ export const STRINGS = {
     tryLabel: 'Misaal:',
     showProcessBtn: 'Mera process dikhayein',
     mappingProcess: 'Spot AI aapka process bana raha hai…',
+    updatingProcess: 'Aapka process update kiya ja raha hai…',
+    confirmError: 'Hum aapka process nahi khol sake, dobara koshish karne ke liye tap karein',
     identifyingSteps: 'Steps aur unka rasta samjha ja raha hai…',
     generationIssue: 'Process banane mein masla aaya',
     tryAgain: 'Dobara koshish karein',
@@ -462,7 +474,7 @@ export const STRINGS = {
     assumptionsHeader: 'Farz ki gayi baatein aur theek kiye gaye steps:',
     processNeedsAdjustment: 'Chalane se pehle ek cheez batani baqi hai',
     fixForMe: 'Mere liye theek karo',
-    isThisRight: 'Kya yeh theek hai?',
+    isThisRight: 'Kya yeh aapke karobar ke mutabiq hai?',
     confirm: 'Confirm',
     confirmBlockedErrors: 'Confirm (pehle upar wala sawal bharein)',
     whatShouldChange: 'Kya tabdeeli karni hai?',
@@ -476,7 +488,13 @@ export const STRINGS = {
     storeStaff: 'Staff / Dukan',
     estimated: 'estimated',
     branchesQuestion: 'Kitne % log kaunsa lete hain? (jaise 60% / 40%)',
-    unconnectedError: 'Kuch steps aapas mein jurre nahi hain.',
+    unconnectedError: 'Aapka process chalne ke liye theek kar diya gaya hai.',
+    whatChangedHeader: "Aapka process chalne ke liye theek kar diya gaya hai. Yeh tabdeeliyan ki gayi hain:",
+    undoChange: 'Wapas',
+    assumedBadge: 'Yeh andaza lagaya gaya hai, check kar lein',
+    doesThisMatchBusiness: 'Kya yeh aapke karobar ke mutabiq hai?',
+    unresolvedStepPrompt: (step) => `"${step}" kahan jurta hai yeh samajh nahi aaya. Batayein "${step}" ke baad kya hota hai:`,
+    finishEndProcess: 'Process khatam karein',
     keepWorking: 'Kaam jari rakhain',
     discard: 'Khatam karein',
     discardModalTitle: 'Yeh draft khatam kar ke dobara shuru karein?',
@@ -508,9 +526,11 @@ export const STRINGS = {
     editProcess: 'Process theek karein',
     runSimulationHint: 'Dekhein ke customers kahan intezar karte hain aur kahan waqt bach sakta hai.',
     estimatesNote: 'Kuch numbers andaze hain. Baad mein theek kar sakte hain.',
-    totalMustBe100: (sum) => `Total ${sum}%, 100 hona zaroori hai`,
+    totalMustBe100: (sum, stepName) => stepName ? `'${stepName}' par split ka total ${sum}% hai, 100 hona zaroori hai` : `Total ${sum}%, 100 hona zaroori hai`,
     totalIndicator: (sum) => `Total: ${sum}% (100 hona zaroori hai)`,
     autoBalance: 'Auto-balance',
+    autoBalanceTo100: '100% par auto-balance karein',
+    resolveIssuesToContinue: 'Pehle masail hal karein',
     rushHourPace: 'RUSH KI RAFTAAR',
     busyness_steady: 'Aam',
     busyness_quiet: 'Kam',
@@ -764,6 +784,8 @@ export const STRINGS = {
     tryLabel: 'مثال:',
     showProcessBtn: 'میرا پروسیس دکھائیں',
     mappingProcess: 'اسپاٹ اے آئی آپ کا پروسیس تیار کر رہا ہے…',
+    updatingProcess: 'آپ کا عمل اپ ڈیٹ کیا جا رہا ہے…',
+    confirmError: 'ہم آپ کا پروسیس نہیں کھول سکے، دوبارہ کوشش کے لیے ٹیپ کریں',
     identifyingSteps: 'مراحل اور روابط سمجھے جا رہے ہیں…',
     generationIssue: 'پروسیس بنانے میں مسئلہ پیش آیا',
     tryAgain: 'دوبارہ کوشش کریں',
@@ -781,7 +803,7 @@ export const STRINGS = {
     assumptionsHeader: 'فرضی اندازے اور خودکار اصلاحات:',
     processNeedsAdjustment: 'چلانے سے پہلے ایک چیز درست کرنا باقی ہے',
     fixForMe: 'میرے لیے ٹھیک کریں',
-    isThisRight: 'کیا یہ درست ہے؟',
+    isThisRight: 'کیا یہ آپ کے کاروبار کے طریقہ کار سے مطابقت رکھتا ہے؟',
     confirm: 'تصدیق کریں',
     confirmBlockedErrors: 'تصدیق کریں (پہلے اوپر والا سوال مکمل کریں)',
     whatShouldChange: 'کیا تبدیلی کرنی ہے؟',
@@ -795,7 +817,13 @@ export const STRINGS = {
     storeStaff: 'عملہ / دکان',
     estimated: 'تخمینہ',
     branchesQuestion: 'کتنے فیصد لوگ کون سا راستہ چنتے ہیں؟ (مثلاً 60% / 40%)',
-    unconnectedError: 'کچھ مراحل آپس میں جڑے ہوئے نہیں ہیں۔',
+    unconnectedError: 'ہم نے آپ کا عمل درست کر دیا ہے تاکہ یہ چل سکے۔',
+    whatChangedHeader: 'ہم نے آپ کا عمل درست کر دیا ہے۔ یہاں کی گئی تبدیلیاں ہیں:',
+    undoChange: 'واپس',
+    assumedBadge: 'ہم نے یہ قیاس کیا ہے، براہ کرم چیک کریں',
+    doesThisMatchBusiness: 'کیا یہ آپ کے کاروبار کے طریقہ کار سے مطابقت رکھتا ہے؟',
+    unresolvedStepPrompt: (step) => `"${step}" کا ربط سمجھ نہیں آیا۔ بتائیں "${step}" کے بعد کیا ہوتا ہے:`,
+    finishEndProcess: 'عمل مکمل کریں',
     keepWorking: 'کام جاری رکھیں',
     discard: 'ختم کریں',
     discardModalTitle: 'یہ ڈرافٹ ختم کر کے دوبارہ شروع کریں؟',
@@ -827,9 +855,11 @@ export const STRINGS = {
     editProcess: 'پروسیس میں ترمیم کریں',
     runSimulationHint: 'دیکھیں کہ گاہک کہاں انتظار کرتے ہیں اور کہاں وقت بچایا جا سکتا ہے۔',
     estimatesNote: 'کچھ اعداد و شمار تخمینہ ہیں۔ آپ بعد میں ان کو بہتر کر سکتے ہیں۔',
-    totalMustBe100: (sum) => `مجموعہ ${sum}٪، 100 ہونا ضروری ہے`,
+    totalMustBe100: (sum, stepName) => stepName ? `'${stepName}' پر تقسیم کا مجموعہ ${sum}٪ ہے، 100 ہونا ضروری ہے` : `مجموعہ ${sum}٪، 100 ہونا ضروری ہے`,
     totalIndicator: (sum) => `مجموعہ: ${sum}٪ (100 ہونا ضروری ہے)`,
     autoBalance: 'خودکار توازن',
+    autoBalanceTo100: '100٪ پر خودکار توازن کریں',
+    resolveIssuesToContinue: 'جاری رکھنے کے لیے مسائل حل کریں',
     rushHourPace: 'رش کے اوقات کی رفتار',
     busyness_steady: 'معمول',
     busyness_quiet: 'کم',
@@ -1121,12 +1151,17 @@ export function validateCustomRange(min, max, lang = 'en') {
     return 'Minimum time must be greater than 0.';
   }
   if (max === '' || max == null) {
-    if (lang === 'ur') return 'زیادہ سے زیادہ وقت کم از کم وقت سے کم نہیں ہو سکتا۔';
-    if (lang === 'ur-roman') return 'Zyada se zyada waqt kam se kam waqt se kam nahi ho sakta.';
-    return 'Maximum time cannot be less than minimum.';
+    if (lang === 'ur') return 'زیادہ سے زیادہ وقت 0 سے زیادہ ہونا چاہیے۔';
+    if (lang === 'ur-roman') return 'Zyada se zyada waqt 0 se bara hona chahiye.';
+    return 'Maximum time must be greater than 0.';
   }
   const numMax = Number(max);
-  if (isNaN(numMax) || numMax < numMin) {
+  if (isNaN(numMax) || numMax <= 0) {
+    if (lang === 'ur') return 'زیادہ سے زیادہ وقت 0 سے زیادہ ہونا چاہیے۔';
+    if (lang === 'ur-roman') return 'Zyada se zyada waqt 0 se bara hona chahiye.';
+    return 'Maximum time must be greater than 0.';
+  }
+  if (Number.isFinite(numMin) && Number.isFinite(numMax) && numMax < numMin) {
     if (lang === 'ur') return 'زیادہ سے زیادہ وقت کم از کم وقت سے کم نہیں ہو سکتا۔';
     if (lang === 'ur-roman') return 'Zyada se zyada waqt kam se kam waqt se kam nahi ho sakta.';
     return 'Maximum time cannot be less than minimum.';

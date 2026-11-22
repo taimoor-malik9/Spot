@@ -9,16 +9,38 @@
 // inside their respective swimlanes.
 
 const NODE_W = 80, NODE_H = 80;          // matches NW/NH in model.jsx
-const X_SPACING = 200;                   // horizontal gap between rank columns
+const X_SPACING = 250;                   // horizontal gap between rank columns (240px-260px)
 const POOL_HDR = 30;                     // matches POOL_LANE_HDR in model.jsx
 const LANE_HDR = 30;                     // matches LANE_HDR in model.jsx
 const POOL_PAD_X = 50;
 const POOL_MARGIN_Y = 80;                // gap between stacked pools
 const CANVAS_X0 = 120, CANVAS_Y0 = 100;
-const DEFAULT_LANE_H = 150;              // standard lane height matching canvas
+const DEFAULT_LANE_H = 160;              // standard lane height (140px-160px) matching canvas
 
 function makeId(prefix) {
   return `${prefix}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function getNodeDisplayLabel(n) {
+  if (!n) return '';
+  const isMergeGw =
+    n.role === 'merge' ||
+    n.data?.role === 'merge' ||
+    n.gateway_role === 'merge' ||
+    n.data?.gateway_role === 'merge' ||
+    (/merge|join/i.test(n.id) && (n.type?.includes('gateway') || n.data?.gateway_type != null));
+  if (isMergeGw) return '';
+  const raw = n.data?.label !== undefined ? n.data.label : n.label;
+  if (raw !== undefined && raw !== null && raw !== '') {
+    if (/\b(?:auto[-_]gw|gw_|_\d+|\b1\d{9,}\b)/i.test(raw)) {
+      return '';
+    }
+    return raw;
+  }
+  if (n.id && !/\b(?:auto[-_]gw|gw_|_\d+|\b1\d{9,}\b)/i.test(n.id)) {
+    return n.id;
+  }
+  return '';
 }
 
 /** Cycle-aware topological layering (longest path).
@@ -203,26 +225,38 @@ export function layoutAiDiagram(aiDiagram) {
   let edges = [...(aiDiagram.edges || [])];
   const resources = aiDiagram.resources || [];
 
-  // Enforce strictly ONE start-event across the ENTIRE BPMN diagram
+  // Deduplicate redundant start events that share identical targets, while preserving distinct start events for independent flows
   const modelNodesAll = nodes.filter(n => n.type !== 'pool' && n.type !== 'lane');
-  const allStarts = modelNodesAll.filter(n => n.type === 'start-event');
+  const allStarts = modelNodesAll.filter(n => n.type === 'start-event' || (typeof n.type === 'string' && n.type.endsWith('-start-event')));
 
   if (allStarts.length > 1) {
-    const primaryStart = allStarts[0];
-    const extraIds = new Set(allStarts.slice(1).map(s => s.id));
-    nodes = nodes.filter(n => !extraIds.has(n.id));
-    edges = edges.map(e => {
-      if (extraIds.has(e.source)) {
-        const targetNode = nodes.find(n => n.id === e.target);
-        const isCrossPool = targetNode && targetNode.pool && primaryStart.pool && targetNode.pool !== primaryStart.pool;
-        return {
-          ...e,
-          source: primaryStart.id,
-          flowType: isCrossPool ? 'message' : e.flowType
-        };
-      }
-      return e;
+    const targetMap = new Map();
+    allStarts.forEach(s => {
+      const outs = edges.filter(e => e.source === s.id && e.flowType !== 'message').map(e => e.target).sort().join(',') || '__none__';
+      if (!targetMap.has(outs)) targetMap.set(outs, []);
+      targetMap.get(outs).push(s);
     });
+
+    targetMap.forEach(dupes => {
+      if (dupes.length > 1) {
+        const primaryStart = dupes[0];
+        const extraIds = new Set(dupes.slice(1).map(s => s.id));
+        nodes = nodes.filter(n => !extraIds.has(n.id));
+        edges = edges.map(e => {
+          if (extraIds.has(e.source)) {
+            const targetNode = nodes.find(n => n.id === e.target);
+            const isCrossPool = targetNode && targetNode.pool && primaryStart.pool && targetNode.pool !== primaryStart.pool;
+            return {
+              ...e,
+              source: primaryStart.id,
+              flowType: isCrossPool ? 'message' : e.flowType
+            };
+          }
+          return e;
+        });
+      }
+    });
+
     const seen = new Set();
     edges = edges.filter(e => {
       const k = `${e.source}->${e.target}:${e.flowType || 'sequence'}`;
@@ -243,14 +277,20 @@ export function layoutAiDiagram(aiDiagram) {
     const key = n.pool || '__default';
     (groups[key] = groups[key] || []).push(n);
   });
-  const groupKeys = poolNodes.length
-    ? [...poolNodes.map(p => p.id), ...Object.keys(groups).filter(k => !poolNodes.find(p => p.id === k))]
-    : Object.keys(groups);
 
-  // PASS 1: Calculate ranks, lane structures, and needed pool widths for each group
+  // Identify external / collapsed pools (pools with no internal model nodes or flagged isExternal)
+  const externalPoolNodes = poolNodes.filter(p =>
+    Boolean(p.data?.isExternal || p.isExternal || p.id.includes('ext') || !groups[p.id]?.length)
+  );
+  const internalGroupKeys = (poolNodes.length
+    ? [...poolNodes.map(p => p.id), ...Object.keys(groups).filter(k => !poolNodes.find(p => p.id === k))]
+    : Object.keys(groups)
+  ).filter(k => !externalPoolNodes.some(ep => ep.id === k));
+
+  // PASS 1: Calculate ranks, lane structures, and needed pool widths for each internal group
   const groupLayoutData = [];
 
-  for (const groupKey of groupKeys) {
+  for (const groupKey of internalGroupKeys) {
     const groupModelNodes = groups[groupKey] || [];
     if (!groupModelNodes.length) continue;
 
@@ -262,16 +302,35 @@ export function layoutAiDiagram(aiDiagram) {
     const poolNode = poolNodes.find(p => p.id === groupKey);
 
     const lanesInGroup = laneNodes.filter(l =>
-      l.pool === groupKey || groupModelNodes.some(n => n.lane === l.id));
+      l.pool === groupKey || l.poolId === groupKey || groupModelNodes.some(n => n.lane === l.id || n.lane === l.label || n.data?.lane === l.id || n.data?.lane === l.label));
 
-    // Module I2h: A pool with no real sub-lanes renders as ONE pool band.
-    // Explicit lanes exist only if 2+ explicit sub-lanes are defined (not implicit, label differs from pool)
-    const explicitLanesInGroup = lanesInGroup.filter(l =>
-      !l.implicitLane &&
-      !l.data?.implicitLane &&
-      (poolNode ? String(l.label || l.data?.label || '').trim().toLowerCase() !== String(poolNode.label || poolNode.data?.label || '').trim().toLowerCase() : true)
-    );
-    const hasExplicitLanes = explicitLanesInGroup.length >= 2;
+    // A pool outputs one lane per internal actor, stacked vertically with real bounds.
+    // Explicit lanes exist if defined (not implicit, label differs from pool title).
+    // Prune generic "lane_N" phantom lanes and keep only distinct actor lanes
+    const explicitLanesInGroup = lanesInGroup.filter(l => {
+      if (l.implicitLane || l.data?.implicitLane) return false;
+      const label = String(l.label || l.data?.label || '').trim();
+      if (poolNode && label.toLowerCase() === String(poolNode.label || poolNode.data?.label || '').trim().toLowerCase()) {
+        return false;
+      }
+      if (/^lane[-_]?\d+$/i.test(label)) {
+        return false;
+      }
+      return true;
+    });
+
+    // Deduplicate by actor/label
+    const seenLanes = new Set();
+    const uniqueExplicitLanes = [];
+    explicitLanesInGroup.forEach(l => {
+      const key = String(l.label || l.data?.label || l.id).trim().toLowerCase();
+      if (!seenLanes.has(key)) {
+        seenLanes.add(key);
+        uniqueExplicitLanes.push(l);
+      }
+    });
+
+    const hasExplicitLanes = uniqueExplicitLanes.length >= 1;
 
     const maxRank = Math.max(0, ...ids.map(id => rank[id] ?? 0));
     const originX = CANVAS_X0 + (isRealPool ? (hasExplicitLanes ? POOL_HDR + LANE_HDR : POOL_HDR) + POOL_PAD_X : 0);
@@ -287,7 +346,7 @@ export function layoutAiDiagram(aiDiagram) {
       isRealPool,
       poolNode,
       lanesInGroup,
-      explicitLanesInGroup,
+      explicitLanesInGroup: uniqueExplicitLanes,
       hasExplicitLanes,
       originX,
       neededPoolW,
@@ -298,9 +357,58 @@ export function layoutAiDiagram(aiDiagram) {
   const realPoolWidths = groupLayoutData.filter(g => g.isRealPool).map(g => g.neededPoolW);
   const maxPoolW = realPoolWidths.length > 0 ? Math.max(750, ...realPoolWidths) : 750;
 
+  // Partition external pools into upstream (placed at top) and downstream (placed at bottom)
+  const topExternalPools = [];
+  const bottomExternalPools = [];
+  externalPoolNodes.forEach(p => {
+    const outgoingMsg = edges.filter(e => e.source === p.id);
+    const incomingMsg = edges.filter(e => e.target === p.id);
+    if (outgoingMsg.length > 0 && incomingMsg.length === 0) {
+      topExternalPools.push(p);
+    } else if (incomingMsg.length > 0 && outgoingMsg.length === 0) {
+      bottomExternalPools.push(p);
+    } else if (outgoingMsg.length > 0) {
+      topExternalPools.push(p);
+    } else if (topExternalPools.length === 0) {
+      topExternalPools.push(p);
+    } else {
+      bottomExternalPools.push(p);
+    }
+  });
+
+  const EXT_POOL_H = 60;
+  const EXT_POOL_GAP = 25;
+  const EXT_POOL_MARGIN = 65; // vertical margin >= 60px
+
   // PASS 2: Place pools, lanes, and model nodes with aligned widths
   const elements = [];
-  let poolY = CANVAS_Y0;
+
+  // 1. Emit top external pools
+  let currentExtY = 20;
+  topExternalPools.forEach(p => {
+    const pLabel = p.data?.label || p.label || p.id;
+    elements.push({
+      id: p.id,
+      type: 'pool',
+      label: pLabel,
+      position: { x: CANVAS_X0, y: currentExtY },
+      width: maxPoolW,
+      height: EXT_POOL_H,
+      isExternal: true,
+      hasExplicitLanes: false,
+      implicitLane: true,
+      data: {
+        label: pLabel,
+        isExternal: true,
+        hasExplicitLanes: false,
+        implicitLane: true,
+      },
+    });
+    currentExtY += EXT_POOL_H + EXT_POOL_GAP;
+  });
+
+  const lastTopPoolBottom = topExternalPools.length > 0 ? (currentExtY - EXT_POOL_GAP) : 0;
+  let poolY = topExternalPools.length > 0 ? (lastTopPoolBottom + EXT_POOL_MARGIN) : CANVAS_Y0;
 
   for (const g of groupLayoutData) {
     const {
@@ -325,7 +433,7 @@ export function layoutAiDiagram(aiDiagram) {
         const laneNodesList = groupModelNodes.filter(n => nodeLaneMap[n.id] === m);
         const { subRow, maxSubRow } = computeSubRowsForLane(laneNodesList, groupSeqEdges, rank);
         subRowMaps.push(subRow);
-        laneHeights.push(Math.max(DEFAULT_LANE_H, maxSubRow * 110));
+        laneHeights.push(Math.max(DEFAULT_LANE_H, maxSubRow * 140));
       });
 
       const laneTopY = [];
@@ -364,10 +472,13 @@ export function layoutAiDiagram(aiDiagram) {
           width: maxPoolW - (POOL_HDR + LANE_HDR),
           height: laneHeights[m],
           poolId: poolNode.id,
+          pool: poolNode.id,
           rowIndex: m,
           implicitLane: false,
           data: {
             label: l.data?.label || l.label || l.id,
+            poolId: poolNode.id,
+            pool: poolNode.id,
             implicitLane: false,
           },
         });
@@ -378,21 +489,22 @@ export function layoutAiDiagram(aiDiagram) {
         const n = groupModelNodes.find(x => x.id === id);
         const m = nodeLaneMap[id] ?? 0;
         const subRow = subRowMaps[m]?.[id] ?? 0;
-        const totalSubRows = Math.round(laneHeights[m] / 110) || 1;
+        const totalSubRows = Math.round(laneHeights[m] / 140) || 1;
         const subH = laneHeights[m] / Math.max(1, totalSubRows);
 
         const x = originX + (rank[id] ?? 0) * X_SPACING;
         const y = laneTopY[m] + (subRow + 0.5) * subH - NODE_H / 2;
 
+        const dispLabel = getNodeDisplayLabel(n);
         elements.push({
           id: n.id,
           type: n.type,
-          label: n.data?.label || n.label || n.id,
+          label: dispLabel,
           position: { x, y },
           pool: poolNode.id,
           lane: n.lane,
           data: {
-            label: n.data?.label || n.label || '',
+            label: dispLabel,
             duration: n.data?.duration ?? null,
             duration_min: n.data?.duration_min ?? null,
             duration_max: n.data?.duration_max ?? null,
@@ -456,15 +568,16 @@ export function layoutAiDiagram(aiDiagram) {
         const n = groupModelNodes.find(x => x.id === id);
         const x = originX + (rank[id] ?? 0) * X_SPACING;
         const y = poolY + 20 + (row[id] ?? 0) * rowH + (rowH - NODE_H) / 2;
+        const dispLabel = getNodeDisplayLabel(n);
         elements.push({
           id: n.id,
           type: n.type,
-          label: n.data?.label || n.label || n.id,
+          label: dispLabel,
           position: { x, y },
           pool: poolNode.id,
           lane: poolNode.label,
           data: {
-            label: n.data?.label || n.label || '',
+            label: dispLabel,
             duration: n.data?.duration ?? null,
             duration_min: n.data?.duration_min ?? null,
             duration_max: n.data?.duration_max ?? null,
@@ -510,13 +623,18 @@ export function layoutAiDiagram(aiDiagram) {
         const n = groupModelNodes.find(x => x.id === id);
         const x = CANVAS_X0 + (rank[id] ?? 0) * X_SPACING;
         const y = poolY + (row[id] ?? 0) * rowH;
+        const dispLabel = getNodeDisplayLabel(n);
         elements.push({
           id: n.id,
           type: n.type,
-          label: n.data?.label || n.label || n.id,
+          label: dispLabel,
           position: { x, y },
+          pool: n.pool,
+          lane: n.lane,
           data: {
-            label: n.data?.label || n.label || '',
+            label: dispLabel,
+            pool: n.pool,
+            lane: n.lane,
             duration: n.data?.duration ?? null,
             duration_min: n.data?.duration_min ?? null,
             duration_max: n.data?.duration_max ?? null,
@@ -531,22 +649,54 @@ export function layoutAiDiagram(aiDiagram) {
     }
   }
 
+  // 2. Emit bottom external pools
+  let currentBottomExtY = poolY;
+  bottomExternalPools.forEach(p => {
+    const pLabel = p.data?.label || p.label || p.id;
+    elements.push({
+      id: p.id,
+      type: 'pool',
+      label: pLabel,
+      position: { x: CANVAS_X0, y: currentBottomExtY },
+      width: maxPoolW,
+      height: EXT_POOL_H,
+      isExternal: true,
+      hasExplicitLanes: false,
+      implicitLane: true,
+      data: {
+        label: pLabel,
+        isExternal: true,
+        hasExplicitLanes: false,
+        implicitLane: true,
+      },
+    });
+    currentBottomExtY += EXT_POOL_H + EXT_POOL_GAP;
+  });
+
   const nodePoolMap = {};
-  nodes.filter(n => n.type !== 'pool' && n.type !== 'lane').forEach(n => {
-    nodePoolMap[n.id] = n.pool || '__default';
+  nodes.forEach(n => {
+    if (n.type === 'pool') {
+      nodePoolMap[n.id] = n.id;
+    } else if (n.type !== 'lane') {
+      nodePoolMap[n.id] = n.pool || '__default';
+    }
   });
 
   const connections = edges.map(e => {
     const sp = nodePoolMap[e.source];
     const tp = nodePoolMap[e.target];
     const isCrossPool = sp && tp && sp !== '__default' && tp !== '__default' && sp !== tp;
-    const isMessage = e.flowType === 'message' || isCrossPool;
+    const isMessage = e.flowType === 'message' || e.type === 'message-flow' || isCrossPool;
 
     const edgeLabel = e.data?.label || e.label || undefined;
+    const srcId = e.source || e.fromId;
+    const tgtId = e.target || e.toId;
     return {
       id: e.id || makeId('conn'),
-      fromId: e.source,
-      toId: e.target,
+      source: srcId,
+      target: tgtId,
+      fromId: srcId,
+      toId: tgtId,
       type: isMessage ? 'message-flow' : 'sequence-flow',
       label: edgeLabel,
       probability: e.data?.probability ?? undefined,

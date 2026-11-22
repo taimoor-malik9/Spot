@@ -42,6 +42,31 @@ describe('Shared BPMN Module Sync Verification', () => {
       sharedPath: path.resolve(sharedDir, 'whatIfComparison.js'),
       name: 'whatIfComparison.js',
     },
+    {
+      frontendPath: path.resolve(__dirname, 'postGenerationValidator.js'),
+      sharedPath: path.resolve(sharedDir, 'postGenerationValidator.js'),
+      name: 'postGenerationValidator.js',
+    },
+    {
+      frontendPath: path.resolve(__dirname, 'specSchema.js'),
+      sharedPath: path.resolve(sharedDir, 'specSchema.js'),
+      name: 'specSchema.js',
+    },
+    {
+      frontendPath: path.resolve(__dirname, 'specToBpmn.js'),
+      sharedPath: path.resolve(sharedDir, 'specToBpmn.js'),
+      name: 'specToBpmn.js',
+    },
+    {
+      frontendPath: path.resolve(__dirname, 'specSimulationBinding.js'),
+      sharedPath: path.resolve(sharedDir, 'specSimulationBinding.js'),
+      name: 'specSimulationBinding.js',
+    },
+    {
+      frontendPath: path.resolve(__dirname, 'deterministicBuilder.js'),
+      sharedPath: path.resolve(sharedDir, 'deterministicBuilder.js'),
+      name: 'deterministicBuilder.js',
+    },
   ];
 
   for (const { frontendPath, sharedPath, name } of filesToSync) {

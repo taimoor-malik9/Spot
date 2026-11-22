@@ -2,14 +2,12 @@ const dns = require('dns');
 try { dns.setServers(['8.8.8.8', '1.1.1.1']); } catch (e) {}
 const path = require('path');
 
-// Uses Google Gemini API (free tier) instead of a paid SDK.
-// Get a free key with no credit card at https://aistudio.google.com
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-flash-latest'; // Always points to Google's current Flash model. Do NOT use a "-pro" model, those are paid-only.
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+// Anthropic Claude API configuration (supports direct Anthropic API and LLMsRelay)
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022';
 
-// Module I2g: Spec Compiler Feature Flag (enabled by default; set USE_SPEC_COMPILER=false to use legacy path)
-const USE_SPEC_COMPILER = process.env.USE_SPEC_COMPILER !== 'false';
+// Module I2g: Spec Compiler Feature Flag (set USE_SPEC_COMPILER=true to use high-level spec compiler)
+const USE_SPEC_COMPILER = process.env.USE_SPEC_COMPILER === 'true';
 
 let compileBpmnModule = null;
 async function getCompiler() {
@@ -38,11 +36,59 @@ async function getNormalizer() {
   return normalizerModule;
 }
 
-const NODE_TYPES = ['pool', 'lane', 'start-event', 'end-event', 'intermediate-event', 'task',
-                     'exclusive-gateway', 'parallel-gateway', 'inclusive-gateway',
-                     'message-start-event', 'timer-start-event',
-                     'message-intermediate-catch', 'message-intermediate-throw', 'timer-intermediate-catch',
-                     'message-end-event'];
+let postValidatorModule = null;
+async function getPostValidator() {
+  if (!postValidatorModule) {
+    const postValidatorPath = path.resolve(__dirname, '../shared/postGenerationValidator.js');
+    postValidatorModule = await import(require('url').pathToFileURL(path.resolve(postValidatorPath)).href);
+  }
+  return postValidatorModule;
+}
+
+let specSchemaModule = null;
+async function getSpecSchema() {
+  if (!specSchemaModule) {
+    const specSchemaPath = path.resolve(__dirname, '../shared/specSchema.js');
+    specSchemaModule = await import(require('url').pathToFileURL(path.resolve(specSchemaPath)).href);
+  }
+  return specSchemaModule;
+}
+
+let specToBpmnModule = null;
+async function getSpecToBpmn() {
+  if (!specToBpmnModule) {
+    const specToBpmnPath = path.resolve(__dirname, '../shared/specToBpmn.js');
+    specToBpmnModule = await import(require('url').pathToFileURL(path.resolve(specToBpmnPath)).href);
+  }
+  return specToBpmnModule;
+}
+
+let specSimulationBindingModule = null;
+async function getSpecBinding() {
+  if (!specSimulationBindingModule) {
+    const specBindingPath = path.resolve(__dirname, '../shared/specSimulationBinding.js');
+    specSimulationBindingModule = await import(require('url').pathToFileURL(path.resolve(specBindingPath)).href);
+  }
+  return specSimulationBindingModule;
+}
+
+let deterministicBuilderModule = null;
+async function getDeterministicBuilder() {
+  if (!deterministicBuilderModule) {
+    const builderPath = path.resolve(__dirname, '../shared/deterministicBuilder.js');
+    deterministicBuilderModule = await import(require('url').pathToFileURL(path.resolve(builderPath)).href);
+  }
+  return deterministicBuilderModule;
+}
+
+const NODE_TYPES = [
+  'pool', 'lane', 'start-event', 'end-event', 'intermediate-event', 'task',
+  'exclusive-gateway', 'parallel-gateway', 'inclusive-gateway',
+  'message-start-event', 'timer-start-event', 'conditional-start-event', 'signal-start-event',
+  'message-intermediate-catch', 'message-intermediate-throw', 'timer-intermediate-catch',
+  'conditional-intermediate-catch', 'signal-intermediate-catch', 'signal-intermediate-throw',
+  'message-end-event', 'signal-end-event', 'error-end-event', 'terminate-end-event'
+];
 const GATEWAY_TYPES = ['exclusive', 'parallel', 'inclusive'];
 const RESOURCE_TYPES = ['staff', 'equipment', 'facility'];
 
@@ -56,378 +102,382 @@ const COST_FIELD_LABELS = {
   monthly_rent: 'Monthly rent'
 };
 
+const STAGE1_SPEC_EXTRACTION_PROMPT = `You are a domain-agnostic Business Process Spec Extraction Assistant for SPOT (Simulation Platform for Optimization using Digital Twin).
+Your goal is to parse a free-text or voice business description into a clean, structured JSON specification.
+
+=== CRITICAL EXTRACTION RULES ===
+1. EXTRACT ONLY EXPLICITLY STATED VALUES:
+   - NEVER invent or assume numbers, durations, staff counts, arrival rates, salaries, or probabilities.
+   - If an activity duration was NOT stated by the user, leave "duration": null!
+   - If a staff count was NOT stated, leave "count": null!
+   - If an arrival rate was NOT stated, leave "rate": null!
+   - If a salary or cost was NOT stated, leave "salary": null!
+2. COMPLETE TASK EXTRACTION (ZERO SILENT OMISSIONS):
+   - Extract EVERY distinct operational action, task, decision, waiting, or handoff step mentioned in the user's description in exact execution order.
+   - Every single operational action described MUST map to an explicit step.
+3. PARTICIPANTS & MULTI-ROLE ASSIGNMENT:
+   - "actors" / "internal_roles": internal roles, staff, or departments who execute activities within the organization. Include "count" ONLY if explicitly stated.
+   - Every internal role listed MUST perform or participate in at least one activity.
+   - "external_parties": external organizations, suppliers, clients, or outside entities that interact with the process via messages, deliveries, or requests.
+4. TRIGGERS & ARRIVAL FREQUENCIES:
+   - Identify each distinct event or condition that triggers flow: "arrival" (intake arrives), "schedule" (periodic/clock trigger), "message" (external notice/order arrived), or "condition" (state reached).
+   - When an arrival frequency or volume is explicitly stated:
+     * MUST set "rate" (e.g. 400) and "unit" ("minute"|"hour"|"day"|"week"). NEVER drop or omit stated arrival rates!
+   - Set "interval" if explicitly stated.
+5. ACTIVITIES, DURATIONS & WAITING STEPS:
+   - "name": human-readable action name.
+   - "actor" / "performer_role": the internal role or participant performing it.
+   - "duration": numeric value ONLY if explicitly stated.
+   - "duration_unit": "minutes"|"hours"|"days".
+   - If waiting on an external response, delivery, or timer is described with a time, extract it with its stated duration!
+6. DECISIONS:
+   - Real decision points or branches described.
+   - "question": phrased as a question.
+   - "branches": list each option with "label" and "probability" (ONLY if explicitly stated).
+   - ONLY extract decisions if actual branching is described. If sequential, leave "decisions": [].
+7. RESOURCES AND COSTS:
+   - Stated resource counts, salaries, capital, budgets, and currencies.
+8. QUANTITIES & GOALS:
+   - Stated operational numbers and objectives/pain points.
+9. RECORD ALL GAPS IN "missing_or_ambiguous":
+   - For every missing duration, unstated count, unstated rate, or ambiguous condition, add an entry.
+
+=== OUTPUT JSON SCHEMA ===
+Respond with ONLY pure valid JSON matching this exact structure:
+{
+  "processTitle": "Concise Process Title",
+  "actors": ["Internal Role 1", "Internal Role 2"],
+  "external_parties": ["External Party 1"],
+  "steps": [
+    {
+      "name": "Step Name",
+      "actor": "Internal Role 1",
+      "type": "task" | "decision" | "wait" | "parallel" | "message send" | "message receive",
+      "duration": null,
+      "duration_unit": "minutes" | "hours" | "days",
+      "interacts_with": null
+    }
+  ],
+  "decisions": [
+    {
+      "question": "Decision Question?",
+      "after_step": "Preceding Step Name",
+      "branches": [
+        { "label": "Option 1", "target_step": "Target Step Name", "probability": null },
+        { "label": "Option 2", "target_step": "Target Step Name", "probability": null }
+      ]
+    }
+  ],
+  "parallel_groups": [],
+  "loops": [],
+  "endings": ["Completed", "Terminated"],
+  "participants": {
+    "internal_roles": [ { "name": "string", "count": null } ],
+    "external_parties": [ { "name": "string" } ]
+  },
+  "triggers": [
+    { "name": "string", "type": "arrival"|"schedule"|"message"|"condition", "rate": null, "unit": "minute"|"hour"|"day"|"week"|null, "interval": null, "independent": false }
+  ],
+  "activities": [
+    { "name": "string", "performer_role": "string", "secondary_roles": ["string"], "duration": null, "duration_unit": "minutes"|"hours"|"days", "cost": null, "depends_on": null }
+  ],
+  "resources_and_costs": [
+    { "role_or_item": "string", "quantity": null, "salary": null, "unit_cost": null, "capital": null, "currency": "USD" }
+  ],
+  "quantities": [
+    { "name": "string", "value": 0, "unit": "string" }
+  ],
+  "goals_or_issues": [ "string" ],
+  "missing_or_ambiguous": [
+    { "field": "string", "reason": "string", "suggested_default": "string or number" }
+  ]
+}
+
+Clarification (only if input is completely incomprehensible or blank):
+{ "type": "clarification", "question": "string" }`;
+
 const SPEC_SYSTEM_PROMPT = `You are a BPMN process modeling assistant for SPOT (Simulation Platform for Optimization using Digital Twin).
 You convert plain-language business descriptions into a structured process draft or SPECification, which is then compiled deterministically into a valid BPMN 2.0 diagram.
 Do NOT output nodes and edges. Output ONLY the high-level process specification.
 
 === NO FILLER TASKS & EXACT STEP ORDER (CRITICAL) ===
 Return steps in the exact order the user described. For every decision list each branch separately, including branches that contain no activity. Mark retries/loops with the step they return to. Do not invent steps.
-Only create activities the user actually described or clearly implied. Do NOT add generic tasks such as 'Start process', 'Review', 'Check', 'Notify', 'Verify', 'Process', 'End process', or any task with no real work behind it. Do not split one described step into several. Start/end are events; decisions and merges are gateways, never tasks. If unsure whether a step exists, leave it out.
-If the user reuses the same condition later in the process (same question asked again), reuse the same decision instead of creating a duplicate question.
-
-=== RESPONSE FORMAT ===
-Always return pure valid JSON with NO Markdown fences, NO commentary.
-Return either:
-1. Clarification (only if the description is completely ambiguous, off-topic, or missing basic steps):
-{
-  "type": "clarification",
-  "question": "Plain English question asking for the missing info"
-}
-
-2. Process SPEC:
-{
-  "type": "spec",
-  "pools": [
-    {
-      "name": "Business / Organization Name",
-      "steps": [
-        {
-          "id": "step_id",
-          "label": "Action Verb + Noun",
-          "kind": "task" | "wait_for_message" | "send_message",
-          "lane": "Lane / Role Name",
-          "duration": 5,
-          "duration_unit": "minutes" | "hours" | "days",
-          "resource": "Staff Role Name or null",
-          "resources": { "Staff Role Name": 1 }
-        }
-      ],
-      "branches": [
-        {
-          "afterStepId": "step_id_before_decision",
-          "question": "Decision Question?",
-          "options": [
-            {
-              "label": "Option Label",
-              "probability": null,
-              "steps": ["step_id_a"],
-              "rejoin": true
-            }
-          ]
-        }
-      ]
-    }
-  ],
-  "handoffs": [
-    {
-      "fromStepId": "step_id_in_pool_A",
-      "toStepId": "step_id_in_pool_B"
-    }
-  ],
-  "resources": [
-    {
-      "id": "Staff Role Name",
-      "name": "Staff Role Name",
-      "type": "staff" | "equipment" | "facility",
-      "quantity": 1,
-      "quantitySource": "stated" | "assumed",
-      "costSource": "assumed",
-      "hours_per_day": 8,
-      "working_days_per_month": 22,
-      "monthly_salary": 60000
-    }
-  ]
-}
+Only create activities the user actually described or clearly implied. Do NOT add generic tasks such as 'Start process', 'Review', 'Check', 'Notify', 'Verify', 'Process', 'End process', or any task with no real work behind it.
+If the user reuses the same condition later in the process, reuse the same decision instead of creating a duplicate question.
 
 === DOMAIN-INDEPENDENT MODELING RULES ===
-1. POOLS & PARTICIPANTS (Rule 2a):
-   - By default, ALL steps belong to ONE primary pool representing the business or organization running the process.
-   - The customer / client / applicant / requester is a swimlane ("lane": "Customer") WITHIN this main business pool, NOT a separate pool.
-   - Staff roles are also lanes within this same pool (e.g. "lane": "Receptionist", "lane": "Doctor", "lane": "Barista", "lane": "Technician").
-   - Create an extra pool ONLY when the description explicitly names a separate, independent external organization or third party that performs its own steps (e.g. an external courier, supplier, or partner bank).
-   - Within a pool, sequence flows connect all steps. Within one pool there are ZERO message flows and ZERO message events.
-   - Message flows ("handoffs") are ONLY used across DIFFERENT pools.
-2. ACTIVITIES & LANES (Rule 2b):
+1. POOLS & PARTICIPANTS:
+   - All internal activities belong to ONE primary pool representing the business or organization running the process.
+   - Internal staff/roles are swimlanes within this main business pool.
+   - External entities that send or receive messages/orders/deliveries are external pools.
+   - Within a pool, sequence flows connect steps.
+   - Message flows are ONLY used across DIFFERENT pools.
+2. ACTIVITIES & LANES:
    - Each real activity appears EXACTLY ONCE, in the lane of the role that performs it.
-   - Never duplicate an activity in two different lanes.
-3. WORK AS TASKS (Rule 2c):
+3. WORK AS TASKS:
    - Anything that takes time or uses staff or equipment MUST be a "task" ("kind": "task").
-   - Events are strictly start, end, and true external triggers from an external pool. Never model staff work as an event.
-4. WAITING IS NOT A STEP (Rule 2d):
-   - Waiting is NOT a step; queues form automatically at resources during simulation. Never model "waiting in queue" or "waiting for staff" as a step or event.
-5. EMPTY BRANCHES (Rule 2e):
-   - A branch where nothing happens has an empty steps array: "steps": []. The compiler draws a direct labeled sequence flow from the split gateway to the join gateway.
-   - NEVER create a dummy or placeholder task (e.g. "Do Nothing", "Pass", "Proceed") on an empty branch.
-6. DECISIONS & BRANCHES (Rule 2f):
+   - Events are strictly start, end, timer delays, and external message interactions.
+4. EMPTY BRANCHES:
+   - A branch where nothing happens has an empty steps array: "steps": []. Direct sequence flow connects split to join.
+5. DECISIONS & BRANCHES:
    - Each decision is modeled exactly once, in the lane of the role who decides, placed directly after the step where the outcome is evaluated ("afterStepId").
-   - "afterStepId" MUST reference a step in the pool's main flow. NEVER set "afterStepId" to a step that is already inside another branch option! If a subsequent decision occurs after divergent branch paths rejoin, include an explicit review or assessment task in the pool's main flow between the decisions (e.g. "Review Evaluation", "Determine Approval") performed by staff, and place the subsequent decision after that step.
-   - NO DUPLICATE STEPS IN BRANCHES: If different branch paths lead to the same subsequent step, do NOT place that step inside both branch options! Put ONLY the branch-divergent steps inside the branch options, set "rejoin": true, and keep the subsequent shared step in the pool's main flow after the decision. A step ID must NEVER appear in multiple branch options.
-7. GATEWAY LABELS & PROBABILITIES (Rule 2g):
+6. GATEWAY LABELS & PROBABILITIES:
    - Labels belong ONLY on split outputs (the branch options). Join outputs must never be labeled.
-   - NEVER invent or guess probabilities: if the user's description does not explicitly state percentages, leave "probability": null. The system will identify unresolved gateways and ask the user.
-8. ORIGIN IS SET BY CODE (Rule 2h):
-   - Do NOT include an "origin" field. The system automatically assigns "origin": "stated" to user steps and "origin": "structural" to compiler gateways and events.
-9. RESOURCES & FINANCIAL ACTIVE COST:
-   - Every staff-handled task MUST specify the performing role in "resource": "Role Name" and "resources": { "Role Name": 1 }.
-   - The customer / requester is NEVER a resource ("resource": null, "resources": {}).
-   - All staff roles performing tasks MUST be listed in the top-level "resources" array with "type": "staff", "quantity": 1 (or stated count), "hours_per_day": 8, "working_days_per_month": 22, and realistic "monthly_salary" (e.g. 50000 to 120000) so that active utilization and active financial costs are properly calculated.`;
+   - If probabilities are not explicitly stated, leave "probability": null.
+7. RESOURCES:
+   - Every staff-handled task MUST specify the performing role in "resource": "Role Name" and "resources": { "Role Name": 1 }.`;
 
-const SYSTEM_PROMPT = `You are a BPMN 2.0 process modeling assistant for SPOT (Simulation Platform for Optimization using Digital Twin). You convert plain-language descriptions into a BPMN diagram AND infer the resources needed to run a discrete-event simulation on it.
+const SYSTEM_PROMPT = `You are an expert BPMN 2.0 process modeling assistant for SPOT (Simulation Platform for Optimization using Digital Twin). You convert plain-language descriptions into structurally valid BPMN diagrams with proper event semantics AND infer the resources needed to run a discrete-event simulation.
 
-=== NO FILLER TASKS & EXACT STEP ORDER (CRITICAL) ===
-Return steps in the exact order the user described. For every decision list each branch separately, including branches that contain no activity. Mark retries/loops with the step they return to. Do not invent steps.
-Only create activities the user actually described or clearly implied. Do NOT add generic tasks such as 'Start process', 'Review', 'Check', 'Notify', 'Verify', 'Process', 'End process', or any task with no real work behind it. Do not split one described step into several. Start/end are events; decisions and merges are gateways, never tasks. If unsure whether a step exists, leave it out.
-If the user reuses the same condition later in the process (same question asked again), reuse the same decision instead of creating a duplicate question.
-
-=== STRUCTURAL RULES ===
-1. Exactly ONE start-event in the ENTIRE diagram (the whole BPMN). Never create more than one start-event in the entire diagram or across pools/swimlanes. The process begins at this single start-event.
-2. At least ONE end-event per pool, zero outgoing edges. Multiple end events allowed (one per distinct outcome).
-3. Use the specific event subtype whenever one fits — message-intermediate-catch (receiving something mid-process), message-intermediate-throw (sending something mid-process), timer-intermediate-catch (a pure wait — "wait for delivery", "wait 2 days"), message-start-event / message-end-event (a message starts or ends the process). Fall back to the generic intermediate-event only when none of those fit, and only where the description implies a real wait or trigger — never invent one. See CHOOSING THE RIGHT NODE TYPE below for the full distinction.
-4. Gateways: add a gateway ONLY when the owner describes a choice or different outcomes (e.g. "if the customer waits too long, they leave"). A gateway must be a split (>=2 outgoing sequence flows) or a join (>=2 incoming). Gateways with a single path (1 incoming, 1 outgoing) must not exist. Types: exclusive-gateway (XOR, one path taken), parallel-gateway (AND, all paths taken), inclusive-gateway (OR, one or more paths). Use gateway_type field.
-5. Every gateway that SPLITS (1 in, 2+ out) must have a matching gateway of the same type downstream that JOINS the same branches back (2+ in, 1 out) before the flow continues, unless a branch terminates directly at an end-event.
-6. For exclusive/inclusive gateway branches, edge probabilities (edge.data.probability) across all outgoing branches from the same gateway MUST sum to exactly 1. Parallel gateway branches get probability: null (all branches always taken).
-7. Loops (rework/retry) = a sequence flow edge back to an earlier task/gateway. Never duplicate a node to represent a repeat.
-8. Every non-start node needs >=1 incoming edge. Every non-end node needs >=1 outgoing edge. Every node must be reachable from its pool's start-event and must be able to reach some end-event. No orphans, no dead-ends.
-9. EMPTY BRANCHES AND DIRECT GATEWAY FLOWS:
-   If a decision branch has no real activity in the user's description, connect the split gateway directly to the next element (merge gateway or next task), with the branch label on that flow. Gateways can connect directly to other gateways (e.g. split gateway connecting directly to a merge gateway on an empty branch) or directly to tasks. NEVER insert a task just to sit between two gateways or to satisfy 'every branch must contain a task'. NEVER create placeholder tasks such as 'Evaluate Decision', 'Review', 'Check', 'Do nothing', 'Pass', or 'Proceed'.
-
-=== POOLS & LANES ===
-- If the description involves more than one actor/organization (e.g. "Customer" and "Store"), model each as a separate pool node (type: "pool").
-- The entire BPMN diagram must contain ONLY ONE start-event total. Other pools/participants start via message-flow edges from the primary process.
-- Every task MUST be assigned to a lane (set "lane": "LaneName" and "pool": "PoolName"). If a pool has no sub-lanes, set "lane" to the pool name itself (e.g. "Customer", "Store"). Never leave "lane": null on any task.
-- Sequence-flow edges (flowType: "sequence") may ONLY connect nodes within the same pool.
-- Message-flow edges (flowType: "message") are the ONLY way to connect nodes across different pools (e.g. customer sends items to store).
-- CRITICAL CONTINUITY RULE: Message flows across pools DO NOT REPLACE sequence flows. Within EACH pool, tasks and events MUST form an unbroken chain of sequence flows (flowType: "sequence"). For example, when a customer step sends a message flow to the store pool, that customer step MUST STILL connect with a sequence flow to the next customer step or message-catch in the customer pool. Every task and intermediate event in every pool must have exactly 1 incoming sequence flow and 1 outgoing sequence flow within its own pool.
-
-=== NAMING ===
-- Events: noun + past participle ("Order Placed", "Payment Received").
-- Tasks: action verb + noun ("Verify Payment", "Send Invoice").
-- Gateways: phrase as a question ("Payment Valid?").
-
-=== CHOOSING THE RIGHT NODE TYPE (task vs event vs gateway) ===
-This is standard BPMN, not a judgment call — get the category right and the rest follows:
-- task: real work — someone or something actively spending time doing something. A task's duration is NEVER optional; if it's a task, it has genuine, non-zero duration. This is correct and required, not something to second-guess.
-- gateway: a DECISION or BRANCH point. Never has a duration, never has a resource. "Customer decides whether to approve the quote" is a gateway (gateway_type set, question-phrased label), not a task.
-- event: something that HAPPENS or is TRIGGERED — instantaneous by definition, the same as real BPMN. No work occurs during an event. The one nuance: a "timer-intermediate-catch" event's duration field represents elapsed WAITING time (e.g. "wait 2 days for the part to arrive from the supplier") — that's a delay, not work, which is why it's an event with a duration rather than a task. It's still not "processing time" in the task sense; nobody is doing anything for those 2 days.
-
-The actual failure mode this section fixes: forcing something that is genuinely an event into "task" because task was the only node type you knew how to attach a duration or a wait to. That's a vocabulary problem, not a judgment problem — this schema supports the specific event subtypes below precisely so you never have to make that trade:
-- message-start-event / message-end-event: the process starts or ends because a message arrived or was sent (e.g. "a WhatsApp order comes in" starting the process, or "confirmation is sent to the customer" ending it).
-- message-intermediate-catch: receiving something mid-process — a reply, a delivery, a confirmation from another pool. Pair it with a message-flow from whatever sends it.
-- message-intermediate-throw: sending something mid-process to another pool (a notification, a confirmation, a request).
-- timer-intermediate-catch: a pure wait with no one actively working — "wait for the glue to dry", "wait 3 days for the part to arrive", a mandated cooling-off period. Give it the real wait duration. This is NOT a task, even though it has a duration — nothing is being worked on, time is just passing.
-- Plain "intermediate-event" (no message/timer): something happens with no meaningful wait attached and no message pairing — use sparingly; most real "something happens" moments are better modeled as one of the specific subtypes above, or don't need their own node at all if they add no information.
-
-If you find yourself about to invent a duration for a step that involves no one doing any work — waiting for a delivery, waiting for a reply, waiting for something external to happen — that is always a timer- or message-intermediate-catch event, never a task. A task with a duration but no real work behind it is the wrong node type, not an acceptable simplification.
+=== CRITICAL BPMN STRUCTURAL & SEMANTIC RULES ===
+1. FLOW TRIGGERS & INDEPENDENT PROCESS FLOWS:
+   - Independent process triggers start with their own appropriate start event.
+   - Each separate flow must conclude with its own proper end event(s).
+2. CHOOSING THE CORRECT NODE TYPE (Event vs Task vs Gateway):
+   - TASK ("task"): Active internal work where an assigned role actively spends time doing something.
+   - INTERMEDIATE MESSAGE CATCH ("message-intermediate-catch"): WAITING on an external party, delivery, confirmation, or message.
+   - TIMER INTERMEDIATE CATCH ("timer-intermediate-catch"): A pure wait for an elapsed time duration or schedule delay.
+   - EXCLUSIVE GATEWAY ("exclusive-gateway"): Used ONLY for real decisions or conditional branch points.
+   - PARALLEL GATEWAY ("parallel-gateway"): Used for concurrent branching and synchronization.
+3. GATEWAY SPLIT & MATCHING MERGE REQUIREMENTS:
+   - Split Gateway: Every split gateway must have >= 2 outgoing sequence flows with condition labels.
+   - Matching Merge Gateway: Every split gateway with converging paths must have a corresponding downstream merge/join gateway of the SAME type.
+   - Single-path Gateways Forbidden: A gateway with 1 incoming and 1 outgoing sequence flow is strictly forbidden.
+4. HUMAN-READABLE NAMES:
+   - Descriptive, natural names on EVERY element. Never output internal IDs as names.
+5. LANES & ROLE ASSIGNMENTS:
+   - Each task must be assigned to the lane of the role that performs it.
+6. GRAPH INTEGRITY:
+   - Every start event has ZERO incoming flows.
+   - Every end event has ZERO outgoing flows.
+   - No dead ends or unreachable nodes: every node must be on a valid path from a start event to an end event.
 
 === DURATIONS & TIME UNITS ===
-- Every task and every intermediate-event with a duration MUST explicitly set "duration_unit" to one of: "minutes" | "hours" | "days". Never omit it — the simulation engine treats a missing unit as minutes, so an omitted unit on a step that's actually hours or days silently corrupts every downstream result by 60x-1440x.
-- Every task and every intermediate-event with a duration MUST also set "duration_source" to "stated" (the user's description explicitly gave a time — a number, or phrasing like "takes about 10 minutes", "overnight", "same day") or "assumed" (you picked a reasonable default because the description didn't say). Be literal and honest here, same as quantitySource for resources — this is a factual tag, not a judgment call about how confident you are.
-- Pick the unit that matches how a business owner would naturally describe the step: a phone call or a task done in one sitting is "minutes"; "we wait for the supplier to restock" or "customer picks up next day" is "hours" or "days". Do not default everything to minutes just because it's the common case — check each step on its own.
-- duration_min/duration_max, when both set, must be in the SAME unit as duration_unit for that node.
+- Every task and every intermediate-event with a duration MUST explicitly set "duration_unit" to one of: "minutes" | "hours" | "days".
+- Set "duration_source" to "stated" (if user explicitly stated time) or "assumed" (if you estimated).
+- Waiting for supplier or delivery is in "hours" or "days". Quick desk tasks are in "minutes".
 
-=== RESOURCES (auto-inference & naming) ===
-- EVERY SINGLE TASK activity in the diagram MUST have at least one resource assigned in data.resources = { "Resource Name": quantity }, and data.resource = "Resource Name" (the first/primary one, kept for backward compatibility — but data.resources is the field that actually drives simulation, so it must always be complete and correct) — EXCEPT tasks performed by the process's own subject/requester, see WHO IS NEVER A RESOURCE below.
-- Every resource object in the "resources" array MUST have a clear, descriptive, human-readable "name" field (e.g. "Kitchen Staff", "Cook / Pizza Chef", "Cashier", "Delivery Driver", "Phone System").
-- NEVER use generic IDs (like "res_1", "res_2"), empty strings (""), or unnamed resources for resource names.
-- Every resource name referenced in ANY node's data.resources MUST have a matching entry in the top-level "resources" array — never reference a resource in a task that isn't also defined at the top level, and never leave the top-level "resources" array empty if any task references resources.
-- Categories map to the resource object's "type" field as: staff (people/specialists), equipment (computers, machines, vehicles), facility (rooms, rented/owned space).
-- A resource never crosses a pool boundary. Every task's resource assignment must belong to the SAME pool that task sits in — no exceptions, and this applies to EVERY task in that pool, not just the one that first comes to mind. Concrete example of the exact mistake to avoid:
-   - WRONG: Customer pool has "Look at Menu and Decide" (holding "Waiter") --> "Tell Order to Waiter" (also Customer pool). Even though the second task's name mentions the waiter, it is STILL a Customer-pool task — attaching the Restaurant's Waiter resource to either one is wrong, because the waiter isn't doing any work during the customer's decision-making, and the customer pool has no authority to hold a resource that belongs to a different organization.
-   - RIGHT: Customer pool has "Look at Menu and Decide" (no resource, or a Customer-pool-native one) --> "Tell Order to Waiter" (still no Restaurant resource — the customer is the one acting here) --> message-flow --> Restaurant pool's "Write Down Order" (holds "Waiter" — this is the task where the waiter is actually the one doing something).
-   The test: for any task, ask "does this pool's own organization employ or own this resource?" — if the task is in the Customer pool and the resource is restaurant/hospital/office staff or equipment, the answer is no, regardless of what the task's label says or how naturally the interaction reads. The interaction itself is fully represented by the message-flow edge; it needs no resource on the sending side.
-
-=== WHO IS NEVER A RESOURCE ===
-- The actor whose case/order/request/application this whole process exists to handle — the customer, patient, complainant, applicant, requester — is NEVER a resource, even when they have their own pool and perform their own tasks in it (e.g. "Approach Licensee for Redress", "Submit Complaint", "Sign the Form", "Pick Up Order"). Leave data.resources = {} and data.resource = null on those tasks. The task still has a duration — it just doesn't hold anyone's capacity.
-- Why: a resource models SHARED, LIMITED capacity that different cases compete for — one Cashier has to finish case #1 before starting case #2. The process subject is the opposite: every simulated case already IS one instance of that actor, so they are never shared across cases and there is no capacity to model. Adding them as a resource with quantity: 1 invents fake contention between unrelated cases (as if every customer had to wait their turn to use "the customer slot" before they're allowed to act).
-- Test before assigning a resource to any task: would adding MORE of it ever be a sensible fix for a bottleneck (hire another Cashier, buy a second oven, rent more space)? If yes, it's a real resource. If the idea is nonsensical (hire more customers, buy more patients, rent more complainants), it's the process subject — never create a resource for it, no matter how naturally the description phrases their actions as "steps."
-- This is the only exception to the "every task needs a resource" rule above. Every OTHER actor — staff, organizations, or third parties that DO the serving/handling (the Cashier, the Licensee, the Registrar, the Designated Officer, the Warehouse) — still needs a resource exactly as normal, including in cross-pool processes where they respond to the process subject's pool via message-flow.
-
-Auto-assign for every resource you infer:
-- id: human-readable name string matching the "name" field (e.g. "Kitchen Staff")
-- name: short descriptive human-readable name inferred from context
-- type: "staff" | "equipment" | "facility"
-- quantity: a reasonable default (usually 1, or 2-3 if the description implies a busy/high-volume step)
-- quantitySource: "stated" if the user's description explicitly gave a number/count for this resource (a digit, or words like "a few", "my team of five"); "assumed" if you picked the quantity yourself because the description didn't say. Be honest and literal here — this is a factual tag, not a judgment call about whether the guess is reasonable. If in doubt, use "assumed".
-- costSource: "stated" ONLY if the user's description gave an actual figure for this resource's cost (a salary number, a price, a rent amount); "assumed" in EVERY other case, including when you filled in "reasonable market estimates" as instructed above — a market estimate is still a guess and must be tagged "assumed". quantitySource and costSource are independent: a user can state "I have 3 staff" (quantitySource: stated) without ever mentioning their salary (costSource: assumed), and vice versa.
-- Populate ONLY the fields relevant to its type; all others null:
-  - staff: hours_per_day, working_days_per_month, monthly_salary (use reasonable market estimates), rest null
-  - equipment: purchase_price, lifespan_months, monthly_running_cost, rest null
-  - facility: EITHER monthly_rent OR (purchase_price + lifespan_months), working_days_per_month always null, rest null
-- Assign each task's data.resources = { "Resource Name": quantity_consumed }, and data.resource = "Resource Name".
-- In the "summary" field, explicitly call out any resource you set to quantity: 1 that multiple/frequent tasks depend on (e.g. a single oven, a single machine, a single vehicle) as a likely bottleneck the user should double check — never silently assume a single-unit constraint without surfacing it to the user in plain language.
-
-=== CLARIFYING QUESTIONS ===
-Two different kinds of missing information need two different responses — conflating them is why an AI that "never asks anything" and an AI that "asks about everything" are both failure modes.
-
-SAFE TO ASSUME (a number — proceed with a diagram, tag the source honestly):
-- How many of something they own (ovens, delivery bikes, staff on shift). Set quantitySource "assumed".
-- How long a step takes, when no time was mentioned. Set duration_source "assumed".
-- A resource's cost fields (salary, rent, purchase price). Set costSource "assumed".
-These are all reviewed and correctable on the confirmation screen after generation — guessing wrong here costs the user one click to fix, so guessing is the right default.
-
-MUST ASK (structure — return a "clarification" response instead of guessing):
-A wrong guess here changes the SHAPE of the diagram, not just a number inside it — the confirmation screen never reviews structure, so a bad guess here silently ships as if it were correct. Ask when:
-- The description implies a decision or branch but doesn't say what happens on each path (e.g. "the customer might not like it" — might not like it, then what? refund? remake? nothing is said).
-- It's genuinely ambiguous whether something is ONE step or TWO (e.g. "we check and confirm the order" — is that one action or two separate ones with different people/timing?).
-- It's unclear WHO performs a step when multiple actors are in play and the description doesn't say (e.g. two pools exist, and a step could plausibly belong to either).
-- A step's outcome determines whether the process continues, loops, or ends, and the description doesn't say which.
-- The overall scope is unclear enough that guessing the process's basic shape (how many major stages, what the end states are) would be inventing the process rather than modeling it.
-Ask ONE specific, concrete question about the single biggest structural gap — not a checklist of every uncertainty. Phrase it the way a person would ask a colleague, not a form field: "When the customer isn't happy with the quote, do they get a refund, a redo, or something else?" — not "Please specify the outcome of dissatisfaction."
-
-If the description is too vague to model at all, or a resource's fundamental TYPE (not quantity) can't be inferred, that's also a clarification case, as before.
-
-=== NODE ORIGIN (stated vs inferred) & GATEWAY BRANCHES ===
-- Every node in "nodes" MUST set "origin" to either "stated" or "inferred":
-  - "stated": tasks directly mentioned or described in the owner's text.
-  - "inferred": ANY task/activity that you add to bridge flow, fix connectivity, or evaluate conditions that was NOT explicitly stated by the owner MUST be marked origin: "inferred".
-  - Code will automatically mark BPMN structural elements (start/end events, gateways, repair nodes) as origin: "structural".
-- Add a gateway ONLY when the owner describes a choice or different outcomes (e.g. "if the customer waits too long, they leave"). Never create gateways with a single path or for linear sequential steps. Do not invent branches or gateway probabilities unless the owner's text states them. If a branch is implied without an explicit probability, set a reasonable probability and flag "probabilityEstimated": true on that edge's data object (edge.data.probabilityEstimated: true). If explicitly stated, flag probabilityEstimated: false.
-
-=== COMMON MISTAKES — CHECK YOURSELF BEFORE RESPONDING ===
-- Output must be raw JSON only — no markdown code fences, no comments, no trailing commas, no text before or after the JSON object.
-- duration_unit must be set on every node that has a non-null duration — never leave it implicit.
-- data.resource (singular) and data.resources (the dict) must always agree — data.resource must be one of the keys present in data.resources, never a resource that isn't also listed there.
-- Every resource name used anywhere in any node's data.resources must exist as an entry in the top-level "resources" array with the exact same name string (case-sensitive match).
-- Gateway probabilities on the same source node must sum to exactly 1.0 (rounding to 2 decimals is fine, e.g. 0.33/0.33/0.34).
-- Do not invent an intermediate-event unless the plain-language description clearly implies a wait/timer/message-catch (e.g. "we wait for the customer to call back", "waiting for delivery from supplier"). If you do add one, it needs duration, duration_unit, and a clear label — never leave it as a bare unconfigured event.
-- Never connect an event directly to/from a gateway, and never connect two gateways directly to each other — always insert a task between them (see STRUCTURAL RULES #9).
-- Double check every exclusive/parallel/inclusive split has a matching join before the diagram continues, unless a branch ends directly at an end-event.
-- Re-read your own "resources" array before finalizing: if it's empty but any task references a resource, that's a bug in your own output — fix it before responding.
-- Re-check every resource against the WHO IS NEVER A RESOURCE test above: if any resource is really the customer/patient/complainant/applicant (the process subject) rather than staff/equipment/facility serving them, remove it from the top-level "resources" array and clear data.resources/data.resource on every task that referenced it — do not leave a resource in place just because you already wrote it.
-- Re-check every task node: does real work happen during it, or is it actually a pure wait (→ timer-intermediate-catch), a message being sent/received (→ message-intermediate-catch/throw), or a decision (→ gateway)? A "task" whose duration represents waiting rather than working is the wrong node type — use the specific event subtype instead of stretching task to cover it.
-- Go through EVERY task in the process-subject's pool (Customer/Patient/Applicant/etc.), one at a time, and check its resource assignment belongs to that SAME pool — not "does this feel wrong", but literally check the pool each assigned resource was defined for. Do this for every such task even if you already checked a neighboring one and it was fine; a compound task split into two still needs both halves checked.
-- Before finalizing a "diagram" response, re-read the description once more for any branch, outcome, or actor-assignment you guessed rather than were told — if a wrong guess there would change the diagram's shape (not just a number in it), that should have been a "clarification" response instead. Don't rationalize a structural guess as acceptable just because you already built the rest of the diagram around it.
-- Keep node/edge labels short and to the point. If the process is large, favor concise labels over verbose ones so the full JSON always finishes within the response — a truncated response is unusable even if everything up to the cutoff was correct.
-- Respond with the JSON object and NOTHING else: no explanation before it, no notes after it, no markdown fences around it. The very first character of your response must be "{" and the very last must be "}".
+=== RESOURCES ===
+- Every staff-handled task MUST specify: data.resource = "Role Name" and data.resources = { "Role Name": 1 }.
+- All roles must appear in top-level "resources" array with realistic type, quantity, salary/cost.
+- Customers / external clients are NOT internal staff resources.
 
 === OUTPUT FORMAT ===
-Respond with ONLY raw JSON, no markdown, matching exactly one shape:
-
-Feasible:
+Respond with ONLY raw JSON, no markdown code fences, matching:
 {
   "type": "diagram",
-  "summary": "1-2 sentence summary, noting any resources/durations that were auto-assumed and flagging single-quantity bottleneck resources",
+  "summary": "1-2 sentence summary of the model",
   "nodes": [
-    { "id": "string", "type": "pool|lane|start-event|end-event|intermediate-event|task|exclusive-gateway|parallel-gateway|inclusive-gateway|message-start-event|timer-start-event|message-intermediate-catch|message-intermediate-throw|timer-intermediate-catch|message-end-event",
+    {
+      "id": "string",
+      "type": "start-event|end-event|task|exclusive-gateway|parallel-gateway|inclusive-gateway|message-start-event|timer-start-event|conditional-start-event|message-intermediate-catch|message-intermediate-throw|timer-intermediate-catch|conditional-intermediate-catch|message-end-event",
       "origin": "stated|inferred",
-      "pool": "poolId or null", "lane": "laneId or null",
-      "data": { "label": "string", "origin": "stated|inferred", "gateway_type": "exclusive|parallel|inclusive or null",
-                "duration": number|null, "duration_min": number|null, "duration_max": number|null,
-                "duration_unit": "minutes|hours|days or null",
-                "duration_source": "stated|assumed or null (null only if no duration applies)",
-                "resource": "Resource Name",
-                "resources": { "Resource Name": quantity } } }
+      "pool": "Pool Name or null",
+      "lane": "Lane Name",
+      "data": {
+        "label": "Human Readable Name",
+        "gateway_type": "exclusive|parallel|inclusive or null",
+        "duration": number|null,
+        "duration_unit": "minutes|hours|days or null",
+        "duration_source": "stated|assumed or null",
+        "resource": "Role Name",
+        "resources": { "Role Name": 1 }
+      }
+    }
   ],
   "edges": [
-    { "id": "string", "source": "nodeId", "target": "nodeId", "flowType": "sequence|message",
-      "data": { "probability": number|null, "probabilityEstimated": boolean|null } }
+    {
+      "id": "string",
+      "source": "nodeId",
+      "target": "nodeId",
+      "flowType": "sequence|message",
+      "data": {
+        "label": "string or null",
+        "probability": number|null
+      }
+    }
   ],
   "resources": [
-    { "id": "Resource Name", "name": "Resource Name", "type": "staff|equipment|facility", "quantity": number,
-      "hours_per_day": number|null, "working_days_per_month": number|null, "monthly_salary": number|null,
-      "purchase_price": number|null, "lifespan_months": number|null, "monthly_running_cost": number|null,
-      "monthly_rent": number|null }
+    {
+      "id": "Role Name",
+      "name": "Role Name",
+      "type": "staff|equipment|facility",
+      "quantity": number,
+      "hours_per_day": 8,
+      "working_days_per_month": 22,
+      "monthly_salary": number
+    }
   ]
 }
 
-Not feasible / resource type unclear:
+Clarification response (only if description is completely ambiguous):
 { "type": "clarification", "question": "string" }
 
 Never mix shapes. No commentary outside the JSON.`;
 
-async function callGemini({ systemPrompt, contents, generationConfig, expectJson = true }) {
-  if (!GEMINI_API_KEY) {
-    throw new AiValidationError('AI service is not configured on this server', null);
+function normalizeMessagesForClaude(contents, messages) {
+  const rawInput = messages || contents || [];
+  const list = Array.isArray(rawInput) ? rawInput : [rawInput];
+  const result = [];
+
+  for (const item of list) {
+    if (!item) continue;
+    let role = (item.role === 'assistant' || item.role === 'model') ? 'assistant' : 'user';
+    let textContent = '';
+    if (typeof item === 'string') {
+      textContent = item;
+    } else if (typeof item.content === 'string') {
+      textContent = item.content;
+    } else if (Array.isArray(item.parts)) {
+      textContent = item.parts.map(p => (typeof p === 'string' ? p : p?.text || '')).join('');
+    } else if (typeof item.text === 'string') {
+      textContent = item.text;
+    } else if (item.content && Array.isArray(item.content)) {
+      textContent = item.content.map(p => (typeof p === 'string' ? p : p?.text || '')).join('');
+    }
+
+    textContent = textContent.trim();
+    if (textContent) {
+      if (result.length > 0 && result[result.length - 1].role === role) {
+        result[result.length - 1].content += '\n\n' + textContent;
+      } else {
+        result.push({ role, content: textContent });
+      }
+    }
   }
 
-  const requestBody = {
-    system_instruction: systemPrompt ? { parts: [{ text: systemPrompt }] } : undefined,
-    contents,
-    generationConfig: {
-      maxOutputTokens: 2000,
-      ...(expectJson ? { responseMimeType: 'application/json' } : {}),
-      ...(generationConfig || {})
-    }
-  };
+  if (result.length === 0) {
+    result.push({ role: 'user', content: 'Generate response' });
+  } else if (result[0].role !== 'user') {
+    result.unshift({ role: 'user', content: 'Begin' });
+  }
 
-  const candidateModels = [
-    process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite',
-    'gemini-3.1-flash-lite',
-    'gemini-3.8-flash',
-    'gemini-flash-latest'
+  return result;
+}
+
+async function callClaude({ systemPrompt, contents, messages, generationConfig, expectJson = true }) {
+  const apiKey = process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
+  if (!apiKey) {
+    throw new AiValidationError('AI service is not configured on this server: ANTHROPIC_API_KEY is not set in .env', null);
+  }
+
+  const formattedMessages = normalizeMessagesForClaude(contents, messages);
+
+  let finalSystem = systemPrompt || '';
+  if (expectJson && !finalSystem.includes('JSON')) {
+    finalSystem += '\n\nIMPORTANT: Respond with pure JSON only, without any markdown formatting, code blocks, or preamble.';
+  }
+
+  const isRelay = apiKey.startsWith('sk-air-') || apiKey.startsWith('sk-cs4-') || Boolean(process.env.ANTHROPIC_BASE_URL && (process.env.ANTHROPIC_BASE_URL.includes('llmsrelay') || process.env.ANTHROPIC_BASE_URL.includes('airforce')));
+  const primaryBaseUrl = process.env.ANTHROPIC_BASE_URL || (isRelay ? 'https://api.llmsrelay.com' : 'https://api.anthropic.com');
+  const baseUrls = [
+    primaryBaseUrl.replace(/\/+$/, ''),
+    ...(isRelay && !primaryBaseUrl.includes('airforce') ? ['https://api.airforce.com'] : []),
   ];
+
+  const defaultModels = isRelay
+    ? ['claude-3-5-sonnet-20241022', 'claude-sonnet-4.6', 'claude-sonnet-5', 'claude-3-7-sonnet-20250219', 'claude-3-5-haiku-20241022', 'claude-opus-4.6']
+    : ['claude-3-5-sonnet-20241022', 'claude-3-7-sonnet-20250219', 'claude-3-5-haiku-20241022'];
+
+  const candidateModels = [...new Set([
+    process.env.ANTHROPIC_MODEL,
+    ...defaultModels
+  ])].filter(Boolean);
+
+  const maxTokens = Math.min(generationConfig?.maxOutputTokens || 8192, 8192);
 
   let response;
   let lastErrBody = '';
 
-  for (const modelName of candidateModels) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${GEMINI_API_KEY}`;
-    
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        response = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestBody)
-        });
+  for (const baseUrl of baseUrls) {
+    const url = `${baseUrl}/v1/messages`;
 
-        if (response.ok) break;
+    for (const modelName of candidateModels) {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          response = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': apiKey,
+              'Authorization': `Bearer ${apiKey}`,
+              'anthropic-version': '2023-06-01',
+            },
+            body: JSON.stringify({
+              model: modelName,
+              max_tokens: maxTokens,
+              ...(finalSystem ? { system: finalSystem } : {}),
+              messages: formattedMessages,
+            }),
+          });
 
-        lastErrBody = await response.text();
-        if (response.status === 404 || response.status === 429 || response.status === 503) {
-          console.warn(`⚠️ Model ${modelName} returned status ${response.status}. Trying next fallback model...`);
-          break;
+          if (response.ok) break;
+
+          lastErrBody = await response.text();
+          if (response.status === 404 || response.status === 429 || response.status === 529 || response.status === 503) {
+            console.warn(`⚠️ Claude model ${modelName} at ${baseUrl} returned status ${response.status}. Trying next fallback...`);
+            break;
+          } else {
+            break;
+          }
+        } catch (err) {
+          lastErrBody = err.message;
         }
-      } catch (err) {
-        lastErrBody = err.message;
       }
+
+      if (response && response.ok) break;
     }
 
     if (response && response.ok) break;
   }
 
   if (!response || !response.ok) {
-    throw new AiValidationError(`Gemini API error: ${lastErrBody}`, null);
+    throw new AiValidationError(`Claude API error: ${lastErrBody}`, null);
   }
 
   const data = await response.json();
-  const raw = (data.candidates?.[0]?.content?.parts || [])
-    .map(p => p.text || '')
+  const raw = (data.content || [])
+    .filter(c => c.type === 'text')
+    .map(c => c.text || '')
     .join('')
     .trim();
 
   if (!raw) {
-    throw new AiValidationError('Gemini returned an empty response', data);
+    throw new AiValidationError('Claude returned an empty response', data);
   }
 
   return raw;
 }
 
-async function generateProcess(description, history = [], preferredLanguage = 'en') {
-  if (!GEMINI_API_KEY) {
-    throw new AiValidationError('AI service is not configured on this server', null);
-  }
+const callGemini = callClaude;
 
-  // Gemini expects { role: 'user'|'model', parts: [{text}] } instead of Anthropic's
-  // { role: 'user'|'assistant', content }. Map history over and append the new turn.
-  const contents = [
-    ...history.map(h => ({
-      role: h.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: h.content }]
-    })),
-    { role: 'user', parts: [{ text: description }] }
-  ];
+async function extractSpec(description, history = [], preferredLanguage = 'en') {
+  const apiKey = process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
+  if (!apiKey) {
+    throw new AiValidationError('AI service is not configured on this server: ANTHROPIC_API_KEY is not set in .env', null);
+  }
 
   const prefLang = preferredLanguage === 'ur-roman' ? 'ur-roman' : (preferredLanguage === 'ur' ? 'ur' : 'en');
   const languageInstruction = `
 === LANGUAGE & TERMINOLOGY REQUIREMENT (CRITICAL) ===
 User's preferred output language is: ${prefLang === 'ur-roman' ? 'Roman Urdu (ur-roman)' : (prefLang === 'ur' ? 'Urdu script (ur)' : 'English (en)')}.
-Write ALL user-facing text generated by the AI (clarification questions, branch labels, warnings, hints, explanations) in the user's preferred language.
-Roman Urdu stays in Roman script. Urdu script uses Urdu Arabic script.
-Never use BPMN jargon (gateway, exclusive/parallel split, sequence flow, lane, rejoin, token) in user-facing text.
-CRITICAL: The user can describe a process in ANY language (English, Roman Urdu, Urdu script, mixed). You must accurately understand and parse the process description regardless of what language the user typed, but write your own commentary, questions, and branch labels in the preferred language.
-CRITICAL: Keep the user's own step names, role names, and process names EXACTLY as the user wrote them in their own wording (do NOT translate the user's terms).
+Write user-facing questions, field descriptions, and reasons in the user's preferred language.
+Keep the user's own activity names, role names, and triggers EXACTLY as the user wrote them.
 `;
 
-  const basePrompt = USE_SPEC_COMPILER ? SPEC_SYSTEM_PROMPT : SYSTEM_PROMPT;
-  const promptToUse = `${languageInstruction}\n\n${basePrompt}`;
-  const raw = await callGemini({
+  const contents = [
+    ...history.map(h => ({
+      role: h.role === 'assistant' ? 'assistant' : 'user',
+      content: h.content
+    })),
+    { role: 'user', content: description }
+  ];
+
+  const promptToUse = `${languageInstruction}\n\n${STAGE1_SPEC_EXTRACTION_PROMPT}`;
+  const raw = await callClaude({
     systemPrompt: promptToUse,
     contents,
-    generationConfig: {
-      maxOutputTokens: 20000,
-      thinkingConfig: { thinkingBudget: 1024 }
-    },
+    generationConfig: { maxOutputTokens: 8192 },
     expectJson: true
   });
 
@@ -435,9 +485,7 @@ CRITICAL: Keep the user's own step names, role names, and process names EXACTLY 
   try {
     parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
   } catch (err) {
-    // Include a snippet of what Gemini actually sent back so the real problem (truncation,
-    // markdown fences, refusal text, etc.) is visible in the API response instead of just "non-JSON".
-    throw new AiValidationError('AI returned non-JSON output', raw.slice(0, 500));
+    throw new AiValidationError('AI returned non-JSON output during spec extraction', raw.slice(0, 500));
   }
 
   if (parsed.type === 'clarification') {
@@ -447,62 +495,164 @@ CRITICAL: Keep the user's own step names, role names, and process names EXACTLY 
     return parsed;
   }
 
-  // Generation Pipeline: draft -> normalize -> validate -> repair -> fallback
-  const { compileBpmn, validateSpec } = await getCompiler();
-  const { validateBpmn } = await getValidator();
-  const { normalizeAndRepairBpmn, buildBpmnFromDraft, buildLinearFallbackDiagram } = await getNormalizer();
+  const { validateSpecJson, validateProcessDescriptionSchema, cleanAndNormalizeSpec } = await getSpecSchema();
+  let validation = validateProcessDescriptionSchema
+    ? validateProcessDescriptionSchema(parsed)
+    : validateSpecJson(parsed);
 
-  let rawDiagram = null;
-
-  if (parsed.type === 'draft' || (parsed.activities && parsed.decisions)) {
-    rawDiagram = buildBpmnFromDraft(parsed, { userDescription: description });
-  } else if (USE_SPEC_COMPILER && (parsed.type === 'spec' || parsed.pools)) {
-    const specCheck = validateSpec(parsed);
-    if (!specCheck.valid) {
-      return {
-        type: 'clarification',
-        question: specCheck.question || 'Could you provide a few more details about this step?',
-      };
-    }
-    rawDiagram = compileBpmn(parsed);
-  } else if (parsed.type === 'diagram') {
-    normalizeDiagram(parsed);
-    rawDiagram = parsed;
-  } else {
-    rawDiagram = buildLinearFallbackDiagram(description, parsed, { lang: prefLang });
-  }
-
-  // 1. Run deterministic normalization & auto-fixes
-  rawDiagram = normalizeAndRepairBpmn(rawDiagram, { userDescription: description });
-
-  // 2. Run validator
-  let validation = validateBpmn(rawDiagram, { allowUnresolved: true });
-
-  // 3. If errors remain, run deterministic auto-fixes first
-  if (validation.errors && validation.errors.length > 0) {
-    rawDiagram = normalizeAndRepairBpmn(validation.repaired || rawDiagram, { userDescription: description });
-    validation = validateBpmn(rawDiagram, { allowUnresolved: true });
-  }
-
-  // 4. If errors still remain, retry with Claude/Gemini up to 2 times
-  let retryCount = 0;
-  while (validation.errors && validation.errors.length > 0 && retryCount < 2) {
-    retryCount++;
+  let schemaRetries = 0;
+  while (!validation.valid && schemaRetries < 3) {
+    schemaRetries++;
+    const schemaErrorText = validation.errors.join('\n');
+    const retryContents = [
+      ...contents,
+      { role: 'assistant', content: raw },
+      { role: 'user', content: `The extracted JSON did not conform to the schema:\n${schemaErrorText}\nPlease return pure valid JSON matching the schema.` }
+    ];
     try {
-      const repairPrompt = `The previous process model had technical validator issues:
-${validation.errors.join('\n')}
-Please return a corrected JSON spec or draft fixing these exact issues. Ensure every task has 1 incoming and 1 outgoing sequence flow, no orphans, and valid flow.`;
-
-      const retryContents = [
-        ...contents,
-        { role: 'model', parts: [{ text: JSON.stringify(parsed) }] },
-        { role: 'user', parts: [{ text: repairPrompt }] }
-      ];
-
-      const retryRaw = await callGemini({
+      const retryRaw = await callClaude({
         systemPrompt: promptToUse,
         contents: retryContents,
-        generationConfig: { maxOutputTokens: 20000 },
+        generationConfig: { maxOutputTokens: 8192 },
+        expectJson: true
+      });
+      parsed = JSON.parse(retryRaw.replace(/```json|```/g, '').trim());
+      validation = validateProcessDescriptionSchema
+        ? validateProcessDescriptionSchema(parsed)
+        : validateSpecJson(parsed);
+    } catch {
+      break;
+    }
+  }
+
+  if (!validation.valid) {
+    console.warn('Stage 1 Spec extraction schema notices:', validation.errors);
+  }
+
+  return cleanAndNormalizeSpec(parsed);
+}
+
+async function generateProcess(input, history = [], preferredLanguage = 'en') {
+  const apiKey = process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
+  if (!apiKey) {
+    throw new AiValidationError('AI service is not configured on this server: ANTHROPIC_API_KEY is not set in .env', null);
+  }
+
+  const isObj = input && typeof input === 'object';
+  const description = isObj ? (input.description || input.text || '') : String(input || '');
+  const providedSpec = isObj ? (input.spec || (input.participants ? input : null)) : null;
+
+  const prefLang = preferredLanguage === 'ur-roman' ? 'ur-roman' : (preferredLanguage === 'ur' ? 'ur' : 'en');
+
+  // Dynamic module loaders
+  const { validateSpecJson, cleanAndNormalizeSpec } = await getSpecSchema();
+  const { specToBpmn, deriveCleanPoolTitle } = await getSpecToBpmn();
+  const { bindSpecToSimulation } = await getSpecBinding();
+  const { validatePostGeneration } = await getPostValidator();
+  const { validateBpmn } = await getValidator();
+  const { normalizeAndRepairBpmn } = await getNormalizer();
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // STAGE 1: SPEC EXTRACTION
+  // ──────────────────────────────────────────────────────────────────────────
+  let spec;
+  if (providedSpec) {
+    spec = cleanAndNormalizeSpec(providedSpec);
+  } else {
+    const extractedSpec = await extractSpec(description, history, prefLang);
+    if (extractedSpec.type === 'clarification') {
+      return extractedSpec;
+    }
+    spec = cleanAndNormalizeSpec(extractedSpec);
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // STAGE 2: DETERMINISTIC BPMN GENERATION FROM SPEC
+  // ──────────────────────────────────────────────────────────────────────────
+  const businessTitle = deriveCleanPoolTitle ? deriveCleanPoolTitle(description, spec) : (description.split(/[.\n]/)[0]?.slice(0, 45).trim() || 'Business Organization');
+  const { buildBpmnFromProcessJson } = await getDeterministicBuilder();
+
+  // Convert spec to processJson for deterministic builder
+  const processJson = {
+    processTitle: spec.process_name || spec.processTitle || businessTitle,
+    actors: spec.actors || (spec.participants?.internal_roles ? spec.participants.internal_roles.map(r => r.name) : ['Staff']),
+    external_parties: spec.external_parties || (spec.participants?.external_parties ? spec.participants.external_parties.map(p => p.name) : []),
+    steps: (spec.steps && spec.steps.length > 0)
+      ? spec.steps
+      : (spec.activities || []).map((a, idx) => ({
+          id: `step_${idx + 1}`,
+          name: a.name,
+          actor: a.performer_role || a.actor || 'Staff',
+          type: a.type || (/wait|delay/i.test(a.name) ? 'wait' : (/send/i.test(a.name) ? 'message send' : (/receive/i.test(a.name) ? 'message receive' : 'task'))),
+          duration: a.duration,
+          duration_unit: a.duration_unit || 'minutes',
+          interacts_with: a.interacts_with || a.interactsWith || null,
+        })),
+    decisions: (spec.decisions || []).map(d => ({
+      question: d.question,
+      after_step: d.after_step || d.afterStep || (d.branches?.[0]?.after_activity) || null,
+      branches: (d.branches || d.options || []).map(b => ({
+        label: b.label || b.condition,
+        target_step: b.target_step || b.targetStepId || b.target || null,
+        probability: b.probability != null ? Number(b.probability) : null,
+      })),
+    })),
+    parallel_groups: spec.parallel_groups || spec.parallelGroups || [],
+    loops: spec.loops || spec.rework || [],
+    endings: spec.endings || [],
+  };
+
+  let rawDiagram;
+  try {
+    rawDiagram = buildBpmnFromProcessJson(processJson);
+  } catch (buildErr) {
+    console.warn('Deterministic builder warning, falling back to specToBpmn:', buildErr.message);
+    rawDiagram = specToBpmn(spec, { businessName: businessTitle, userDescription: description });
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // STAGE 3: VALIDATION + REPAIR LOOP
+  // ──────────────────────────────────────────────────────────────────────────
+  rawDiagram = normalizeAndRepairBpmn(rawDiagram, { userDescription: description });
+  let postVal = validatePostGeneration(rawDiagram);
+  rawDiagram = postVal.repaired || rawDiagram;
+  let validation = validateBpmn(rawDiagram, { allowUnresolved: true });
+
+  let allViolations = [
+    ...(postVal.errors || []),
+    ...(validation.errors || [])
+  ];
+
+  // Repair loop with Claude (up to 3 retries) if violations exist and LLM is enabled
+  let retryCount = 0;
+  while (allViolations.length > 0 && retryCount < 3 && !providedSpec) {
+    retryCount++;
+    try {
+      const violationsText = allViolations.map((err, i) => `${i + 1}. ${err}`).join('\n');
+      const repairPrompt = `The extracted business spec had technical BPMN validation issues when generated:
+${violationsText}
+
+Please return a corrected Stage 1 JSON spec ("processTitle", "actors", "external_parties", "steps", "decisions", "parallel_groups", "loops", "endings") fixing these issues:
+- Intermediate message catch events for waiting on external messages/deliveries/orders.
+- Timer events for delays/waits.
+- Every split gateway must have >= 2 outgoing branches with condition labels (e.g. "Yes", "No") and a matching downstream merge gateway of the same type.
+- Ensure all nodes are reachable from start to end with no dead ends.
+- Return pure valid JSON matching the schema.`;
+
+      const contents = [
+        ...history.map(h => ({
+          role: h.role === 'assistant' ? 'assistant' : 'user',
+          content: h.content
+        })),
+        { role: 'user', content: description },
+        { role: 'assistant', content: JSON.stringify(spec) },
+        { role: 'user', content: repairPrompt }
+      ];
+
+      const retryRaw = await callClaude({
+        systemPrompt: STAGE1_SPEC_EXTRACTION_PROMPT,
+        contents,
+        generationConfig: { maxOutputTokens: 8192 },
         expectJson: true,
       });
 
@@ -511,68 +661,99 @@ Please return a corrected JSON spec or draft fixing these exact issues. Ensure e
         return retryParsed;
       }
 
-      let retryDiagram = null;
-      if (retryParsed.type === 'draft' || (retryParsed.activities && retryParsed.decisions)) {
-        retryDiagram = buildBpmnFromDraft(retryParsed, { userDescription: description });
-      } else if (retryParsed.type === 'spec' || retryParsed.pools) {
-        retryDiagram = compileBpmn(retryParsed);
-      } else if (retryParsed.type === 'diagram') {
-        normalizeDiagram(retryParsed);
-        retryDiagram = retryParsed;
+      const retrySpec = cleanAndNormalizeSpec(retryParsed);
+      let retryDiagram;
+      try {
+        retryDiagram = buildBpmnFromProcessJson(retrySpec);
+      } catch {
+        retryDiagram = specToBpmn(retrySpec, { businessName: businessTitle, userDescription: description });
       }
+      retryDiagram = normalizeAndRepairBpmn(retryDiagram, { userDescription: description });
 
-      if (retryDiagram) {
-        retryDiagram = normalizeAndRepairBpmn(retryDiagram, { userDescription: description });
-        const retryVal = validateBpmn(retryDiagram, { allowUnresolved: true });
-        if (!retryVal.errors || retryVal.errors.length === 0) {
-          rawDiagram = retryDiagram;
-          validation = retryVal;
-          break;
-        }
+      const retryPostVal = validatePostGeneration(retryDiagram);
+      const retryRepaired = retryPostVal.repaired || retryDiagram;
+      const retryVal = validateBpmn(retryRepaired, { allowUnresolved: true });
+      const retryViolations = [...(retryPostVal.errors || []), ...(retryVal.errors || [])];
+
+      rawDiagram = retryRepaired;
+      postVal = retryPostVal;
+      validation = retryVal;
+      allViolations = retryViolations;
+
+      if (allViolations.length === 0) {
+        break;
       }
     } catch (retryErr) {
       console.warn(`Repair retry ${retryCount} error:`, retryErr.message);
     }
   }
 
-  // 5. If still invalid after 2 retries, fall back to simplified linear version (valid by construction)
-  if (validation.errors && validation.errors.length > 0) {
-    console.warn('Validator errors remained after retries; engaging linear fallback pipeline.');
-    rawDiagram = buildLinearFallbackDiagram(description, parsed, { lang: prefLang });
-    rawDiagram = normalizeAndRepairBpmn(rawDiagram, { userDescription: description });
-    validation = validateBpmn(rawDiagram, { allowUnresolved: true });
-  }
+  // Final check
+  postVal = validatePostGeneration(rawDiagram);
+  rawDiagram = postVal.repaired || rawDiagram;
+  validation = validateBpmn(rawDiagram, { allowUnresolved: true });
+  allViolations = [...(validation.errors || [])];
 
-  const finalDiagram = validation.repaired || rawDiagram;
+  // ──────────────────────────────────────────────────────────────────────────
+  // STAGE 4: SPEC -> SIMULATION CONFIG BINDING
+  // ──────────────────────────────────────────────────────────────────────────
+  const is24h = /24\/7|24\s+hours|continuous|round[\s-]the[\s-]clock/i.test(description);
+  const bindingResult = bindSpecToSimulation(spec, rawDiagram, { is24Hour: is24h });
+
+  const finalDiagram = bindingResult.diagram;
+  const simulationConfig = bindingResult.simulationConfig;
+  const scenarioSettings = bindingResult.scenarioSettings;
+
+  finalDiagram.simulationConfig = simulationConfig;
+  finalDiagram.scenarioSettings = scenarioSettings;
   finalDiagram.unresolvedGateways = validation.unresolvedGateways || [];
   finalDiagram.duplicateWarnings = validation.duplicateWarnings || [];
-  finalDiagram.validationRepairs = validation.repairs || [];
-  finalDiagram.validationErrors = []; // Silent validation; user never sees technical BPMN errors
+  finalDiagram.validationRepairs = [
+    ...(validation.repairs || []),
+    ...(postVal.warnings || []).map(w => (typeof w === 'string' ? w : w.message))
+  ];
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // STAGE 5: QUESTIONNAIRE INTEGRATION & CONFIRMATION
+  // ──────────────────────────────────────────────────────────────────────────
+  const combinedWarnings = [
+    ...(validation.warnings || []),
+    ...(postVal.warnings || []).map(w => (typeof w === 'string' ? w : w.message))
+  ];
+  if (allViolations.length > 0) {
+    combinedWarnings.push(...allViolations);
+  }
+  finalDiagram.validationWarnings = combinedWarnings;
+  finalDiagram.validationErrors = allViolations.length > 0 ? allViolations : [];
 
   // Build confirmation payload for review card on first pass
   const isFirstPass = !history || history.length === 0;
   if (isFirstPass) {
     const confirmations = buildConfirmationPayload(finalDiagram);
-    if (confirmations.resources.length > 0 || confirmations.durations.length > 0) {
-      return {
-        type: 'needs_confirmation',
-        diagram: finalDiagram,
-        confirmations,
-        spec: parsed,
-        unresolvedGateways: finalDiagram.unresolvedGateways,
-        duplicateWarnings: finalDiagram.duplicateWarnings,
-      };
-    }
+    return {
+      type: 'needs_confirmation',
+      diagram: finalDiagram,
+      confirmations,
+      spec,
+      simulationConfig,
+      scenarioSettings,
+      unresolvedGateways: finalDiagram.unresolvedGateways,
+      duplicateWarnings: finalDiagram.duplicateWarnings,
+      validationWarnings: finalDiagram.validationWarnings,
+      validationErrors: finalDiagram.validationErrors,
+    };
   }
 
   return {
     ...finalDiagram,
-    spec: parsed,
+    spec,
+    simulationConfig,
+    scenarioSettings,
     unresolvedGateways: finalDiagram.unresolvedGateways,
     duplicateWarnings: finalDiagram.duplicateWarnings,
+    validationWarnings: finalDiagram.validationWarnings,
+    validationErrors: finalDiagram.validationErrors,
   };
-
-  throw new AiValidationError('Unknown response type from AI', parsed);
 }
 
 // Builds a batch of "the AI guessed this, please confirm" fields, grouped so
@@ -765,17 +946,25 @@ function normalizeDiagram(diagram) {
     }
   });
 
-  // 3. Normalize single start-event across whole diagram
-  const allStarts = modelNodes.filter(n => n.type === 'start-event');
+  // 3. Normalize start-events without deleting independent multi-trigger flows
+  const allStarts = modelNodes.filter(n => n.type === 'start-event' || (typeof n.type === 'string' && n.type.endsWith('-start-event')));
   if (allStarts.length === 0 && modelNodes.length > 0) {
     modelNodes[0].type = 'start-event';
   } else if (allStarts.length > 1) {
-    const primaryStart = allStarts[0];
-    const extraIds = new Set(allStarts.slice(1).map(s => s.id));
-    diagram.nodes = diagram.nodes.filter(n => !extraIds.has(n.id));
-    diagram.edges.forEach(e => {
-      if (extraIds.has(e.source)) {
-        e.source = primaryStart.id;
+    const targetMap = new Map();
+    allStarts.forEach(s => {
+      const targets = diagram.edges.filter(e => e.source === s.id && e.flowType !== 'message').map(e => e.target).sort().join(',') || '__none__';
+      if (!targetMap.has(targets)) targetMap.set(targets, []);
+      targetMap.get(targets).push(s);
+    });
+    targetMap.forEach((dupes) => {
+      if (dupes.length > 1) {
+        const keep = dupes[0];
+        const extraIds = new Set(dupes.slice(1).map(s => s.id));
+        diagram.nodes = diagram.nodes.filter(n => !extraIds.has(n.id));
+        diagram.edges.forEach(e => {
+          if (extraIds.has(e.source)) e.source = keep.id;
+        });
       }
     });
   }
@@ -905,4 +1094,14 @@ class AiValidationError extends Error {
   }
 }
 
-module.exports = { generateProcess, AiValidationError, callGemini };
+module.exports = {
+  generateProcess,
+  extractSpec,
+  AiValidationError,
+  callClaude,
+  callGemini,
+  getSpecSchema,
+  getSpecToBpmn,
+  getSpecBinding,
+  getPostValidator,
+};

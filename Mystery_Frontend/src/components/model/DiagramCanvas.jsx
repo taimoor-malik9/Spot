@@ -89,8 +89,61 @@ export function DiagramCanvas({
             const px = pool.position.x, py = pool.position.y;
             const W = pool.width ?? 600, H = pool.height ?? 150;
             const rawLanes = poolLanes(elements, pool.id);
-            const lanes = rawLanes.length >= 2 ? rawLanes : [];
+            const lanes = rawLanes;
             const isSel = allSelected || selectedId === pool.id || multiSelSet.has(pool.id);
+            const isExternal = Boolean(pool.isExternal || pool.data?.isExternal);
+
+            if (isExternal) {
+              const poolLabel = pool.label || pool.data?.label || pool.id;
+              return (
+                <g
+                  key={pool.id}
+                  onMouseEnter={() => setHoveredId?.(pool.id)}
+                  onMouseLeave={() => setHoveredId?.(null)}
+                >
+                  <g
+                    style={{ cursor: readOnly ? 'default' : 'move' }}
+                    onMouseDown={e => {
+                      if (!readOnly && onNodeDown) onNodeDown(e, pool.id);
+                    }}
+                    onClick={e => {
+                      if (readOnly) onNodeClick?.(pool, e);
+                    }}
+                    onDoubleClick={e => {
+                      e.stopPropagation();
+                      if (!readOnly && startEdit) startEdit(pool.id);
+                      else onNodeDoubleClick?.(pool, e);
+                    }}
+                    onContextMenu={e => {
+                      if (!readOnly && setCtxMenu) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setCtxMenu({ x: e.clientX, y: e.clientY, id: pool.id });
+                      }
+                    }}
+                  >
+                    <rect
+                      x={px} y={py} width={W} height={H} rx="4"
+                      fill="#f8fafc"
+                      stroke={isSel ? '#4b5563' : '#94a3b8'}
+                      strokeWidth={isSel ? 2 : 1.5}
+                    />
+                    <text
+                      x={px + W / 2}
+                      y={py + H / 2 + 5}
+                      textAnchor="middle"
+                      fontSize={13}
+                      fontWeight={600}
+                      fill="#334155"
+                      pointerEvents="none"
+                      userSelect="none"
+                    >
+                      {poolLabel}
+                    </text>
+                  </g>
+                </g>
+              );
+            }
 
             return (
               <g
@@ -137,6 +190,7 @@ export function DiagramCanvas({
                   />
                   <foreignObject x={px} y={py} width={POOL_LANE_HDR} height={H}>
                     <div
+                      title={String(pool.label || pool.data?.label || pool.id || '')}
                       style={{
                         width: H,
                         height: POOL_LANE_HDR,
@@ -151,11 +205,13 @@ export function DiagramCanvas({
                         whiteSpace: 'nowrap',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
+                        padding: '0 8px',
+                        boxSizing: 'border-box',
                         pointerEvents: 'none',
                         userSelect: 'none',
                       }}
                     >
-                      {pool.label.length > 14 ? pool.label.slice(0, 13) + '…' : pool.label}
+                      {String(pool.label || pool.data?.label || pool.id || '')}
                     </div>
                   </foreignObject>
                 </g>
@@ -217,6 +273,7 @@ export function DiagramCanvas({
                       />
                       <foreignObject x={lhx} y={ly} width={LANE_HDR} height={lH}>
                         <div
+                          title={String(lane.label || lane.data?.label || lane.id || '')}
                           style={{
                             width: lH,
                             height: LANE_HDR,
@@ -231,11 +288,13 @@ export function DiagramCanvas({
                             whiteSpace: 'nowrap',
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
+                            padding: '0 6px',
+                            boxSizing: 'border-box',
                             pointerEvents: 'none',
                             userSelect: 'none',
                           }}
                         >
-                          {lane.label.length > 14 ? lane.label.slice(0, 13) + '…' : lane.label}
+                          {String(lane.label || lane.data?.label || lane.id || '')}
                         </div>
                       </foreignObject>
 
@@ -372,7 +431,7 @@ export function DiagramCanvas({
                       userSelect: 'none',
                     }}
                   >
-                    {lane.label.length > 14 ? lane.label.slice(0, 13) + '…' : lane.label}
+                    {String(lane.label || lane.data?.label || lane.id || '').length > 14 ? String(lane.label || lane.data?.label || lane.id || '').slice(0, 13) + '…' : String(lane.label || lane.data?.label || lane.id || '')}
                   </div>
                 </foreignObject>
 
@@ -648,6 +707,7 @@ export function DiagramCanvas({
                             WebkitLineClamp: 3,
                             WebkitBoxOrient: 'vertical',
                             overflow: 'hidden',
+                            wordBreak: 'break-word',
                           }}
                         >
                           {el.label}
@@ -687,6 +747,7 @@ export function DiagramCanvas({
                             WebkitLineClamp: 2,
                             WebkitBoxOrient: 'vertical',
                             overflow: 'hidden',
+                            wordBreak: 'break-word',
                           }}
                         >
                           {el.label}
@@ -710,18 +771,24 @@ export function DiagramCanvas({
                 })()}
 
                 {/* "click to configure paths" hint below gateway in edit mode */}
-                {!readOnly && (el.type === 'exclusive-gateway' || el.type === 'inclusive-gateway' || el.type === 'gateway') && !editId && (
-                  <text
-                    x={nodeW / 2}
-                    y={nodeH + 26}
-                    textAnchor="middle"
-                    fontSize="9"
-                    fill="#94a3b8"
-                    style={{ pointerEvents: 'none', userSelect: 'none' }}
-                  >
-                    click to configure paths
-                  </text>
-                )}
+                {!readOnly && (el.type === 'exclusive-gateway' || el.type === 'inclusive-gateway' || el.type === 'gateway') && !editId && (() => {
+                  const outgoing = connections.filter(c => (c.fromId === el.id || c.from === el.id));
+                  const isMerge = (el.gateway_role === 'merge' || el.data?.gateway_role === 'merge' || outgoing.length <= 1);
+                  const isFullyConfigured = !isMerge && outgoing.length >= 2 && outgoing.every(c => (c.label || c.data?.label) && (c.probability != null || c.data?.probability != null));
+                  if (isMerge || isFullyConfigured) return null;
+                  return (
+                    <text
+                      x={nodeW / 2}
+                      y={nodeH + 26}
+                      textAnchor="middle"
+                      fontSize="9"
+                      fill="#94a3b8"
+                      style={{ pointerEvents: 'none', userSelect: 'none' }}
+                    >
+                      click to configure paths
+                    </text>
+                  );
+                })()}
 
                 {/* Context pad if enabled */}
                 {!readOnly && showPadOn && showPadOn(el) && ContextPad && (

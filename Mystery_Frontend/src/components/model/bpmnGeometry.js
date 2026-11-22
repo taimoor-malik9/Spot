@@ -6,7 +6,7 @@ export const LANE_HDR = 30;
 
 export function poolLanes(elements, poolId) {
   return (elements || [])
-    .filter(e => e.type === 'lane' && e.poolId === poolId && !e.implicitLane && !e.data?.implicitLane)
+    .filter(e => e.type === 'lane' && (e.poolId === poolId || e.pool === poolId || e.data?.poolId === poolId || e.data?.pool === poolId) && !e.implicitLane && !e.data?.implicitLane)
     .sort((a, b) => (a.rowIndex ?? 0) - (b.rowIndex ?? 0));
 }
 
@@ -206,6 +206,32 @@ export function bestPorts(from, to) {
   }
   const fc = elCenter(from);
   const tc = elCenter(to);
+
+  // If from or to is a pool container, anchor message flows to the pool boundary facing the element
+  if (from.type === 'pool' && to.type !== 'pool') {
+    const poolX = from.position?.x ?? 0;
+    const poolY = from.position?.y ?? 0;
+    const poolW = from.width || NW;
+    const poolH = from.height || NH;
+    const targetX = Math.max(poolX + 30, Math.min(poolX + poolW - 30, tc.x));
+    const isAbove = (poolY + poolH) <= (to.position?.y ?? 0) + 10;
+    const fp = isAbove ? { x: targetX, y: poolY + poolH } : { x: targetX, y: poolY };
+    const tp = elPort(to, isAbove ? 'top' : 'bottom');
+    return { fp, tp };
+  }
+
+  if (to.type === 'pool' && from.type !== 'pool') {
+    const poolX = to.position?.x ?? 0;
+    const poolY = to.position?.y ?? 0;
+    const poolW = to.width || NW;
+    const poolH = to.height || NH;
+    const sourceX = Math.max(poolX + 30, Math.min(poolX + poolW - 30, fc.x));
+    const isBelow = poolY >= (from.position?.y ?? 0) + (from.height || NH) - 10;
+    const fp = elPort(from, isBelow ? 'bottom' : 'top');
+    const tp = isBelow ? { x: sourceX, y: poolY } : { x: sourceX, y: poolY + poolH };
+    return { fp, tp };
+  }
+
   const dx = tc.x - fc.x;
   const dy = tc.y - fc.y;
   let fromSide, toSide;
@@ -228,4 +254,331 @@ export function connectionAnchors(from, to) {
 
 export function elPortSide(el, side) {
   return elPort(el, side);
+}
+
+export function isMergeGateway(node, connections = []) {
+  if (!node) return false;
+  if (node.gateway_role === 'merge' || node.role === 'merge') return true;
+  if (node.data?.gateway_role === 'merge' || node.data?.role === 'merge') return true;
+  if (/merge|join/i.test(node.id || '')) return true;
+  const incoming = (connections || []).filter(c => (c.toId === node.id || c.to === node.id));
+  if (incoming.length >= 2) return true;
+  return false;
+}
+
+/**
+ * 90-degree Manhattan orthogonal waypoints generator for BPMN 2.0 sequence,
+ * message, and loopback flows.
+ */
+export function computeOrthogonalWaypoints(from, to, conn = {}, elements = [], connections = []) {
+  if (!from || !to) return [];
+
+  const fc = elCenter(from);
+  const tc = elCenter(to);
+  const isMsg = conn.type === 'message-flow' || conn.flowType === 'message';
+
+  // 1. External pool message flows: strictly vertical routing
+  if (from.type === 'pool' && to.type !== 'pool') {
+    const poolX = from.position?.x ?? 0;
+    const poolY = from.position?.y ?? 0;
+    const poolW = from.width || NW;
+    const poolH = from.height || NH;
+    const targetX = Math.max(poolX + 30, Math.min(poolX + poolW - 30, tc.x));
+    const isAbove = (poolY + poolH) <= (to.position?.y ?? 0) + 15;
+    const startY = isAbove ? poolY + poolH : poolY;
+    const toPort = elPort(to, isAbove ? 'top' : 'bottom');
+    return [{ x: targetX, y: startY }, { x: targetX, y: toPort.y }];
+  }
+
+  if (to.type === 'pool' && from.type !== 'pool') {
+    const poolX = to.position?.x ?? 0;
+    const poolY = to.position?.y ?? 0;
+    const poolW = to.width || NW;
+    const poolH = to.height || NH;
+    const sourceX = Math.max(poolX + 30, Math.min(poolX + poolW - 30, fc.x));
+    const isBelow = poolY >= (from.position?.y ?? 0) + (from.height || NH) - 15;
+    const fromPort = elPort(from, isBelow ? 'bottom' : 'top');
+    const endY = isBelow ? poolY : poolY + poolH;
+    return [{ x: sourceX, y: fromPort.y }, { x: sourceX, y: endY }];
+  }
+
+  // 2. Loopback flows (target is behind source: tc.x <= fc.x + 5)
+  if (!isMsg && tc.x <= fc.x + 5) {
+    let maxBottom = Math.max(
+      (from.position?.y ?? 0) + (from.height || NH),
+      (to.position?.y ?? 0) + (to.height || NH)
+    );
+    const minX = Math.min(from.position?.x ?? 0, to.position?.x ?? 0);
+    const maxX = Math.max(
+      (from.position?.x ?? 0) + (from.width || NW),
+      (to.position?.x ?? 0) + (to.width || NW)
+    );
+    if (Array.isArray(elements)) {
+      elements.forEach(el => {
+        if (el.type === 'pool' || el.type === 'lane') return;
+        const ex = el.position?.x ?? 0;
+        const ew = el.width || NW;
+        const ey = el.position?.y ?? 0;
+        const eh = el.height || NH;
+        if (ex + ew >= minX - 10 && ex <= maxX + 10) {
+          maxBottom = Math.max(maxBottom, ey + eh);
+        }
+      });
+    }
+    const channelY = maxBottom + 35 + (conn.bend?.y || 0);
+    const P0 = elPort(from, 'bottom');
+    const P1 = { x: P0.x, y: channelY };
+    const P2 = { x: tc.x, y: channelY };
+    const P3 = elPort(to, 'bottom');
+    return [P0, P1, P2, P3];
+  }
+
+  // 3. Forward flows: Determine port sides for Split & Merge gateways
+  const isFromGw = isGatewayType(from.type);
+  const fromOutgoing = (connections || []).filter(c => (c.fromId === from.id || c.from === from.id));
+  const isSplit = isFromGw && fromOutgoing.length >= 2 && !isMergeGateway(from, connections);
+
+  let fromSide = 'right';
+  if (isSplit) {
+    const sortedOut = [...fromOutgoing].sort((a, b) => {
+      const nA = (elements || []).find(e => e.id === (a.toId || a.to));
+      const nB = (elements || []).find(e => e.id === (b.toId || b.to));
+      return (nA ? elCenter(nA).y : 0) - (nB ? elCenter(nB).y : 0);
+    });
+    const outIdx = sortedOut.findIndex(c => c.id === conn.id);
+
+    if (sortedOut.length === 2) {
+      const target0 = (elements || []).find(e => e.id === (sortedOut[0].toId || sortedOut[0].to));
+      const target1 = (elements || []).find(e => e.id === (sortedOut[1].toId || sortedOut[1].to));
+      const y0 = target0 ? elCenter(target0).y : fc.y;
+      const y1 = target1 ? elCenter(target1).y : fc.y;
+      const diff0 = y0 - fc.y;
+      const diff1 = y1 - fc.y;
+
+      if (diff0 < -15 && diff1 > 15) {
+        fromSide = (outIdx === 0) ? 'top' : 'bottom';
+      } else if (diff1 > 15 && Math.abs(diff0) <= 15) {
+        fromSide = (outIdx === 0) ? 'right' : 'bottom';
+      } else if (diff0 < -15 && Math.abs(diff1) <= 15) {
+        fromSide = (outIdx === 0) ? 'top' : 'right';
+      } else {
+        fromSide = (outIdx === 0) ? 'top' : 'bottom';
+      }
+    } else if (sortedOut.length >= 3) {
+      if (outIdx === 0) fromSide = 'top';
+      else if (outIdx === sortedOut.length - 1) fromSide = 'bottom';
+      else fromSide = 'right';
+    }
+  }
+
+  const isToGw = isGatewayType(to.type);
+  const toIncoming = (connections || []).filter(c => (c.toId === to.id || c.to === to.id));
+  const isMerge = isToGw && (isMergeGateway(to, connections) || toIncoming.length >= 2);
+
+  let toSide = 'left';
+  if (isMerge && toIncoming.length >= 2) {
+    const diff = fc.y - tc.y;
+    if (diff < -15) {
+      toSide = 'top';
+    } else if (diff > 15) {
+      toSide = 'bottom';
+    } else {
+      toSide = 'left';
+    }
+  }
+
+  const startPort = elPort(from, fromSide);
+  const endPort = elPort(to, toSide);
+
+  // 4. Construct orthogonal waypoints based on assigned port sides
+  if (fromSide === 'right' && toSide === 'left') {
+    if (Math.abs(startPort.y - endPort.y) < 4) {
+      return [startPort, endPort];
+    }
+    const midX = (startPort.x + endPort.x) / 2 + (conn.bend?.x || 0);
+    return [
+      startPort,
+      { x: midX, y: startPort.y },
+      { x: midX, y: endPort.y },
+      endPort,
+    ];
+  }
+
+  if (fromSide === 'top' && toSide === 'left') {
+    if (endPort.y <= startPort.y + 5) {
+      return [startPort, { x: startPort.x, y: endPort.y }, endPort];
+    }
+    const liftY = startPort.y - 20 + (conn.bend?.y || 0);
+    const midX = (startPort.x + endPort.x) / 2;
+    return [
+      startPort,
+      { x: startPort.x, y: liftY },
+      { x: midX, y: liftY },
+      { x: midX, y: endPort.y },
+      endPort,
+    ];
+  }
+
+  if (fromSide === 'bottom' && toSide === 'left') {
+    if (endPort.y >= startPort.y - 5) {
+      return [startPort, { x: startPort.x, y: endPort.y }, endPort];
+    }
+    const dropY = startPort.y + 20 + (conn.bend?.y || 0);
+    const midX = (startPort.x + endPort.x) / 2;
+    return [
+      startPort,
+      { x: startPort.x, y: dropY },
+      { x: midX, y: dropY },
+      { x: midX, y: endPort.y },
+      endPort,
+    ];
+  }
+
+  if (fromSide === 'right' && toSide === 'top') {
+    return [startPort, { x: endPort.x, y: startPort.y }, endPort];
+  }
+
+  if (fromSide === 'right' && toSide === 'bottom') {
+    return [startPort, { x: endPort.x, y: startPort.y }, endPort];
+  }
+
+  if (fromSide === 'top' && toSide === 'top') {
+    const bridgeY = Math.min(startPort.y, endPort.y) - 25 + (conn.bend?.y || 0);
+    return [
+      startPort,
+      { x: startPort.x, y: bridgeY },
+      { x: endPort.x, y: bridgeY },
+      endPort,
+    ];
+  }
+
+  if (fromSide === 'bottom' && toSide === 'bottom') {
+    const bridgeY = Math.max(startPort.y, endPort.y) + 25 + (conn.bend?.y || 0);
+    return [
+      startPort,
+      { x: startPort.x, y: bridgeY },
+      { x: endPort.x, y: bridgeY },
+      endPort,
+    ];
+  }
+
+  // Fallback forward Manhattan
+  const midX = (startPort.x + endPort.x) / 2 + (conn.bend?.x || 0);
+  return [
+    startPort,
+    { x: midX, y: startPort.y },
+    { x: midX, y: endPort.y },
+    endPort,
+  ];
+}
+
+/**
+ * Converts a sequence of waypoints into an SVG path with smooth rounded corners (e.g. 6px radius).
+ */
+export function generateRoundedSvgPath(points, radius = 6) {
+  if (!points || points.length === 0) return '';
+  const pts = [];
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    if (pts.length === 0) {
+      pts.push(p);
+    } else {
+      const prev = pts[pts.length - 1];
+      if (Math.hypot(p.x - prev.x, p.y - prev.y) > 0.5) {
+        pts.push(p);
+      }
+    }
+  }
+
+  if (pts.length === 1) return `M ${pts[0].x} ${pts[0].y}`;
+  if (pts.length === 2) return `M ${pts[0].x} ${pts[0].y} L ${pts[1].x} ${pts[1].y}`;
+
+  let d = `M ${pts[0].x} ${pts[0].y}`;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const prev = pts[i - 1];
+    const cur = pts[i];
+    const next = pts[i + 1];
+
+    const v1 = { x: prev.x - cur.x, y: prev.y - cur.y };
+    const v2 = { x: next.x - cur.x, y: next.y - cur.y };
+    const d1 = Math.hypot(v1.x, v1.y) || 1;
+    const d2 = Math.hypot(v2.x, v2.y) || 1;
+
+    // Check if straight collinear
+    const cross = (v1.x * v2.y - v1.y * v2.x) / (d1 * d2);
+    const dot = (v1.x * v2.x + v1.y * v2.y) / (d1 * d2);
+    if (Math.abs(cross) < 1e-4 && dot < 0) {
+      d += ` L ${cur.x} ${cur.y}`;
+      continue;
+    }
+
+    const r = Math.min(radius, d1 / 2, d2 / 2);
+    const startCorner = {
+      x: cur.x + (v1.x / d1) * r,
+      y: cur.y + (v1.y / d1) * r,
+    };
+    const endCorner = {
+      x: cur.x + (v2.x / d2) * r,
+      y: cur.y + (v2.y / d2) * r,
+    };
+
+    d += ` L ${startCorner.x} ${startCorner.y} Q ${cur.x} ${cur.y} ${endCorner.x} ${endCorner.y}`;
+  }
+  d += ` L ${pts[pts.length - 1].x} ${pts[pts.length - 1].y}`;
+  return d;
+}
+
+/**
+ * Computes non-overlapping edge label placement, positioning split gateway branch
+ * labels along the segment just after the split port (offset 25-35px).
+ */
+export function computeEdgeLabelPosition(waypoints, conn, from, to) {
+  if (!waypoints || waypoints.length === 0) return { x: 0, y: 0 };
+  if (waypoints.length === 1) return { x: waypoints[0].x, y: waypoints[0].y };
+
+  const isFromGw = isGatewayType(from?.type) && !isMergeGateway(from);
+
+  if (isFromGw && waypoints.length >= 2) {
+    const p0 = waypoints[0];
+    const p1 = waypoints[1];
+    const dx = p1.x - p0.x;
+    const dy = p1.y - p0.y;
+    const len = Math.hypot(dx, dy) || 1;
+
+    if (len >= 30) {
+      const offsetDist = Math.min(len - 10, 28);
+      const lx = p0.x + (dx / len) * offsetDist;
+      const ly = p0.y + (dy / len) * offsetDist;
+
+      if (Math.abs(dx) < 1) {
+        return { x: lx + 22, y: ly };
+      } else {
+        return { x: lx, y: ly - 14 };
+      }
+    } else if (waypoints.length >= 3) {
+      const p2 = waypoints[2];
+      const dx2 = p2.x - p1.x;
+      const dy2 = p2.y - p1.y;
+      const len2 = Math.hypot(dx2, dy2) || 1;
+      const offsetDist = Math.min(len2 - 10, 24);
+      const lx = p1.x + (dx2 / len2) * offsetDist;
+      const ly = p1.y + (dy2 / len2) * offsetDist;
+      return { x: lx, y: ly - 14 };
+    }
+  }
+
+  if (waypoints.length === 2) {
+    return {
+      x: (waypoints[0].x + waypoints[1].x) / 2,
+      y: (waypoints[0].y + waypoints[1].y) / 2 - 14,
+    };
+  }
+
+  const midIdx = Math.floor((waypoints.length - 1) / 2);
+  const pA = waypoints[midIdx];
+  const pB = waypoints[midIdx + 1];
+  return {
+    x: (pA.x + pB.x) / 2,
+    y: (pA.y + pB.y) / 2 - 14,
+  };
 }

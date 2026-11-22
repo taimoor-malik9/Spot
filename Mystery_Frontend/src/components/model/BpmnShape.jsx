@@ -20,13 +20,13 @@ export function Shape({ type, sel, w, h, stroke, fill, strokeWidth, glow: glowPr
     <svg viewBox={`0 0 ${bW} ${bH}`} width={w || NW} height={h || NH} preserveAspectRatio="none" style={{ filter: glow, display: 'block' }}>
       {type === 'start-event' && <circle cx="60" cy="60" r="32" fill={fil} stroke={str} strokeWidth={sw} />}
 
-      {type === 'message-start-event' && <>
+      {(type === 'message-start-event' || type === 'message-start') && <>
         <circle cx="60" cy="60" r="32" fill={fil} stroke={str} strokeWidth={sw} />
         <rect x="47" y="50" width="26" height="18" rx="1.5" fill="none" stroke={str} strokeWidth={sw} />
         <polyline points="47,52.5 60,60 73,52.5" fill="none" stroke={str} strokeWidth={sw} />
       </>}
 
-      {type === 'timer-start-event' && <>
+      {(type === 'timer-start-event' || type === 'timer-start') && <>
         <circle cx="60" cy="60" r="32" fill={fil} stroke={str} strokeWidth={sw} />
         <circle cx="60" cy="60" r="16" fill="none" stroke={str} strokeWidth={sw} />
         <polyline points="60,49 60,60 68,60" fill="none" stroke={str} strokeWidth={sw} />
@@ -36,7 +36,7 @@ export function Shape({ type, sel, w, h, stroke, fill, strokeWidth, glow: glowPr
         <line x1="76" y1="60" x2="79" y2="60" stroke={str} strokeWidth={sw} />
       </>}
 
-      {type === 'conditional-start-event' && <>
+      {(type === 'conditional-start-event' || type === 'conditional-start') && <>
         <circle cx="60" cy="60" r="32" fill={fil} stroke={str} strokeWidth={sw} />
         <rect x="49" y="47" width="22" height="26" rx="1" fill="none" stroke={str} strokeWidth={sw} />
         <line x1="53" y1="53" x2="67" y2="53" stroke={str} strokeWidth={sw - 0.4} />
@@ -54,7 +54,7 @@ export function Shape({ type, sel, w, h, stroke, fill, strokeWidth, glow: glowPr
         <circle cx="60" cy="60" r="25" fill="none" stroke={str} strokeWidth={sw - 0.4} />
       </>}
 
-      {type === 'message-intermediate-catch' && <>
+      {(type === 'message-intermediate-catch' || type === 'message-catch' || type === 'message-event') && <>
         <circle cx="60" cy="60" r="32" fill={fil} stroke={str} strokeWidth={sw} />
         <circle cx="60" cy="60" r="25" fill="none" stroke={str} strokeWidth={sw - 0.4} />
         <rect x="47" y="50" width="26" height="18" rx="1.5" fill="none" stroke={str} strokeWidth={sw - 0.4} />
@@ -68,14 +68,14 @@ export function Shape({ type, sel, w, h, stroke, fill, strokeWidth, glow: glowPr
         <polyline points="47,52.5 60,60 73,52.5" fill="none" stroke={fil} strokeWidth={sw - 0.4} />
       </>}
 
-      {type === 'timer-intermediate-catch' && <>
+      {(type === 'timer-intermediate-catch' || type === 'timer-catch' || type === 'timer-event') && <>
         <circle cx="60" cy="60" r="32" fill={fil} stroke={str} strokeWidth={sw} />
         <circle cx="60" cy="60" r="25" fill="none" stroke={str} strokeWidth={sw - 0.4} />
         <circle cx="60" cy="60" r="14" fill="none" stroke={str} strokeWidth={sw - 0.4} />
         <polyline points="60,51 60,60 67,60" fill="none" stroke={str} strokeWidth={sw - 0.4} />
       </>}
 
-      {type === 'conditional-intermediate-catch' && <>
+      {(type === 'conditional-intermediate-catch' || type === 'conditional-catch' || type === 'conditional-event') && <>
         <circle cx="60" cy="60" r="32" fill={fil} stroke={str} strokeWidth={sw} />
         <circle cx="60" cy="60" r="25" fill="none" stroke={str} strokeWidth={sw - 0.4} />
         <rect x="49" y="47" width="22" height="26" rx="1" fill="none" stroke={str} strokeWidth={sw - 0.4} />

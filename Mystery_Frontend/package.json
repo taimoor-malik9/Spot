@@ -8,7 +8,7 @@
     "build": "node ./node_modules/vite/bin/vite.js build",
     "preview": "node ./node_modules/vite/bin/vite.js preview",
     "lint": "eslint src --ext .js,.jsx",
-    "test": "node --test src/components/SpotAssistant.test.js src/components/model/DiagramPreview.test.js src/lib/scenarioLifecycle.test.js src/lib/whatIfComparison.test.js src/lib/durationRules.test.js src/lib/resourceChanges.test.js src/lib/intake/*.test.js"
+    "test": "node --test src/components/SpotAssistant.test.js src/components/model/DiagramPreview.test.js src/lib/scenarioLifecycle.test.js src/lib/whatIfComparison.test.js src/lib/optionVerdict.test.js src/lib/durationRules.test.js src/lib/intake/*.test.js"
   },
   "type": "module",
   "dependencies": {

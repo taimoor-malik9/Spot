@@ -92,6 +92,9 @@ def _metrics(results):
         "avg_wait_time": round(mean(_average_wait(r) for r in results), 1),
         "throughput_per_hour": round(mean(r.get("throughput_rates", 0.0) * 60 for r in results), 1),
         "total_cost": round(mean(r.get("financial_summary", {}).get("total_cost", 0.0) for r in results), 1),
+        "cost_per_customer": round(mean(r.get("financial_summary", {}).get("cost_per_customer", 0.0) for r in results), 2),
+        "customers_served": round(mean(r.get("financial_summary", {}).get("customers") or 0 for r in results)),
+        "hours_simulated": round(mean(r.get("financial_summary", {}).get("period_hours", 0.0) for r in results), 1),
     }
 
 
@@ -328,20 +331,25 @@ def _delta(metrics, baseline):
     cycle = baseline["avg_cycle_time"]
     wait = baseline["avg_wait_time"]
     thru = baseline.get("throughput_per_hour", 0.0)
+    base_cpc = baseline.get("cost_per_customer", 0.0)
+    met_cpc = metrics.get("cost_per_customer", 0.0)
     return {
         "cycle_time_pct": round((metrics["avg_cycle_time"] - cycle) / cycle * 100, 3) if cycle else 0.0,
         "wait_pct": round((metrics["avg_wait_time"] - wait) / wait * 100, 3) if wait else 0.0,
         "throughput_pct": round((metrics["throughput_per_hour"] - thru) / thru * 100, 3) if thru else 0.0,
         "cost_abs": round(metrics["total_cost"] - baseline["total_cost"], 2),
+        "cost_per_customer_abs": round(met_cpc - base_cpc, 2),
+        "cost_per_customer_pct": round((met_cpc - base_cpc) / base_cpc * 100, 3) if base_cpc else 0.0,
     }
 
 
 def _calc_improvement(baseline, metrics, metric, direction="decrease"):
+    cost_key = "cost_per_customer" if baseline.get("cost_per_customer") else "total_cost"
     key_map = {
         "cycle_time": "avg_cycle_time",
         "waiting": "avg_wait_time",
         "throughput": "throughput_per_hour",
-        "cost": "total_cost",
+        "cost": cost_key,
     }
     key = key_map.get(metric, "avg_wait_time")
     base_val = baseline.get(key, 0.0)
@@ -358,7 +366,8 @@ def _choose_best(variants, goal):
     if not variants:
         return None
     if goal == "cost":
-        return min(variants, key=lambda item: item["metrics"]["total_cost"])
+        cost_key = "cost_per_customer" if any(item["metrics"].get("cost_per_customer") for item in variants) else "total_cost"
+        return min(variants, key=lambda item: item["metrics"].get(cost_key, 0.0))
     if goal == "throughput":
         return max(variants, key=lambda item: item["metrics"]["throughput_per_hour"])
     if goal == "cycle_time":

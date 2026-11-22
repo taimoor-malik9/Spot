@@ -39,7 +39,7 @@ describe('Module I5: POST /api/ai/solve-problem simulationConfig & goal integrat
   const testProcId = new mongoose.Types.ObjectId();
   const app = createTestApp(testUserId);
 
-  it('Reads arrival_rate and goal from processDoc.simulationConfig when config is omitted', async () => {
+  it('Uses the confirmed arrival_rate and reads goal from processDoc.simulationConfig', async () => {
     const origFindById = Process.findById;
     const origFindOne = Process.findOne;
     const origFetch = global.fetch;
@@ -86,12 +86,12 @@ describe('Module I5: POST /api/ai/solve-problem simulationConfig & goal integrat
       const res = await testRequest(app, 'POST', '/api/ai/solve-problem', {
         processId: testProcId.toString(),
         message: 'How can we improve throughput?',
-        // Note: config is omitted!
+        config: { arrival_rate: 0.75, arrival_confirmed: true },
       });
 
       assert.equal(res.status, 200);
       assert.ok(capturedEngineBody, 'Simulation engine /experiment endpoint was called');
-      assert.equal(capturedEngineBody.config.arrival_rate, 0.75, 'arrival_rate read from processDoc.simulationConfig');
+      assert.equal(capturedEngineBody.config.arrival_rate, 0.75, 'confirmed arrival_rate is sent to the engine');
       assert.equal(capturedEngineBody.goal, 'throughput', 'goal read from processDoc.simulationConfig');
     } finally {
       Process.findById = origFindById;
@@ -140,11 +140,87 @@ describe('Module I5: POST /api/ai/solve-problem simulationConfig & goal integrat
       const res = await testRequest(app, 'POST', '/api/ai/solve-problem', {
         processId: testProcId.toString(),
         message: 'Optimize our process',
-        config: { arrival_rate: 0.33, goal: 'cost' },
+        config: { arrival_rate: 0.33, arrival_confirmed: true, goal: 'cost' },
       });
 
       assert.equal(res.status, 200);
       assert.equal(capturedEngineBody.goal, 'cost', 'explicit config.goal "cost" passed to engine');
+    } finally {
+      Process.findById = origFindById;
+      Process.findOne = origFindOne;
+      global.fetch = origFetch;
+    }
+  });
+});
+
+describe('solve-problem asks for the arrival rate', () => {
+  const testUserId = new mongoose.Types.ObjectId();
+  const testProcId = new mongoose.Types.ObjectId();
+  const app = createTestApp(testUserId);
+
+  it('asks (with the saved value as a suggestion) until the user confirms, and never runs the engine', async () => {
+    const origFindById = Process.findById;
+    const origFindOne = Process.findOne;
+    const origFetch = global.fetch;
+    let engineCalled = false;
+    try {
+      const mockDoc = {
+        _id: testProcId, userId: testUserId, title: 'Clinic',
+        nodes: [{ id: 't1', type: 'task', data: { duration: 5 } }], edges: [], resources: [],
+        simulationConfig: { arrival_rate: 0.25 },
+      };
+      Process.findById = async () => mockDoc;
+      Process.findOne = async () => mockDoc;
+      global.fetch = async (url, options) => {
+        if (String(url).includes('/experiment')) engineCalled = true;
+        return origFetch(url, options);
+      };
+      const res = await testRequest(app, 'POST', '/api/ai/solve-problem', {
+        processId: testProcId.toString(),
+        message: 'How can I reduce waiting?',
+        config: { arrival_rate: 0.25 },
+      });
+      assert.equal(res.status, 200);
+      assert.equal(res.data.type, 'question');
+      assert.equal(res.data.suggested_minutes, 4);
+      assert.equal(engineCalled, false);
+    } finally {
+      Process.findById = origFindById;
+      Process.findOne = origFindOne;
+      global.fetch = origFetch;
+    }
+  });
+
+  it('returns the assumptions it used once the arrival rate is confirmed', async () => {
+    const origFindById = Process.findById;
+    const origFindOne = Process.findOne;
+    const origFetch = global.fetch;
+    try {
+      const mockDoc = {
+        _id: testProcId, userId: testUserId, title: 'Clinic',
+        nodes: [{ id: 't1', type: 'task', data: { duration: 5 } }], edges: [], resources: [],
+        simulationConfig: {},
+      };
+      Process.findById = async () => mockDoc;
+      Process.findOne = async () => mockDoc;
+      global.fetch = async (url, options) => {
+        if (String(url).includes('/experiment')) {
+          return { ok: true, status: 200, json: async () => ({
+            baseline: { avg_wait_time: 2, total_cost: 1000, cost_per_customer: 8, hours_simulated: 36 },
+            variants: [], best: null, variant_definitions: [],
+          }) };
+        }
+        return origFetch(url, options);
+      };
+      const res = await testRequest(app, 'POST', '/api/ai/solve-problem', {
+        processId: testProcId.toString(),
+        message: 'How can I reduce waiting?',
+        config: { arrival_rate: 0.2, arrival_confirmed: true },
+      });
+      assert.equal(res.data.type, 'evidence');
+      assert.equal(res.data.assumptions.interval_minutes, 5);
+      assert.equal(res.data.assumptions.customers_simulated, 120);
+      assert.equal(res.data.assumptions.hours_simulated, 36);
     } finally {
       Process.findById = origFindById;
       Process.findOne = origFindOne;

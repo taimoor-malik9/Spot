@@ -92,15 +92,17 @@ describe('Guided Intake: Plain-Language Validation Messages (friendlyError)', ()
 
     rawErrors.forEach((rawErr) => {
       const en = friendlyError(rawErr, 'en');
-      assert.strictEqual(en, "Some steps aren't connected properly.");
+      assert.strictEqual(en, 'We tidied up your process so it can run.');
       assert.ok(!en.includes('sequence flow'));
       assert.ok(!en.includes('pool'));
       assert.ok(!en.includes('BPMN'));
+      assert.ok(!en.includes('connected'));
 
       const ru = friendlyError(rawErr, 'ur-roman');
-      assert.strictEqual(ru, 'Kuch steps aapas mein jurre nahi hain.');
+      assert.strictEqual(ru, 'Aapka process chalne ke liye theek kar diya gaya hai.');
       assert.ok(!ru.includes('gateway'));
       assert.ok(!ru.includes('flow'));
+      assert.ok(!ru.includes('jurre'));
     });
   });
 
@@ -480,16 +482,16 @@ describe('Guided Intake: Confirm Button & Branch Probability Validation', () => 
 
     const rawError = val.errors.find((e) => e.includes('branch probabilities must sum to 1.0'));
     const friendlyEn = friendlyError(rawError, 'en');
-    assert.strictEqual(friendlyEn, 'Total 110%, must be 100');
+    assert.strictEqual(friendlyEn, "The split at 'Order Type?' totals 110% instead of 100%");
 
     const friendlyRu = friendlyError(rawError, 'ur-roman');
-    assert.strictEqual(friendlyRu, 'Total 110%, 100 hona zaroori hai');
+    assert.strictEqual(friendlyRu, "'Order Type?' par split ka total 110% hai, 100 hona zaroori hai");
 
     // Button disabled label
     const btnLabelEn = `Confirm (${friendlyEn})`;
-    assert.strictEqual(btnLabelEn, 'Confirm (Total 110%, must be 100)');
+    assert.strictEqual(btnLabelEn, "Confirm (The split at 'Order Type?' totals 110% instead of 100%)");
     const btnLabelRu = `Confirm (${friendlyRu})`;
-    assert.strictEqual(btnLabelRu, 'Confirm (Total 110%, 100 hona zaroori hai)');
+    assert.strictEqual(btnLabelRu, "Confirm ('Order Type?' par split ka total 110% hai, 100 hona zaroori hai)");
   });
 
   it('detects hidden structural error: failed quality check ending at End Event and provides friendly message', () => {

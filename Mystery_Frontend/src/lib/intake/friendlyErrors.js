@@ -5,8 +5,37 @@
  */
 
 import { stripTrailingPunctuation } from './stepListHelper.js';
+import { ensureDefaultProbabilities } from './deterministicNormalizer.js';
+
+export function sanitizeUIString(str) {
+  if (!str || typeof str !== 'string') return '';
+  return str
+    .replace(/\b1\d{9,}\b|\b\d{10,}\b/g, '') // remove timestamps
+    .replace(/\bauto[\s_-]gw[a-z0-9_-]*\b/gi, 'rejoin point')
+    .replace(/\bmerge\s+(?:auto\s+gw\s+)?merge[\s\d_]*\b/gi, 'rejoin point')
+    .replace(/\bmerge\s+\d+\b/gi, 'rejoin point')
+    .replace(/\bgateway\b/gi, 'decision step')
+    .replace(/\bmessage\s+event\b/gi, 'step')
+    .replace(/\bsequence\s+flow\b/gi, 'path')
+    .replace(/\bmessage\s+flow\b/gi, 'message')
+    .replace(/\bsame[- ]pool\b/gi, '')
+    .replace(/\bunconnected\b/gi, 'separate')
+    .replace(/\bdangling\s+edge\b/gi, 'step')
+    .replace(/\bdangling\b/gi, 'extra')
+    .replace(/\bvalidation\s+failed\b/gi, 'could not be processed')
+    .replace(/\bbpmn\b/gi, 'process')
+    .replace(/\btoken\b/gi, 'flow')
+    .replace(/\b(gw_|task_|step_|node_|seq_|flow_|activity_)[a-zA-Z0-9_]+/g, 'step')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
 
 export function friendlyError(error, lang = 'en', diagram = null, options = {}) {
+  const result = _internalFriendlyError(error, lang, diagram, options);
+  return sanitizeUIString(result);
+}
+
+function _internalFriendlyError(error, lang = 'en', diagram = null, options = {}) {
   if (!error) return '';
 
   const selectedLang = lang === 'ur-roman' || lang === 'ur' ? 'ur-roman' : 'en';
@@ -36,10 +65,56 @@ export function friendlyError(error, lang = 'en', diagram = null, options = {}) 
       sumVal = Math.round(error.sum);
     }
 
+    let stepName = '';
+    if (typeof error === 'object' && (error.stepName || error.gatewayLabel || error.label)) {
+      stepName = error.stepName || error.gatewayLabel || error.label;
+    } else {
+      const match = errStr.match(/"([^"]+)"/) || errStr.match(/'([^']+)'/);
+      if (match) {
+        stepName = match[1];
+      }
+    }
+
+    if (!stepName && diagram && Array.isArray(diagram.nodes) && Array.isArray(diagram.edges)) {
+      const brokenGw = diagram.nodes.find((n) => {
+        if (!n.type?.includes('gateway')) return false;
+        const outEdges = diagram.edges.filter((e) => e.source === n.id && e.flowType !== 'message');
+        if (outEdges.length < 2) return false;
+        const sum = outEdges.reduce((acc, e) => {
+          const p = e.probability ?? e.data?.probability;
+          return acc + (p != null && !isNaN(Number(p)) ? Number(p) : 0);
+        }, 0);
+        return Math.abs(sum - 1.0) > 0.001;
+      });
+      if (brokenGw) {
+        stepName = brokenGw.data?.label || brokenGw.label || '';
+      }
+    }
+
+    if (stepName) {
+      stepName = sanitizeUIString(stepName).trim().replace(/[:;,\s.]+$/, '');
+      if (!stepName.endsWith('?') && /^(is|are|do|does|can|has|have|check|should)\b/i.test(stepName)) {
+        stepName += '?';
+      }
+    }
+
     if (selectedLang === 'ur-roman') {
+      if (stepName && sumVal != null) {
+        return `'${stepName}' par split ka total ${sumVal}% hai, 100 hona zaroori hai`;
+      }
+      if (stepName) {
+        return `'${stepName}' par branch percentages ka jor 100% hona chahiye.`;
+      }
       return sumVal != null
         ? `Total ${sumVal}%, 100 hona zaroori hai`
         : 'Percentages ka jor 100% hona chahiye.';
+    }
+
+    if (stepName && sumVal != null) {
+      return `The split at '${stepName}' totals ${sumVal}% instead of 100%`;
+    }
+    if (stepName) {
+      return `The split at '${stepName}' must add up to 100%`;
     }
     return sumVal != null
       ? `Total ${sumVal}%, must be 100`
@@ -185,73 +260,40 @@ export function friendlyError(error, lang = 'en', diagram = null, options = {}) 
     if (stepName && shouldNameStep) {
       const cleanStep = stripTrailingPunctuation(stepName);
       if (selectedLang === 'ur-roman') {
-        return `'${cleanStep}' baqi steps se jura nahi hai.`;
+        return `'${cleanStep}' ko theek karke process chalne ke qabil bana diya gaya hai.`;
       }
-      return `'${cleanStep}' isn't connected to the other steps.`;
+      return `We tidied up '${cleanStep}' so your process can run.`;
     }
 
     if (selectedLang === 'ur-roman') {
-      return 'Kuch steps aapas mein jurre nahi hain.';
+      return 'Aapka process chalne ke liye theek kar diya gaya hai.';
     }
-    return "Some steps aren't connected properly.";
+    return "We tidied up your process so it can run.";
   }
 
   // General fallback
   if (selectedLang === 'ur-roman') {
-    return 'Kuch steps aapas mein jurre nahi hain.';
+    return 'Aapka process chalne ke liye theek kar diya gaya hai.';
   }
-  return "Some steps aren't connected properly.";
+  return "We tidied up your process so it can run.";
 }
 
 /**
  * Ensures any exclusive split gateway without branch probabilities is prefilled
- * with sensible estimated defaults (e.g. 50/50 for 2 branches, equal share for N branches)
- * flagged with probabilityEstimated: true.
+ * and auto-normalized to sum to exactly 1.0 (100%).
  */
 export function ensureDefaultBranchProbabilities(diagram) {
   if (!diagram || !Array.isArray(diagram.nodes) || !Array.isArray(diagram.edges)) {
     return diagram;
   }
 
-  let modified = false;
+  const changelog = [];
   const deep = JSON.parse(JSON.stringify(diagram));
-  const edges = deep.edges || [];
-
-  deep.nodes.forEach((n) => {
-    const isGw = n.type?.includes('gateway');
-    if (!isGw) return;
-    const outEdges = edges.filter((e) => e.source === n.id);
-    if (outEdges.length >= 2) {
-      const anyMissing = outEdges.some(
-        (e) =>
-          (e.probability == null && e.data?.probability == null) ||
-          isNaN(Number(e.probability ?? e.data?.probability))
-      );
-      if (anyMissing) {
-        modified = true;
-        const count = outEdges.length;
-        const equalShare = Number((1.0 / count).toFixed(2));
-        let runningSum = 0;
-        outEdges.forEach((e, idx) => {
-          let prob;
-          if (idx === count - 1) {
-            prob = Number((1.0 - runningSum).toFixed(2));
-          } else {
-            prob = equalShare;
-            runningSum += equalShare;
-          }
-          e.probability = prob;
-          e.data = {
-            ...(e.data || {}),
-            probability: prob,
-            probabilityEstimated: true,
-          };
-        });
-      }
-    }
-  });
-
-  return modified ? deep : diagram;
+  ensureDefaultProbabilities(deep, changelog);
+  if (changelog.length === 0) {
+    return diagram;
+  }
+  return deep;
 }
 
 /**

@@ -1,11 +1,11 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Grid3x3, Sparkles, MousePointerClick, ChevronRight, ChevronDown, Shapes,
   Play, ZoomIn, ZoomOut, Maximize2, RotateCcw, RotateCw,
   FolderOpen, Save, Download, CloudUpload, CloudDownload, Loader2, FileDown, FilePlus, ExternalLink, Plus,
-  Clipboard, CheckSquare, Filter, Type, Check, Copy, ClipboardPaste, Scissors, X, Lock,
+  Clipboard, CheckSquare, Filter, Type, Check, Copy, ClipboardPaste, Scissors, X, Lock, AlertCircle,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
@@ -1132,19 +1132,12 @@ export default function ModelPage() {
     if (lCtx?.preferredLanguage) lang = lCtx.preferredLanguage;
   } catch {}
   const [guestModalOpen, setGuestModalOpen] = useState(false);
-
-  const newModel = () => {
-    localStorage.removeItem('spot:model:nodes');
-    localStorage.removeItem('spot:processId');
-    localStorage.removeItem('spot:processTitle');
-    setSavedProcessId(null);
-    const defTitle = getDefaultProcessTitle(lang);
-    setProcessTitle(defTitle);
-    setElements([]);
-    setConnections([]);
-    setSelId(null);
-    setSelConn(null);
-  };
+  const [saveValidationIssues, setSaveValidationIssues] = useState([]);
+  const [applyVerificationStatus, setApplyVerificationStatus] = useState('idle'); // 'idle' | 'checking' | 'fixing'
+  const [applyFailureModal, setApplyFailureModal] = useState(null); // null | { open: boolean, title: string, issues: string[], draft: object }
+  const [showNewConfirmModal, setShowNewConfirmModal] = useState(false);
+  const [aiPanelKey, setAiPanelKey] = useState(0);
+  const lastSavedSnapshotRef = useRef(null);
 
   const [elements, setElements] = useState([]);
   const [connections, setConnections] = useState([]);
@@ -1229,6 +1222,11 @@ export default function ModelPage() {
         if (overrides?.resources) {
           localStorage.setItem('spot:globalResources', JSON.stringify(overrides.resources));
         }
+        lastSavedSnapshotRef.current = JSON.stringify({
+          nodes: elsToSave.map(e => ({ id: e.id, type: e.type, label: e.label, pos: e.position })),
+          edges: connsToSave.map(c => ({ id: c.id, from: c.fromId || c.from || c.source, to: c.toId || c.to || c.target })),
+          title: titleToSave,
+        });
         showMsg('success', 'Process saved to backend!');
         return id;
       }
@@ -1320,6 +1318,84 @@ export default function ModelPage() {
     }
     setOpenGatewayId(null);
   }, [selId, elements, connections]);
+
+  // ── New Model & Unsaved Changes Check ───────────────────────────────────────
+  const hasUnsavedChanges = useMemo(() => {
+    const currentSnap = JSON.stringify({
+      nodes: elements.map(e => ({ id: e.id, type: e.type, label: e.label, pos: e.position })),
+      edges: connections.map(c => ({ id: c.id, from: c.fromId || c.from || c.source, to: c.toId || c.to || c.target })),
+      title: processTitle,
+    });
+    const canvasChanged = lastSavedSnapshotRef.current
+      ? currentSnap !== lastSavedSnapshotRef.current
+      : (elements.length > 0 || connections.length > 0);
+
+    let hasAiDraft = false;
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = sessionStorage.getItem('spot:guided:state');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed?.flowText?.trim() || parsed?.rawDiagram || (parsed?.answers && Object.keys(parsed.answers).length > 0)) {
+            hasAiDraft = true;
+          }
+        }
+      } catch {}
+    }
+
+    return canvasChanged || hasAiDraft;
+  }, [elements, connections, processTitle]);
+
+  const executeNewModel = useCallback(() => {
+    localStorage.removeItem('spot:model:nodes');
+    localStorage.removeItem('spot:model:viewport');
+    localStorage.removeItem('spot:processId');
+    localStorage.removeItem('spot:processTitle');
+    localStorage.removeItem('spot:globalResources');
+
+    if (typeof window !== 'undefined') {
+      try {
+        sessionStorage.removeItem('spot:guided:state');
+        sessionStorage.removeItem('spot:guided:flowText');
+        sessionStorage.removeItem('spot:guided:draft');
+        sessionStorage.removeItem('spot:assistant:thread');
+      } catch {}
+    }
+
+    setSavedProcessId(null);
+    const defTitle = getDefaultProcessTitle(lang);
+    setProcessTitle(defTitle);
+    lastSavedSnapshotRef.current = JSON.stringify({
+      nodes: [],
+      edges: [],
+      title: defTitle,
+    });
+
+    setElements([]);
+    setConnections([]);
+    setSelId(null);
+    setSelConn(null);
+    setAllSelected(false);
+    setMultiSel(new Set());
+    setSaveValidationIssues([]);
+    setApplyFailureModal(null);
+    setShowNewConfirmModal(false);
+
+    history.current = [{ elements: [], connections: [] }];
+    histIdx.current = 0;
+
+    // Increment key to remount AiPanel fresh without stale draft or assumptions
+    setAiPanelKey(k => k + 1);
+    showMsg('info', 'Started new empty process.');
+  }, [lang, showMsg]);
+
+  const handleToolbarNew = useCallback(() => {
+    if (hasUnsavedChanges) {
+      setShowNewConfirmModal(true);
+    } else {
+      executeNewModel();
+    }
+  }, [hasUnsavedChanges, executeNewModel]);
 
   // ── Undo / Redo ─────────────────────────────────────────────────────────────
   const history = useRef([{ elements: [], connections: [] }]);
@@ -2397,7 +2473,7 @@ export default function ModelPage() {
         {/* Middle Section: Buttons */}
         <div className="flex items-center gap-3 justify-center shrink-0">
           {/* New */}
-          <TBtn onClick={newModel} title={t('toolbar_newModel', lang)} variant="default" className="text-gray-600 bg-white border border-gray-200">
+          <TBtn onClick={handleToolbarNew} title={t('toolbar_newModel', lang)} variant="default" className="text-gray-600 bg-white border border-gray-200">
             <Plus size={14} /> {t('toolbar_new', lang)}
           </TBtn>
 
@@ -2805,6 +2881,7 @@ export default function ModelPage() {
         {/* ── AI Chat Panel ── */}
         {aiPanelOpen && (
           <AiPanel
+            key={aiPanelKey}
             open={aiPanelOpen}
             onClose={() => setAiPanelOpen(false)}
             elements={elements}
@@ -2823,24 +2900,15 @@ export default function ModelPage() {
                     displayName: cleanName,
                     payloadKey: cleanName,
                     type: r.type || 'staff',
-                    quantity: Number(r.quantity) || 1
+                    quantity: Math.max(1, Number(r.quantity) || 1)
                   };
                 });
                 localStorage.setItem('spot:globalResources', JSON.stringify(sanitized));
               }
-              // Persist immediately with the FRESH diagram (passed explicitly,
-              // not read from component state — state hasn't caught up to
-              // setElements/setConnections yet at this point in the same
-              // synchronous handler). Without this, an AI-generated diagram
-              // existed only on screen until the person remembered to click
-              // Save — anything reading by processId in the meantime (Implement
-              // Suggestion, forking a scenario, etc.) would silently fetch
-              // whatever OLD process was last actually saved, which looks
-              // exactly like "the diagram got scrambled" but is really just
-              // "the diagram was never here to begin with."
-              saveToBackend({ elements: newElements, connections: newConnections, resources: sanitized });
+              saveToBackend({ elements: newElements, connections: newConnections, resources: sanitized, skipValidation: true });
             }}
             onSaveToBackend={saveToBackend}
+            onNewModel={handleToolbarNew}
           />
         )}
         <SpotAssistant
@@ -2850,6 +2918,93 @@ export default function ModelPage() {
           ensureProcessSaved={async () => saveToBackend()}
         />
       </div>
+
+      {/* ── Confirmation Dialog for New Model ── */}
+      {showNewConfirmModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="new-model-confirm-title"
+          data-testid="new-model-confirm-modal"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(15, 23, 42, 0.45)',
+            backdropFilter: 'blur(3px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+            padding: '16px',
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: '#ffffff',
+              borderRadius: '14px',
+              boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1)',
+              width: '100%',
+              maxWidth: '380px',
+              border: '1px solid #e2e8f0',
+              padding: '24px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '16px',
+              textAlign: 'center',
+            }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+              <div style={{ width: 44, height: 44, borderRadius: '50%', backgroundColor: '#fef2f2', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#dc2626' }}>
+                <AlertCircle size={22} strokeWidth={2.2} />
+              </div>
+              <h3 id="new-model-confirm-title" style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: 0 }}>
+                Start a new process?
+              </h3>
+              <p style={{ fontSize: 13, color: '#64748b', margin: 0, lineHeight: 1.45 }}>
+                You have unsaved changes on the canvas. Starting a new process will clear the canvas, unapplied drafts, and validation state.
+              </p>
+            </div>
+            <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
+              <button
+                type="button"
+                data-testid="cancel-new-btn"
+                onClick={() => setShowNewConfirmModal(false)}
+                style={{
+                  flex: 1,
+                  padding: '9px 14px',
+                  borderRadius: 8,
+                  border: '1px solid #cbd5e1',
+                  background: '#ffffff',
+                  color: '#334155',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                Keep editing
+              </button>
+              <button
+                type="button"
+                data-testid="confirm-new-btn"
+                onClick={executeNewModel}
+                style={{
+                  flex: 1,
+                  padding: '9px 14px',
+                  borderRadius: 8,
+                  border: 'none',
+                  background: '#dc2626',
+                  color: '#ffffff',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                Discard & New
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Load from Backend Modal ── */}
       {showLoadModal && (

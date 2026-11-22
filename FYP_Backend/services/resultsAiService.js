@@ -3,12 +3,8 @@
 // Kept as its own file rather than sharing a caller with aiService.js so a
 // change here can never affect the (already working) diagram-generation flow.
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const CANDIDATE_MODELS = [...new Set([
-  'gemini-3.1-flash-lite',
-  process.env.GEMINI_MODEL || 'gemini-flash-latest',
-  'gemini-3.8-flash',
-])];
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022';
 // Cache for AI explanations by (resultId, language)
 const explanationsCache = new Map();
 
@@ -92,71 +88,152 @@ How to answer:
 - Never claim costs are wasted or 100% idle unless busy work was recorded; when active work is zero, guide the user to assign staff to steps in Task Details.
 - Plain conversational text, 60-150 words, short paragraphs. Bold (**like this**) key numbers, step names and worker names. No formulas.`;
 
-async function callGemini({
-  systemPrompt,
-  contents,
-  expectJson,
-  maxModels = CANDIDATE_MODELS.length,
-  maxAttempts = 2,
-  timeoutMs = 12000,
-}) {
-  if (!GEMINI_API_KEY) {
-    throw new ResultsAiError('AI service is not configured on this server', null);
+function normalizeMessagesForClaude(contents, messages) {
+  const rawInput = messages || contents || [];
+  const list = Array.isArray(rawInput) ? rawInput : [rawInput];
+  const result = [];
+
+  for (const item of list) {
+    if (!item) continue;
+    let role = (item.role === 'assistant' || item.role === 'model') ? 'assistant' : 'user';
+    let textContent = '';
+    if (typeof item === 'string') {
+      textContent = item;
+    } else if (typeof item.content === 'string') {
+      textContent = item.content;
+    } else if (Array.isArray(item.parts)) {
+      textContent = item.parts.map(p => (typeof p === 'string' ? p : p?.text || '')).join('');
+    } else if (typeof item.text === 'string') {
+      textContent = item.text;
+    } else if (item.content && Array.isArray(item.content)) {
+      textContent = item.content.map(p => (typeof p === 'string' ? p : p?.text || '')).join('');
+    }
+
+    textContent = textContent.trim();
+    if (textContent) {
+      if (result.length > 0 && result[result.length - 1].role === role) {
+        result[result.length - 1].content += '\n\n' + textContent;
+      } else {
+        result.push({ role, content: textContent });
+      }
+    }
   }
 
-  const requestBody = {
-    system_instruction: { parts: [{ text: systemPrompt }] },
-    contents,
-    generationConfig: {
-      maxOutputTokens: 1200,
-      ...(expectJson ? { responseMimeType: 'application/json' } : {}),
-      thinkingConfig: { thinkingBudget: 512 },
-    },
-  };
+  if (result.length === 0) {
+    result.push({ role: 'user', content: 'Generate response' });
+  } else if (result[0].role !== 'user') {
+    result.unshift({ role: 'user', content: 'Begin' });
+  }
+
+  return result;
+}
+
+async function callClaude({
+  systemPrompt,
+  contents,
+  messages,
+  expectJson,
+  maxModels,
+  maxAttempts = 2,
+  timeoutMs = 15000,
+  maxTokens = 4096,
+}) {
+  const apiKey = process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
+  if (!apiKey) {
+    throw new ResultsAiError('AI service is not configured on this server: ANTHROPIC_API_KEY is not set in .env', null);
+  }
+
+  const formattedMessages = normalizeMessagesForClaude(contents, messages);
+
+  let finalSystem = systemPrompt || '';
+  if (expectJson && !finalSystem.includes('JSON')) {
+    finalSystem += '\n\nIMPORTANT: Respond with pure JSON only, with no commentary and no markdown fences.';
+  }
+
+  const isRelay = apiKey.startsWith('sk-air-') || apiKey.startsWith('sk-cs4-') || Boolean(process.env.ANTHROPIC_BASE_URL && (process.env.ANTHROPIC_BASE_URL.includes('llmsrelay') || process.env.ANTHROPIC_BASE_URL.includes('airforce')));
+  const primaryBaseUrl = process.env.ANTHROPIC_BASE_URL || (isRelay ? 'https://api.llmsrelay.com' : 'https://api.anthropic.com');
+  const baseUrls = [
+    primaryBaseUrl.replace(/\/+$/, ''),
+    ...(isRelay && !primaryBaseUrl.includes('airforce') ? ['https://api.airforce.com'] : []),
+  ];
+
+  const defaultModels = isRelay
+    ? ['claude-3-5-sonnet-20241022', 'claude-sonnet-4.6', 'claude-sonnet-5', 'claude-3-7-sonnet-20250219', 'claude-3-5-haiku-20241022', 'claude-opus-4.6']
+    : ['claude-3-5-sonnet-20241022', 'claude-3-7-sonnet-20250219', 'claude-3-5-haiku-20241022'];
+
+  const candidateModels = [...new Set([
+    process.env.ANTHROPIC_MODEL,
+    ...defaultModels
+  ])].filter(Boolean);
+
+  const modelLimit = typeof maxModels === 'number' ? maxModels : candidateModels.length;
 
   let response;
   let lastErrBody = '';
 
-  for (const modelName of CANDIDATE_MODELS.slice(0, maxModels)) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${GEMINI_API_KEY}`;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
-      try {
-        response = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestBody),
-          signal: controller.signal,
-        });
-        if (response.ok) break;
-        lastErrBody = await response.text();
-        if (response.status === 429 || response.status === 503) break;
-      } catch (err) {
-        lastErrBody = err.name === 'AbortError' ? `Timed out after ${timeoutMs}ms` : err.message;
-      } finally {
-        clearTimeout(timeout);
+  for (const baseUrl of baseUrls) {
+    const url = `${baseUrl}/v1/messages`;
+
+    for (const modelName of candidateModels.slice(0, modelLimit)) {
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          response = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': apiKey,
+              'Authorization': `Bearer ${apiKey}`,
+              'anthropic-version': '2023-06-01',
+            },
+            body: JSON.stringify({
+              model: modelName,
+              max_tokens: Math.min(maxTokens, 8192),
+              ...(finalSystem ? { system: finalSystem } : {}),
+              messages: formattedMessages,
+            }),
+            signal: controller.signal,
+          });
+
+          if (response.ok) break;
+          lastErrBody = await response.text();
+          if (response.status === 404 || response.status === 429 || response.status === 529 || response.status === 503) {
+            console.warn(`⚠️ Claude model ${modelName} at ${baseUrl} returned status ${response.status}. Trying next fallback...`);
+            break;
+          } else {
+            break;
+          }
+        } catch (err) {
+          lastErrBody = err.name === 'AbortError' ? `Timed out after ${timeoutMs}ms` : err.message;
+        } finally {
+          clearTimeout(timeout);
+        }
       }
+      if (response && response.ok) break;
     }
     if (response && response.ok) break;
   }
 
   if (!response || !response.ok) {
-    throw new ResultsAiError(`Gemini API error: ${lastErrBody}`, null);
+    throw new ResultsAiError(`Claude API error: ${lastErrBody}`, null);
   }
 
   const data = await response.json();
-  const raw = (data.candidates?.[0]?.content?.parts || [])
-    .map(p => p.text || '')
+  const raw = (data.content || [])
+    .filter(c => c.type === 'text')
+    .map(c => c.text || '')
     .join('')
     .trim();
 
   if (!raw) {
-    throw new ResultsAiError('Gemini returned an empty response', data);
+    throw new ResultsAiError('Claude returned an empty response', data);
   }
 
   return raw;
 }
+
+const callGemini = callClaude;
 
 async function generateInsights(summary, language = 'en', resultId = null) {
   if (!summary) {
@@ -363,6 +440,7 @@ module.exports = {
   implementSuggestion,
   ResultsAiError,
   PLAIN_LANGUAGE_RULES,
+  callClaude,
   callGemini,
   getCachedExplanation,
   setCachedExplanation,

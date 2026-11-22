@@ -9,3 +9,11 @@ __pycache__/
 dist/
 qa_audit.mjs
 qa_audit_results.json
+
+# Agent & Demo files
+.agents/
+skills-lock.json
+*.mp4
+demo-notes.md
+openscreen-demo-plan.md
+

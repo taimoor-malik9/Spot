@@ -42,6 +42,7 @@ import {
 import { parseTypedAnswer } from '../lib/apiService';
 import { useAuth } from '@/context/AuthContext';
 import { t, formatDurationHint, validateCustomRange } from '../lib/intake/i18n';
+import { isWaitingOrDeliveryOrStructuralStep } from '../lib/intake/intakeHelpers';
 
 /**
  * Filters active task nodes for intake screens.
@@ -63,14 +64,18 @@ export function getActiveTaskNodes(rawDiagram) {
  */
 export function isScreenAnswered(screenId, rawDiagram, activeNodes = null) {
   const nodes = activeNodes || getActiveTaskNodes(rawDiagram);
+  const spec = rawDiagram?.spec;
+  const missing = Array.isArray(spec?.missing_or_ambiguous) ? spec.missing_or_ambiguous : [];
 
   switch (screenId) {
     case 1: {
-      // Who handles each step: Answered if all active tasks have stated staff
-      if (!nodes.length) return true;
+      // Who handles each step: Answered if all active non-waiting tasks have stated staff and not missing
+      if (missing.some((m) => /staff|role|performer|worker/i.test(m.field || ''))) return false;
+      const staffQuestionsNodes = nodes.filter((n) => !isWaitingOrDeliveryOrStructuralStep(n));
+      if (!staffQuestionsNodes.length) return true;
       if (rawDiagram?.staffAnswered === true || rawDiagram?.staffSource === 'stated') return true;
       const staffList = (rawDiagram?.resources || []).filter((r) => r.type === 'staff');
-      return nodes.every((n) => {
+      return staffQuestionsNodes.every((n) => {
         const hasRes =
           (n.data?.resources && Object.keys(n.data.resources).length > 0) ||
           Boolean(n.data?.resource);
@@ -82,7 +87,8 @@ export function isScreenAnswered(screenId, rawDiagram, activeNodes = null) {
     }
 
     case 2: {
-      // Speed per step: Answered if every active task has duration_source === 'stated'
+      // Speed per step: Answered if every active task has duration_source === 'stated' and not missing
+      if (missing.some((m) => /duration|speed|time/i.test(m.field || ''))) return false;
       if (!nodes.length) return true;
       if (rawDiagram?.speedAnswered === true || rawDiagram?.speedSource === 'stated') return true;
       return nodes.every(
@@ -91,7 +97,8 @@ export function isScreenAnswered(screenId, rawDiagram, activeNodes = null) {
     }
 
     case 3: {
-      // How busy is rush hour: Answered if busyness is explicitly stated in diagram
+      // How busy is rush hour: Answered if busyness is explicitly stated in diagram and not missing
+      if (missing.some((m) => /arrival|rate|busyness|frequency|interval|trigger/i.test(m.field || ''))) return false;
       return Boolean(
         rawDiagram?.simulationConfig?.busynessSource === 'stated' ||
         rawDiagram?.busynessSource === 'stated' ||
@@ -101,16 +108,24 @@ export function isScreenAnswered(screenId, rawDiagram, activeNodes = null) {
     }
 
     case 4: {
-      // Does it ever go wrong: Answered if exceptions are explicitly stated
-      return Boolean(
+      // Does it ever go wrong: Answered if exceptions are explicitly stated or decisions exist
+      if (missing.some((m) => /exception|defect|error|failure/i.test(m.field || ''))) return false;
+      if (
         rawDiagram?.exceptionsAnswered === true ||
         rawDiagram?.exceptionsSource === 'stated' ||
         rawDiagram?.exceptions_source === 'stated'
-      );
+      ) {
+        return true;
+      }
+      if (spec?.decisions && spec.decisions.length > 0) {
+        return true;
+      }
+      return false;
     }
 
     case 5: {
       // Do customers ever wait for a table/seat/room: Answered if facility resource is stated
+      if (missing.some((m) => /space|capacity|table|room|seat|bay/i.test(m.field || ''))) return false;
       if (rawDiagram?.spaceAnswered === true || rawDiagram?.spaceSource === 'stated') return true;
       return Boolean(
         (rawDiagram?.resources || []).some(
@@ -120,12 +135,15 @@ export function isScreenAnswered(screenId, rawDiagram, activeNodes = null) {
     }
 
     case 6: {
-      // Goal: Answered if optimization goal is stated
+      // Goal: If stated goals/issues exist, ask the user to confirm/prioritize via Screen 6
+      if (rawDiagram?.goalAnswered === true) return true;
+      if (spec?.goals_or_issues && spec.goals_or_issues.length > 0) {
+        return false;
+      }
       return Boolean(
         rawDiagram?.simulationConfig?.goalSource === 'stated' ||
         rawDiagram?.goalSource === 'stated' ||
-        rawDiagram?.simulationConfig?.goal_source === 'stated' ||
-        rawDiagram?.goalAnswered === true
+        rawDiagram?.simulationConfig?.goal_source === 'stated'
       );
     }
 
@@ -177,13 +195,27 @@ export function initializeIntakeAnswers(rawDiagram, activeNodes) {
       return;
     }
 
-    // Pre-fill speed from duration
-    const d = Number(n.data?.duration) || 5;
-    let initialSpeed = 'normal';
-    if (d <= 2) initialSpeed = 'quick';
-    else if (d >= 10) initialSpeed = 'slow';
+    // Pre-fill speed from duration only if stated
+    const isStatedDuration = Boolean(
+      (n.data?.duration_source === 'stated' || n.duration_source === 'stated') &&
+      (n.data?.duration != null || n.duration != null)
+    );
 
-    const isStatedDuration = n.data?.duration_source === 'stated';
+    let initialSpeed = null;
+    let defaultMin = null;
+    let defaultMax = null;
+    let defaultDuration = null;
+
+    if (isStatedDuration) {
+      const d = Number(n.data?.duration ?? n.duration);
+      if (d <= 2) initialSpeed = 'quick';
+      else if (d >= 10) initialSpeed = 'slow';
+      else initialSpeed = 'normal';
+
+      defaultMin = n.data?.duration_min != null ? Number(n.data.duration_min) : d;
+      defaultMax = n.data?.duration_max != null ? Number(n.data.duration_max) : d;
+      defaultDuration = d;
+    }
 
     // Pre-fill staff roles
     const existingRoles = [];
@@ -193,17 +225,15 @@ export function initializeIntakeAnswers(rawDiagram, activeNodes) {
       existingRoles.push(n.data.resource);
     }
 
-    const defaultMin = n.data?.duration_min != null ? Number(n.data.duration_min) : SPEED_MAPPINGS[initialSpeed].duration_min;
-    const defaultMax = n.data?.duration_max != null ? Number(n.data.duration_max) : SPEED_MAPPINGS[initialSpeed].duration_max;
-    const defaultUnit = n.data?.duration_unit || SPEED_MAPPINGS[initialSpeed].duration_unit || 'minutes';
+    const defaultUnit = n.data?.duration_unit || (initialSpeed ? SPEED_MAPPINGS[initialSpeed]?.duration_unit : 'minutes') || 'minutes';
 
     steps[n.id] = {
       speed: wrapValue(initialSpeed, isStatedDuration ? 'tap' : 'default', !isStatedDuration),
       duration_min: defaultMin,
       duration_max: defaultMax,
-      duration: defaultMin === defaultMax ? defaultMin : Math.round((defaultMin + defaultMax) / 2),
+      duration: defaultDuration,
       duration_unit: defaultUnit,
-      source: isStatedDuration ? 'bucket' : 'estimated',
+      source: isStatedDuration ? 'bucket' : 'unstated',
       staffRoles: wrapValue(existingRoles, 'default', existingRoles.length === 0),
       kept: isKept || !isInferred,
     };
@@ -391,6 +421,22 @@ export default function IntakeScreens({
       }
       return false;
     });
+  }, [currentScreenId, activeNodes, answers.steps, openCustomCards, lang]);
+
+  // Validation: Check how many tasks still need a duration on Screen 2
+  const tasksNeedingDurationCount = useMemo(() => {
+    if (currentScreenId !== 2) return 0;
+    return activeNodes.filter((node) => {
+      const stepData = answers.steps?.[node.id];
+      const speedVal = stepData?.speed?.value;
+      if (!speedVal) return true;
+      if (speedVal === 'custom' || openCustomCards.has(node.id)) {
+        const minVal = stepData?.duration_min;
+        const maxVal = stepData?.duration_max;
+        return Boolean(validateCustomRange(minVal, maxVal, lang));
+      }
+      return false;
+    }).length;
   }, [currentScreenId, activeNodes, answers.steps, openCustomCards, lang]);
 
   // Reset typing state when switching screens
@@ -743,16 +789,18 @@ export default function IntakeScreens({
   const handleCustomNumberChange = (nodeId, field, rawValue) => {
     setAnswers((prev) => {
       const current = prev.steps?.[nodeId] || {};
-      const currentMin = current.duration_min != null ? current.duration_min : 3;
-      const currentMax = current.duration_max != null ? current.duration_max : 8;
+      const currentMin = current.duration_min != null && current.duration_min !== '' ? current.duration_min : '';
+      const currentMax = current.duration_max != null && current.duration_max !== '' ? current.duration_max : '';
       const newMin = field === 'min' ? rawValue : currentMin;
       const newMax = field === 'max' ? rawValue : currentMax;
       const unit = current.duration_unit || 'minutes';
 
-      const numMin = Number(newMin);
-      const numMax = Number(newMax);
-      const isFixed = !isNaN(numMin) && !isNaN(numMax) && numMin === numMax;
-      const durationVal = isFixed ? numMin : (!isNaN(numMin) && !isNaN(numMax) ? Math.round((numMin + numMax) / 2) : 0);
+      const numMin = newMin === '' ? null : Number(newMin);
+      const numMax = newMax === '' ? null : Number(newMax);
+      const hasValidMin = numMin !== null && !isNaN(numMin);
+      const hasValidMax = numMax !== null && !isNaN(numMax);
+      const isFixed = hasValidMin && hasValidMax && numMin === numMax;
+      const durationVal = isFixed ? numMin : (hasValidMin && hasValidMax ? Math.round((numMin + numMax) / 2) : (hasValidMin ? numMin : 0));
 
       return {
         ...prev,
@@ -761,8 +809,8 @@ export default function IntakeScreens({
           [nodeId]: {
             ...current,
             speed: wrapValue('custom', 'typed', false),
-            duration_min: newMin === '' ? '' : (isNaN(numMin) ? newMin : numMin),
-            duration_max: newMax === '' ? '' : (isNaN(numMax) ? newMax : numMax),
+            duration_min: newMin === '' ? '' : (hasValidMin ? numMin : newMin),
+            duration_max: newMax === '' ? '' : (hasValidMax ? numMax : newMax),
             duration: durationVal,
             duration_unit: unit,
             source: 'custom',
@@ -886,6 +934,51 @@ export default function IntakeScreens({
     });
     return Array.from(rolesFromSteps);
   }, [answers.steps, rawDiagram]);
+
+  const arrivalEntity = useMemo(() => {
+    const triggers = rawDiagram?.spec?.triggers || [];
+    const mainTrig = triggers.find((t) => t.type === 'arrival' || t.type === 'message') || triggers[0];
+    const name = (mainTrig?.name || '').toLowerCase();
+    if (name.includes('order')) return 'order';
+    if (name.includes('patient')) return 'patient';
+    if (name.includes('application') || name.includes('loan')) return 'application';
+    if (name.includes('ticket') || name.includes('issue')) return 'ticket';
+    if (name.includes('visitor') || name.includes('guest')) return 'visitor';
+    if (name.includes('call')) return 'call';
+    if (name.includes('claim')) return 'claim';
+    if (name.includes('client')) return 'client';
+    return 'customer';
+  }, [rawDiagram]);
+
+  const independentTriggers = useMemo(() => {
+    const triggers = rawDiagram?.spec?.triggers || [];
+    return triggers.filter((t) => Boolean(t.independent));
+  }, [rawDiagram]);
+
+  const unassignedStaffRoles = useMemo(() => {
+    const staffList = (rawDiagram?.resources || []).filter((r) => r.type === 'staff');
+    if (staffList.length === 0) return [];
+    const assigned = new Set();
+    (activeNodes || []).forEach((node) => {
+      const roles = answers.steps?.[node.id]?.staffRoles?.value ||
+        (node.data?.resources ? Object.keys(node.data.resources) : (node.data?.resource ? [node.data.resource] : []));
+      roles.forEach((r) => assigned.add(String(r).toLowerCase().trim()));
+    });
+    return staffList.filter((s) => !assigned.has(String(s.name).toLowerCase().trim()));
+  }, [rawDiagram, activeNodes, answers.steps]);
+
+  const handleToggleIndependentTrigger = (trigName, confirmed) => {
+    setAnswers((prev) => {
+      const currentList = prev.confirmedIndependentStarts?.value || [];
+      const updatedList = confirmed
+        ? Array.from(new Set([...currentList, trigName]))
+        : currentList.filter((name) => name !== trigName);
+      return {
+        ...prev,
+        confirmedIndependentStarts: wrapValue(updatedList, 'tap', false),
+      };
+    });
+  };
 
   return (
     <div
@@ -1012,6 +1105,27 @@ export default function IntakeScreens({
               </p>
             </div>
 
+            {unassignedStaffRoles.length > 0 && (
+              <div
+                style={{
+                  padding: '8px 10px',
+                  background: '#fffbeb',
+                  border: '1px solid #fef3c7',
+                  borderRadius: 8,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontSize: 11.5,
+                  color: '#b45309',
+                }}
+              >
+                <AlertTriangle size={14} color="#d97706" />
+                <span>
+                  Notice: {unassignedStaffRoles.map((r) => r.name).join(', ')} currently has no assigned steps.
+                </span>
+              </div>
+            )}
+
             {/* Quick Add Custom Role */}
             <div
               style={{
@@ -1058,9 +1172,9 @@ export default function IntakeScreens({
               </button>
             </div>
 
-            {/* Active Task Steps */}
+            {/* Active Task Steps (Skipping waiting, delivery, and structural steps) */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {activeNodes.map((node, idx) => {
+              {activeNodes.filter((n) => !isWaitingOrDeliveryOrStructuralStep(n)).map((node, idx) => {
                 const nodeLabel = node.data?.label || node.label || node.id;
                 const selectedRoles = answers.steps?.[node.id]?.staffRoles?.value || [];
 
@@ -1156,18 +1270,45 @@ export default function IntakeScreens({
               </p>
             </div>
 
+            {tasksNeedingDurationCount > 0 && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '7px 10px',
+                  borderRadius: 8,
+                  background: '#eff6ff',
+                  border: '1px solid #bfdbfe',
+                  color: '#1d4ed8',
+                  fontSize: 11.5,
+                  fontWeight: 500,
+                }}
+              >
+                <Clock size={13} style={{ flexShrink: 0 }} />
+                <span>
+                  {lang === 'ur'
+                    ? `${tasksNeedingDurationCount} مراحل کے لیے وقت منتخب کریں۔`
+                    : lang === 'ur-roman'
+                    ? `${tasksNeedingDurationCount} task${tasksNeedingDurationCount > 1 ? 's' : ''} ke liye waqt chunein.`
+                    : `${tasksNeedingDurationCount} task${tasksNeedingDurationCount > 1 ? 's' : ''} still need a duration.`}
+                </span>
+              </div>
+            )}
+
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {activeNodes.map((node, idx) => {
                 const nodeLabel = node.data?.label || node.label || node.id;
                 const stepData = answers.steps?.[node.id];
-                const currentSpeed = stepData?.speed?.value || DEFAULT_SPEED;
-                const isEstimated = Boolean(stepData?.speed?.estimated || stepData?.source === 'estimated');
+                const currentSpeed = stepData?.speed?.value || null;
+                const isWaitStep = isWaitingOrDeliveryOrStructuralStep(node);
+                const isEstimated = Boolean(stepData?.speed?.estimated || stepData?.source === 'estimated' || (isWaitStep && stepData?.source !== 'tap' && stepData?.source !== 'custom'));
                 const isCustom = currentSpeed === 'custom';
                 const isEditorOpen = isCustom || openCustomCards.has(node.id);
 
-                const minVal = stepData?.duration_min !== undefined ? stepData.duration_min : (SPEED_MAPPINGS[currentSpeed]?.duration_min ?? 3);
-                const maxVal = stepData?.duration_max !== undefined ? stepData.duration_max : (SPEED_MAPPINGS[currentSpeed]?.duration_max ?? 8);
-                const unitVal = stepData?.duration_unit || SPEED_MAPPINGS[currentSpeed]?.duration_unit || 'minutes';
+                const minVal = stepData?.duration_min != null ? stepData.duration_min : (currentSpeed && SPEED_MAPPINGS[currentSpeed] ? SPEED_MAPPINGS[currentSpeed].duration_min : '');
+                const maxVal = stepData?.duration_max != null ? stepData.duration_max : (currentSpeed && SPEED_MAPPINGS[currentSpeed] ? SPEED_MAPPINGS[currentSpeed].duration_max : '');
+                const unitVal = stepData?.duration_unit || (currentSpeed && SPEED_MAPPINGS[currentSpeed] ? SPEED_MAPPINGS[currentSpeed].duration_unit : 'minutes') || 'minutes';
 
                 const customError = isEditorOpen ? validateCustomRange(minVal, maxVal, lang) : null;
                 const unitDisplay = unitVal === 'seconds' ? t('unitDropdownSec', lang) : (unitVal === 'hours' ? t('unitDropdownHours', lang) : t('unitDropdownMin', lang));
@@ -1400,6 +1541,7 @@ export default function IntakeScreens({
                               <option value="seconds">{t('unitDropdownSec', lang)}</option>
                               <option value="minutes">{t('unitDropdownMin', lang)}</option>
                               <option value="hours">{t('unitDropdownHours', lang)}</option>
+                              <option value="days">{lang === 'ur' ? 'دن' : (lang === 'ur-roman' ? 'Din' : 'days')}</option>
                             </select>
                           </div>
                         </div>
@@ -1407,7 +1549,15 @@ export default function IntakeScreens({
                         {/* Validation message or friendly hint */}
                         {customError ? (
                           <div style={{ color: '#b91c1c', fontSize: 11, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
-                            <AlertCircle size={12} /> {customError}
+                            <AlertCircle size={12} /> {
+                              Number(minVal) > Number(maxVal) && Number.isFinite(Number(minVal)) && Number.isFinite(Number(maxVal))
+                                ? (lang === 'ur'
+                                    ? `زیادہ سے زیادہ وقت (${maxVal}) کم از کم وقت (${minVal}) سے کم نہیں ہو سکتا۔`
+                                    : lang === 'ur-roman'
+                                    ? `Kam se kam waqt (${minVal}) zyada se zyada waqt (${maxVal}) se bara nahi ho sakta.`
+                                    : `Minimum time (${minVal}) cannot be greater than maximum time (${maxVal}).`)
+                                : customError
+                            }
                           </div>
                         ) : (
                           <div style={{ color: '#6d28d9', fontSize: 11, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -1432,11 +1582,13 @@ export default function IntakeScreens({
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
                 <Flame size={16} color="#7c3aed" />
                 <h3 style={{ fontSize: 13.5, fontWeight: 700, color: '#111827', margin: 0 }}>
-                  How busy is rush hour?
+                  {arrivalEntity ? `How often does a new ${arrivalEntity} arrive?` : 'How busy is rush hour?'}
                 </h3>
               </div>
               <p style={{ fontSize: 11.5, color: '#6b7280', margin: 0, lineHeight: 1.4 }}>
-                This controls customer arrival rate and traffic density during peak periods.
+                {arrivalEntity
+                  ? `This controls how frequently a new ${arrivalEntity} arrives during normal and peak periods.`
+                  : 'This controls customer arrival rate and traffic density during peak periods.'}
               </p>
             </div>
 
@@ -1535,6 +1687,75 @@ export default function IntakeScreens({
                 );
               })}
             </div>
+
+            {independentTriggers.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8, paddingTop: 12, borderTop: '1px solid #f3f4f6' }}>
+                {independentTriggers.map((trig) => {
+                  const confirmedList = answers.confirmedIndependentStarts?.value || [];
+                  const isConfirmed = confirmedList.includes(trig.name);
+                  return (
+                    <div
+                      key={trig.name}
+                      style={{
+                        padding: '10px 12px',
+                        background: '#f8fafc',
+                        borderRadius: 10,
+                        border: '1px solid #e2e8f0',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 6,
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <Clock size={14} color="#6366f1" />
+                        <span style={{ fontSize: 12, fontWeight: 600, color: '#1e293b' }}>
+                          Does '{trig.name}' happen on its own schedule, separate from new {arrivalEntity} arrivals?
+                        </span>
+                      </div>
+                      <p style={{ fontSize: 11, color: '#64748b', margin: 0, lineHeight: 1.35 }}>
+                        Choose 'No' if this occurs as part of the normal flow. Choose 'Yes' only if it runs on its own independent timetable.
+                      </p>
+                      <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleIndependentTrigger(trig.name, false)}
+                          style={{
+                            flex: 1,
+                            padding: '6px 10px',
+                            borderRadius: 6,
+                            border: !isConfirmed ? '2px solid #6366f1' : '1px solid #cbd5e1',
+                            background: !isConfirmed ? '#eff6ff' : '#fff',
+                            fontSize: 11.5,
+                            fontWeight: !isConfirmed ? 600 : 400,
+                            color: !isConfirmed ? '#1d4ed8' : '#475569',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          No (Part of main process)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleIndependentTrigger(trig.name, true)}
+                          style={{
+                            flex: 1,
+                            padding: '6px 10px',
+                            borderRadius: 6,
+                            border: isConfirmed ? '2px solid #6366f1' : '1px solid #cbd5e1',
+                            background: isConfirmed ? '#eff6ff' : '#fff',
+                            fontSize: 11.5,
+                            fontWeight: isConfirmed ? 600 : 400,
+                            color: isConfirmed ? '#1d4ed8' : '#475569',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Yes (Runs on its own schedule)
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 
@@ -2214,43 +2435,59 @@ export default function IntakeScreens({
           </button>
 
           {/* Continue / Finish Button */}
-          <button
-            type="button"
-            disabled={hasInvalidCustomDuration}
-            onClick={() => {
-              if (!hasInvalidCustomDuration) handleNext();
-            }}
-            style={{
-              flex: 1.3,
-              minHeight: 46,
-              borderRadius: 8,
-              border: 'none',
-              background: hasInvalidCustomDuration
-                ? '#e5e7eb'
-                : 'linear-gradient(135deg, #4f46e5, #7c3aed)',
-              color: hasInvalidCustomDuration ? '#9ca3af' : '#fff',
-              fontSize: 12.5,
-              fontWeight: 600,
-              cursor: hasInvalidCustomDuration ? 'not-allowed' : 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 6,
-              boxShadow: hasInvalidCustomDuration ? 'none' : '0 2px 6px rgba(79,70,229,0.25)',
-              opacity: hasInvalidCustomDuration ? 0.7 : 1,
-            }}
-            title={hasInvalidCustomDuration ? (lang === 'ur-roman' ? 'Pehle ghalati theek karein' : 'Please fix the errors above before continuing') : ''}
-          >
-            {isLastScreen ? (
-              <>
-                <CheckCircle size={14} /> {t('finishAndApply', lang)}
-              </>
-            ) : (
-              <>
-                {t('continueBtn', lang)} <ArrowRight size={14} />
-              </>
-            )}
-          </button>
+          {(() => {
+            const isBlocked = currentScreenId === 2
+              ? (tasksNeedingDurationCount > 0 || hasInvalidCustomDuration)
+              : hasInvalidCustomDuration;
+            const blockTooltip = currentScreenId === 2 && tasksNeedingDurationCount > 0
+              ? (lang === 'ur'
+                  ? `${tasksNeedingDurationCount} مراحل کے لیے وقت منتخب کریں۔`
+                  : lang === 'ur-roman'
+                  ? `${tasksNeedingDurationCount} task(s) ke liye waqt chunein.`
+                  : `${tasksNeedingDurationCount} task${tasksNeedingDurationCount > 1 ? 's' : ''} still need a duration.`)
+              : (hasInvalidCustomDuration
+                  ? (lang === 'ur-roman' ? 'Pehle ghalati theek karein' : 'Please fix the errors above before continuing')
+                  : '');
+            return (
+              <button
+                type="button"
+                disabled={isBlocked}
+                onClick={() => {
+                  if (!isBlocked) handleNext();
+                }}
+                style={{
+                  flex: 1.3,
+                  minHeight: 46,
+                  borderRadius: 8,
+                  border: 'none',
+                  background: isBlocked
+                    ? '#e5e7eb'
+                    : 'linear-gradient(135deg, #4f46e5, #7c3aed)',
+                  color: isBlocked ? '#9ca3af' : '#fff',
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  cursor: isBlocked ? 'not-allowed' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  boxShadow: isBlocked ? 'none' : '0 2px 6px rgba(79,70,229,0.25)',
+                  opacity: isBlocked ? 0.7 : 1,
+                }}
+                title={blockTooltip}
+              >
+                {isLastScreen ? (
+                  <>
+                    <CheckCircle size={14} /> {t('finishAndApply', lang)}
+                  </>
+                ) : (
+                  <>
+                    {t('continueBtn', lang)} <ArrowRight size={14} />
+                  </>
+                )}
+              </button>
+            );
+          })()}
         </div>
       </div>
     </div>

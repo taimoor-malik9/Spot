@@ -42,11 +42,8 @@ import {
   TestTube,
   Box,
   Target,
-  Shapes,
-  Users
+  Shapes
 } from 'lucide-react';
-import ResourceChangesView from '../components/ResourceChangesView';
-import { computeResourceChanges, computeTaskChanges } from '../lib/resourceDiff';
 import {
   createScenario,
   updateScenario,
@@ -1317,7 +1314,7 @@ function ComparisonPane({ scenarios, compareIds, scenarioResults, backendScenari
     const bId = backendScenarioIds[s.id] || s._backendId;
     const res = s._isBaseline ? scenarioResults.baseline : (bId ? scenarioResults[bId] : null);
     
-    if (!res) return { cycle: null, throughput: null, maxWait: null };
+    if (!res) return { cycle: null, throughput: null, maxWait: null, costPerCustomer: null, totalCost: null };
     
     const tis = res.time_in_system || {};
     const avgCycle = tis.avg ?? res.average_cycle_time ?? res.totalTime ?? null;
@@ -1332,8 +1329,19 @@ function ComparisonPane({ scenarios, compareIds, scenarioResults, backendScenari
     });
     const maxWait = queueRows.length > 0 ? Math.max(0, ...queueRows) : null;
 
-    return { cycle: avgCycle, throughput, maxWait };
+    // Cost: per customer is the fair number to compare; total depends on how long the test ran.
+    const fin = res.financial_summary || {};
+    const totalCost = Number(fin.total_cost) > 0 ? Number(fin.total_cost) : null;
+    const perCustomerRaw = Number(fin.cost_per_customer) > 0
+      ? Number(fin.cost_per_customer)
+      : (totalCost && Number(fin.customers) > 0 ? totalCost / Number(fin.customers) : null);
+
+    return { cycle: avgCycle, throughput, maxWait, costPerCustomer: perCustomerRaw, totalCost };
   };
+
+  const fmtRs = (n) => (n == null
+    ? '—'
+    : `Rs ${Number(n).toLocaleString('en-US', { maximumFractionDigits: Math.abs(n) < 100 ? 1 : 0 })}`);
 
   const baseMetrics = getMetrics(baseline);
 
@@ -1395,6 +1403,8 @@ function ComparisonPane({ scenarios, compareIds, scenarioResults, backendScenari
               <th className="py-2 font-medium text-gray-500">{isAnalystView ? "Avg Cycle Time" : "Time from arrival to leaving"}</th>
               <th className="py-2 font-medium text-gray-500">{isAnalystView ? "Throughput /hr" : "Customers / hr"}</th>
               <th className="py-2 font-medium text-gray-500">Max Wait Time</th>
+              <th className="py-2 font-medium text-gray-500">{isAnalystView ? "Cost / case" : "Cost per customer"}</th>
+              <th className="py-2 font-medium text-gray-500">{isAnalystView ? "Total cost" : "Total cost of this test"}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-50">
@@ -1423,6 +1433,14 @@ function ComparisonPane({ scenarios, compareIds, scenarioResults, backendScenari
                   <td className="py-2.5 text-gray-800 font-medium">
                     {m.maxWait != null ? fmt(m.maxWait) : '—'}
                     {!isBase && renderDiff(baseMetrics.maxWait, m.maxWait)}
+                  </td>
+                  <td className="py-2.5 text-gray-800 font-medium">
+                    {fmtRs(m.costPerCustomer)}
+                    {!isBase && renderDiff(baseMetrics.costPerCustomer, m.costPerCustomer)}
+                  </td>
+                  <td className="py-2.5 text-gray-800 font-medium">
+                    {fmtRs(m.totalCost)}
+                    {!isBase && renderDiff(baseMetrics.totalCost, m.totalCost)}
                   </td>
                 </tr>
               );
@@ -2017,7 +2035,6 @@ export default function ScenariosPage() {
   const [editingLabelText, setEditingLabelText] = useState('');
   const [editingResource, setEditingResource] = useState(null);
   const [showSetupModal, setShowSetupModal] = useState(false);
-  const [showChangesModal, setShowChangesModal] = useState(false);
   const [hydratedScenarioIds, setHydratedScenarioIds] = useState(new Set());
   const [dismissedHydratedIds, setDismissedHydratedIds] = useState(new Set());
   const [paletteExpanded, setPaletteExpanded] = useState(new Set(['events', 'activities', 'gateways', 'flows']));
@@ -2615,67 +2632,6 @@ export default function ScenariosPage() {
     return canvasConnections[activeId] || [];
   }, [activeId, canvasConnections]);
 
-  // Resource changes for the currently active scenario compared to baseline
-  const currentScenarioResourceChanges = useMemo(() => {
-    if (activeId === 'baseline') return [];
-    const cur = scenarios.find((s) => s.id === activeId);
-    if (cur && Array.isArray(cur.resource_changes) && cur.resource_changes.length > 0) {
-      return cur.resource_changes;
-    }
-    if (cur?.simulationResults && Array.isArray(cur.simulationResults.resource_changes)) {
-      return cur.simulationResults.resource_changes;
-    }
-    const baseScen = scenarios.find((s) => s._isBaseline || s.id === 'baseline');
-    const baseResources = resourceAllocations['baseline'] || baseScen?.resources || DEFAULT_RESOURCES;
-    const scenResources = resourceAllocations[activeId] || cur?.resources || baseResources;
-    return computeResourceChanges(
-      { resources: baseResources, nodes: baseScen?.nodes || elements },
-      { resources: scenResources, nodes: elements }
-    );
-  }, [activeId, scenarios, resourceAllocations, elements]);
-
-  // Task duration changes for the currently active scenario compared to baseline
-  const currentScenarioTaskChanges = useMemo(() => {
-    if (activeId === 'baseline') return [];
-    const cur = scenarios.find((s) => s.id === activeId);
-    if (cur && Array.isArray(cur.task_changes) && cur.task_changes.length > 0) {
-      return cur.task_changes;
-    }
-    if (cur?.simulationResults && Array.isArray(cur.simulationResults.task_changes)) {
-      return cur.simulationResults.task_changes;
-    }
-    const baseScen = scenarios.find((s) => s._isBaseline || s.id === 'baseline');
-    return computeTaskChanges(
-      { nodes: baseScen?.nodes || elements },
-      { nodes: elements }
-    );
-  }, [activeId, scenarios, elements]);
-
-  const changedResourceKeys = useMemo(() => {
-    const keys = new Set();
-    for (const c of currentScenarioResourceChanges) {
-      if (c.id) keys.add(String(c.id).toLowerCase());
-      if (c.resource_id) keys.add(String(c.resource_id).toLowerCase());
-      if (c.name) keys.add(String(c.name).toLowerCase());
-    }
-    return keys;
-  }, [currentScenarioResourceChanges]);
-
-  const affectedTaskNames = useMemo(() => {
-    const names = new Set();
-    for (const c of currentScenarioResourceChanges) {
-      if (Array.isArray(c.affected_tasks)) {
-        for (const t of c.affected_tasks) names.add(String(t).toLowerCase());
-      }
-    }
-    for (const tc of currentScenarioTaskChanges) {
-      if (tc.task) names.add(String(tc.task).toLowerCase());
-      if (tc.name) names.add(String(tc.name).toLowerCase());
-      if (tc.id) names.add(String(tc.id).toLowerCase());
-    }
-    return names;
-  }, [currentScenarioResourceChanges, currentScenarioTaskChanges]);
-
   const getElementBoundaryPoint = useCallback((element, direction) => {
     if (!element) return { x: 0, y: 0 };
     const px = element.position?.x ?? element.x ?? 0;
@@ -3060,22 +3016,6 @@ export default function ScenariosPage() {
             </button>
           </div>
 
-          {/* Resource changes badge (What-If only) */}
-          {activeId !== 'baseline' && (() => {
-            const count = currentScenarioResourceChanges.length;
-            return (
-              <button
-                type="button"
-                onClick={() => setShowChangesModal(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 transition-colors shrink-0 shadow-2xs cursor-pointer"
-                title="View changes from baseline"
-              >
-                <Users size={13} className="text-indigo-600" />
-                <span>{count > 0 ? `${count} ${count === 1 ? 'resource changed' : 'resources changed'}` : 'No resource changes'}</span>
-              </button>
-            );
-          })()}
-
           {/* "Comparing n" chip beside the switcher */}
           {compareIds.length > 0 && (
             <button
@@ -3201,46 +3141,15 @@ export default function ScenariosPage() {
                             <span className={`truncate font-medium ${isActive ? 'text-indigo-900 font-semibold' : 'text-gray-800'}`}>
                               {s.name}
                             </span>
-                            <div className="flex items-center gap-1 shrink-0">
-                              {!s._isBaseline && (() => {
-                                const resCount = Array.isArray(s.resource_changes)
-                                  ? s.resource_changes.length
-                                  : (Array.isArray(s.simulationResults?.resource_changes) ? s.simulationResults.resource_changes.length : 0);
-                                const taskCount = Array.isArray(s.task_changes)
-                                  ? s.task_changes.length
-                                  : (Array.isArray(s.simulationResults?.task_changes) ? s.simulationResults.task_changes.length : 0);
-                                const totalCount = resCount + taskCount;
-                                let badgeText = '0 changes';
-                                if (resCount > 0 && taskCount > 0) {
-                                  badgeText = `${resCount} res, ${taskCount} task`;
-                                } else if (resCount > 0) {
-                                  badgeText = `${resCount} resource${resCount === 1 ? '' : 's'} changed`;
-                                } else if (taskCount > 0) {
-                                  badgeText = `${taskCount} task${taskCount === 1 ? '' : 's'} changed`;
-                                }
-                                return (
-                                  <span
-                                    className="text-[9px] px-1.5 py-0.5 rounded-full font-semibold shrink-0"
-                                    style={{
-                                      background: totalCount > 0 ? '#ede9fe' : '#f1f5f9',
-                                      color: totalCount > 0 ? '#6b4de6' : '#64748b',
-                                      border: `1px solid ${totalCount > 0 ? '#ddd6fe' : '#e2e8f0'}`,
-                                    }}
-                                  >
-                                    {badgeText}
-                                  </span>
-                                );
-                              })()}
-                              {s._isBaseline ? (
-                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-semibold uppercase shrink-0">
-                                  {isAnalystView ? "Base" : "Current"}
-                                </span>
-                              ) : (
-                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 font-semibold uppercase shrink-0">
-                                  {isAnalystView ? "What-If" : "Idea"}
-                                </span>
-                              )}
-                            </div>
+                            {s._isBaseline ? (
+                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-semibold uppercase shrink-0">
+                                {isAnalystView ? "Base" : "Current"}
+                              </span>
+                            ) : (
+                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 font-semibold uppercase shrink-0">
+                                {isAnalystView ? "What-If" : "Idea"}
+                              </span>
+                            )}
                           </div>
                           <div className="text-[11px] text-gray-400 mt-0.5 leading-none">
                             Edited {formatScenarioTime(s.updatedAt || s.createdAt)}
@@ -3605,33 +3514,6 @@ export default function ScenariosPage() {
                     >
                       <div className="relative flex h-full w-full items-center justify-center">
                         <BPMNShape type={el.type} sel={selectedTaskId === el.id} w={el.width} h={el.height} />
-                        {activeId !== 'baseline' && affectedTaskNames.has(String(el.label || el.name || '').toLowerCase()) && (
-                          <span
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setShowChangesModal(true);
-                            }}
-                            style={{
-                              position: 'absolute',
-                              top: -8,
-                              right: -8,
-                              zIndex: 40,
-                              background: '#fef3c7',
-                              color: '#b45309',
-                              border: '1px solid #fde68a',
-                              borderRadius: 999,
-                              padding: '1px 6px',
-                              fontSize: 9,
-                              fontWeight: 700,
-                              textTransform: 'uppercase',
-                              cursor: 'pointer',
-                              boxShadow: '0 1px 2px rgba(0,0,0,0.08)',
-                            }}
-                            title="Resource changed for this step · Click to view details"
-                          >
-                            changed
-                          </span>
-                        )}
                         {(el.type === 'task' || el.type === 'subprocess') && editingLabelId !== el.id && (
                           <div style={{
                             position: 'absolute', top: 20, left: 13, width: 54, height: 40,
@@ -4113,29 +3995,6 @@ export default function ScenariosPage() {
                           >
                             {resource.displayName}
                           </span>
-                          {activeId !== 'baseline' && (changedResourceKeys.has(String(resource.id).toLowerCase()) || changedResourceKeys.has(String(resource.name || '').toLowerCase())) && (
-                            <span
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setShowChangesModal(true);
-                              }}
-                              style={{
-                                background: '#fef3c7',
-                                color: '#b45309',
-                                border: '1px solid #fde68a',
-                                borderRadius: 999,
-                                padding: '1px 5px',
-                                fontSize: 9,
-                                fontWeight: 700,
-                                textTransform: 'uppercase',
-                                cursor: 'pointer',
-                                marginRight: 4,
-                              }}
-                              title="Changed from baseline · Click to view details"
-                            >
-                              changed
-                            </span>
-                          )}
                           <button
                             type="button"
                             onClick={() => setEditingResource(resource)}
@@ -4341,32 +4200,8 @@ export default function ScenariosPage() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
                       <Icon size={18} style={{ color: '#4f46e5', flexShrink: 0 }} />
                       <div style={{ minWidth: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: '#1f2937', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {resource.displayName}
-                          </div>
-                          {activeId !== 'baseline' && (changedResourceKeys.has(String(resource.id).toLowerCase()) || changedResourceKeys.has(String(resource.name || '').toLowerCase())) && (
-                            <span
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setShowChangesModal(true);
-                              }}
-                              style={{
-                                background: '#fef3c7',
-                                color: '#b45309',
-                                border: '1px solid #fde68a',
-                                borderRadius: 999,
-                                padding: '1px 6px',
-                                fontSize: 9.5,
-                                fontWeight: 700,
-                                textTransform: 'uppercase',
-                                cursor: 'pointer',
-                              }}
-                              title="Changed in this scenario · Click to view details"
-                            >
-                              changed
-                            </span>
-                          )}
+                        <div style={{ fontSize: 13, fontWeight: 600, color: '#1f2937', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {resource.displayName}
                         </div>
                         <div style={{ fontSize: 11, color: '#6b7280', marginTop: 1 }}>
                           {resource.hours_per_day ? `${resource.hours_per_day}h/day` : ''}
@@ -4395,64 +4230,6 @@ export default function ScenariosPage() {
                 style={{ padding: '8px 18px', borderRadius: 8, fontSize: 13, fontWeight: 600, border: '1px solid #d1d5db', background: 'white', color: '#374151', cursor: 'pointer' }}
               >
                 Done
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Resource Changes Modal ── */}
-      {showChangesModal && (
-        <div
-          style={{
-            position: 'fixed', inset: 0, zIndex: 110,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            backgroundColor: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(4px)',
-          }}
-          onClick={() => setShowChangesModal(false)}
-        >
-          <div
-            style={{
-              width: 640, maxWidth: '92vw', maxHeight: '82vh', overflowY: 'auto',
-              padding: 24, borderRadius: 16, background: 'white',
-              border: '1px solid #e5e7eb',
-              boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04)',
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <div>
-                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#1f2937' }}>
-                  Resource Changes: {currentScenario?.name || 'Scenario'}
-                </h3>
-                <p style={{ margin: '3px 0 0', fontSize: 12, color: '#6b7280' }}>
-                  Exact resources modified in this scenario compared to baseline
-                </p>
-              </div>
-              <button
-                onClick={() => setShowChangesModal(false)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af' }}
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <ResourceChangesView
-              changes={currentScenarioResourceChanges}
-              taskChanges={currentScenarioTaskChanges}
-              showTitle={false}
-            />
-
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
-              <button
-                type="button"
-                onClick={() => setShowChangesModal(false)}
-                style={{
-                  padding: '8px 18px', borderRadius: 8, fontSize: 13, fontWeight: 600,
-                  border: '1px solid #d1d5db', background: 'white', color: '#374151', cursor: 'pointer',
-                }}
-              >
-                Close
               </button>
             </div>
           </div>

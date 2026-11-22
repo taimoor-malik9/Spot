@@ -21,6 +21,7 @@ import { validateDurationRules } from '../lib/durationRules';
 import { SPEED_MAPPINGS, BUSYNESS_MAPPINGS } from '../lib/intake/schema';
 import { useAnalystView } from '../lib/labels';
 import { friendlyError } from '../lib/intake/friendlyErrors';
+import { ensureDefaultProbabilities } from '../lib/intake/deterministicNormalizer';
 import { t, renderAssumption } from '../lib/intake/i18n';
 
 const COST_FIELD_LABELS = {
@@ -194,6 +195,13 @@ export default function ConfirmationCard({
         };
       })
     );
+    setValidationErrors((prev) => {
+      if (!prev || prev.length === 0) return prev;
+      const targetItem = assumptionList.find((a) => a.id === id);
+      const targetLabel = (targetItem?.nodeId || targetItem?.text || '').toLowerCase();
+      if (!targetLabel) return prev;
+      return prev.filter((err) => !String(err).toLowerCase().includes(targetLabel));
+    });
   };
 
   const buildPatchedDiagram = () => {
@@ -273,11 +281,21 @@ export default function ConfirmationCard({
       const num = Number(durationValues[n.id]);
       const durationEntry = (safeConfirmations.durations || []).find((d) => d.nodeId === n.id);
       const changed = durationEntry && String(durationValues[n.id]) !== String(durationEntry.guessedValue);
+      const durVal = Number.isNaN(num) ? durationValues[n.id] : num;
+      let minVal = n.data?.duration_min != null ? Number(n.data.duration_min) : durVal;
+      let maxVal = n.data?.duration_max != null ? Number(n.data.duration_max) : durVal;
+      if (typeof durVal === 'number' && Number.isFinite(durVal)) {
+        if (minVal > durVal) minVal = durVal;
+        if (maxVal < durVal) maxVal = durVal;
+        if (minVal > maxVal) [minVal, maxVal] = [maxVal, minVal];
+      }
       return {
         ...n,
         data: {
           ...n.data,
-          duration: Number.isNaN(num) ? durationValues[n.id] : num,
+          duration: durVal,
+          duration_min: minVal,
+          duration_max: maxVal,
           duration_source: changed ? 'stated' : 'assumed',
         },
       };
@@ -392,6 +410,25 @@ export default function ConfirmationCard({
     setAddingResource(false);
   };
 
+  const handleAutoBalanceProbabilities = () => {
+    if (diagram && Array.isArray(diagram.edges)) {
+      ensureDefaultProbabilities(diagram);
+    }
+    const patched = buildPatchedDiagram();
+    ensureDefaultProbabilities(patched);
+    const validation = validateBpmn(patched);
+    const durationValidation = validateDurationRules(patched.nodes);
+    const allErrors = [
+      ...(validation.errors || []),
+      ...durationValidation.errors.map((e) => e.message),
+    ];
+    setValidationErrors(allErrors);
+    if (validation.repairs && validation.repairs.length > 0) {
+      setActiveRepairs(validation.repairs);
+    }
+  };
+
+  const hasInteractiveQuestionsAbove = assumptionList.some((a) => a.isEditing) || addingResource;
   const hasErrors = validationErrors && validationErrors.length > 0;
 
   const inputStyle = {
@@ -628,6 +665,14 @@ export default function ConfirmationCard({
                           ...dv,
                           [d.nodeId]: val,
                         }));
+                        setValidationErrors((prev) => {
+                          if (!prev || prev.length === 0) return prev;
+                          const nodeLabel = (d.label || d.nodeId).toLowerCase();
+                          return prev.filter((err) => {
+                            const s = String(err).toLowerCase();
+                            return !s.includes(nodeLabel) && !s.includes(d.nodeId.toLowerCase());
+                          });
+                        });
                       }}
                       style={inputStyle}
                     />
@@ -925,15 +970,42 @@ export default function ConfirmationCard({
                 <AlertCircle size={14} color="#dc2626" /> {lang === 'ur-roman' ? 'Chalane se pehle ek cheez batani baqi hai:' : (isAnalystView ? 'Validation checks:' : 'One thing is missing before we can run this:')}
               </div>
               <ul style={{ margin: 0, paddingLeft: 16 }}>
-                {validationErrors.map((err, i) => (
-                  <li key={i} style={{ marginBottom: 2 }}>
-                    {isAnalystView ? (err.message || err) : friendlyError(err, lang, diagram)}
-                  </li>
-                ))}
+                {validationErrors.map((err, i) => {
+                  const errText = isAnalystView ? (err.message || err) : friendlyError(err, lang, diagram);
+                  const isProbError = typeof err === 'string'
+                    ? /sum to 1|must sum|100%|must be 100|totals \d+%/i.test(err) || /totals \d+%/i.test(errText)
+                    : err.type === 'probability-sum';
+                  return (
+                    <li key={i} style={{ marginBottom: 4, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                      <span>{errText}</span>
+                      {isProbError && (
+                        <button
+                          type="button"
+                          onClick={handleAutoBalanceProbabilities}
+                          style={{
+                            padding: '2px 8px',
+                            borderRadius: 4,
+                            border: '1px solid #f87171',
+                            background: '#fff',
+                            color: '#b91c1c',
+                            fontSize: 10.5,
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {t('autoBalanceTo100', lang)}
+                        </button>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
-              <div style={{ fontSize: 10.5, color: '#991b1b', marginTop: 4 }}>
-                {lang === 'ur-roman' ? 'Barahe karam aage barhne se pehle upar diye gaye sawal ka jawab dein.' : 'Please answer the question above before proceeding.'}
-              </div>
+              {hasInteractiveQuestionsAbove && (
+                <div style={{ fontSize: 10.5, color: '#991b1b', marginTop: 4 }}>
+                  {lang === 'ur-roman' ? 'Barahe karam aage barhne se pehle upar diye gaye sawal ka jawab dein.' : 'Please answer the question above before proceeding.'}
+                </div>
+              )}
             </div>
           )}
 
@@ -1129,7 +1201,9 @@ export default function ConfirmationCard({
             >
               <CheckCircle size={13} />
               {hasErrors
-                ? (lang === 'ur-roman' ? 'Pehle upar wala sawal bharein' : 'Answer question above first')
+                ? (hasInteractiveQuestionsAbove
+                    ? (lang === 'ur-roman' ? 'Pehle upar wala sawal bharein' : 'Answer question above first')
+                    : (lang === 'ur-roman' ? 'Pehle masail hal karein' : 'Resolve checks to continue'))
                 : t('confirmAndApply', lang)}
             </button>
 

@@ -23,13 +23,25 @@ import {
 export const COMMON_FALLBACK_ROLES = ['Staff', 'Cashier', 'Barista', 'Manager', 'Technician'];
 export const COMMON_SPACE_PRESETS = ['Table', 'Room', 'Seat', 'Desk', 'Booth', 'Bay'];
 
+export function isWaitingOrDeliveryOrStructuralStep(node) {
+  if (!node) return false;
+  const origin = node.origin || node.data?.origin;
+  const isStructural = origin === 'structural' || node.data?.isStructural === true || node.isStructural === true;
+  if (isStructural) return true;
+  const type = String(node.type || node.data?.type || '').toLowerCase();
+  if (type.includes('message') || type.includes('timer') || type.includes('intermediate')) return true;
+  const lbl = String(node.data?.label || node.label || '').trim().toLowerCase();
+  return /^(wait\s+for|await|waiting\s+for|receive\s+delivery|receive|delivery\s+arrival|arrival)\b/i.test(lbl);
+}
+
 /**
  * Filters active task nodes for intake screens.
  * Screens 1 and 2 skip inferred steps that were not Kept.
  */
 export function getActiveTaskNodes(rawDiagram) {
-  if (!rawDiagram?.nodes || !Array.isArray(rawDiagram.nodes)) return [];
-  return rawDiagram.nodes.filter((n) => {
+  const nodes = Array.isArray(rawDiagram) ? rawDiagram : (rawDiagram?.nodes || []);
+  if (!Array.isArray(nodes)) return [];
+  return nodes.filter((n) => {
     if (n.type !== 'task' && !n.type?.endsWith('-task')) return false;
     const isInferred = n.origin === 'inferred' || n.data?.origin === 'inferred';
     const isKept = n.kept === true || n.data?.kept === true;
@@ -38,15 +50,23 @@ export function getActiveTaskNodes(rawDiagram) {
   });
 }
 
+export function getStaffQuestionTaskNodes(rawDiagram) {
+  const nodes = getActiveTaskNodes(rawDiagram);
+  return nodes.filter((n) => !isWaitingOrDeliveryOrStructuralStep(n));
+}
+
 /**
  * Checks if a specific intake screen is already definitively answered by the raw diagram.
  */
 export function isScreenAnswered(screenId, rawDiagram, activeNodes = null) {
   const nodes = activeNodes || getActiveTaskNodes(rawDiagram);
+  const spec = rawDiagram?.spec;
+  const missing = Array.isArray(spec?.missing_or_ambiguous) ? spec.missing_or_ambiguous : [];
 
   switch (screenId) {
     case 1: {
-      // Who handles each step: Answered if all active tasks have stated staff
+      // Who handles each step: Answered if all active tasks have stated staff and not missing
+      if (missing.some((m) => /staff|role|performer|worker/i.test(m.field || ''))) return false;
       if (!nodes.length) return true;
       if (rawDiagram?.staffAnswered === true || rawDiagram?.staffSource === 'stated') return true;
       const staffList = (rawDiagram?.resources || []).filter((r) => r.type === 'staff');
@@ -62,7 +82,8 @@ export function isScreenAnswered(screenId, rawDiagram, activeNodes = null) {
     }
 
     case 2: {
-      // Speed per step: Answered if every active task has duration_source === 'stated'
+      // Speed per step: Answered if every active task has duration_source === 'stated' and not missing
+      if (missing.some((m) => /duration|speed|time/i.test(m.field || ''))) return false;
       if (!nodes.length) return true;
       if (rawDiagram?.speedAnswered === true || rawDiagram?.speedSource === 'stated') return true;
       return nodes.every(
@@ -71,7 +92,8 @@ export function isScreenAnswered(screenId, rawDiagram, activeNodes = null) {
     }
 
     case 3: {
-      // How busy is rush hour: Answered if busyness is explicitly stated in diagram
+      // How busy is rush hour: Answered if busyness is explicitly stated in diagram and not missing
+      if (missing.some((m) => /arrival|rate|busyness|frequency|interval|trigger/i.test(m.field || ''))) return false;
       return Boolean(
         rawDiagram?.simulationConfig?.busynessSource === 'stated' ||
         rawDiagram?.busynessSource === 'stated' ||
@@ -81,16 +103,24 @@ export function isScreenAnswered(screenId, rawDiagram, activeNodes = null) {
     }
 
     case 4: {
-      // Does it ever go wrong: Answered if exceptions are explicitly stated
-      return Boolean(
+      // Does it ever go wrong: Answered if exceptions are explicitly stated or decisions exist
+      if (missing.some((m) => /exception|defect|error|failure/i.test(m.field || ''))) return false;
+      if (
         rawDiagram?.exceptionsAnswered === true ||
         rawDiagram?.exceptionsSource === 'stated' ||
         rawDiagram?.exceptions_source === 'stated'
-      );
+      ) {
+        return true;
+      }
+      if (spec?.decisions && spec.decisions.length > 0) {
+        return true;
+      }
+      return false;
     }
 
     case 5: {
       // Do customers ever wait for a table/seat/room: Answered if facility resource is stated
+      if (missing.some((m) => /space|capacity|table|room|seat|bay/i.test(m.field || ''))) return false;
       if (rawDiagram?.spaceAnswered === true || rawDiagram?.spaceSource === 'stated') return true;
       return Boolean(
         (rawDiagram?.resources || []).some(
@@ -100,17 +130,21 @@ export function isScreenAnswered(screenId, rawDiagram, activeNodes = null) {
     }
 
     case 6: {
-      // Goal: Answered if optimization goal is stated
+      // Goal: If stated goals/issues exist, ask the user to confirm/prioritize via Screen 6
+      if (rawDiagram?.goalAnswered === true) return true;
+      if (spec?.goals_or_issues && spec.goals_or_issues.length > 0) {
+        return false;
+      }
       return Boolean(
         rawDiagram?.simulationConfig?.goalSource === 'stated' ||
         rawDiagram?.goalSource === 'stated' ||
-        rawDiagram?.simulationConfig?.goal_source === 'stated' ||
-        rawDiagram?.goalAnswered === true
+        rawDiagram?.simulationConfig?.goal_source === 'stated'
       );
     }
 
     case 7: {
-      // Add costs: Answered if all staff resources have costSource === 'stated'
+      // Add costs: Answered if all staff resources have costSource === 'stated' and not missing
+      if (missing.some((m) => /cost|salary|wage/i.test(m.field || ''))) return false;
       if (rawDiagram?.costsAnswered === true || rawDiagram?.costsSource === 'stated') return true;
       const staffRes = (rawDiagram?.resources || []).filter((r) => r.type === 'staff');
       const hasTaskStaff = nodes.some(
@@ -158,12 +192,29 @@ export function initializeIntakeAnswers(rawDiagram, activeNodes) {
     }
 
     // Pre-fill speed from duration
-    const d = Number(n.data?.duration) || 5;
-    let initialSpeed = 'normal';
-    if (d <= 2) initialSpeed = 'quick';
-    else if (d >= 10) initialSpeed = 'slow';
+    const hasExplicitDur = (n.data?.duration != null && !isNaN(Number(n.data.duration))) ||
+      (n.duration != null && !isNaN(Number(n.duration)));
+    const isStatedDuration = Boolean(
+      (n.data?.duration_source === 'stated' || n.duration_source === 'stated') && hasExplicitDur
+    );
 
-    const isStatedDuration = n.data?.duration_source === 'stated' || n.duration_source === 'stated';
+    let initialSpeed = null;
+    let defaultMin = null;
+    let defaultMax = null;
+    let defaultDuration = null;
+    let durSource = 'unstated';
+
+    if (hasExplicitDur && n.data?.duration_source !== 'assumed') {
+      const d = Number(n.data?.duration ?? n.duration);
+      if (d <= 2) initialSpeed = 'quick';
+      else if (d >= 10) initialSpeed = 'slow';
+      else initialSpeed = 'normal';
+
+      defaultMin = n.data?.duration_min != null ? Number(n.data.duration_min) : (isStatedDuration ? d : SPEED_MAPPINGS[initialSpeed].duration_min);
+      defaultMax = n.data?.duration_max != null ? Number(n.data.duration_max) : (isStatedDuration ? d : SPEED_MAPPINGS[initialSpeed].duration_max);
+      defaultDuration = isStatedDuration ? d : (defaultMin === defaultMax ? defaultMin : Math.round((defaultMin + defaultMax) / 2));
+      durSource = isStatedDuration ? 'bucket' : 'estimated';
+    }
 
     // Pre-fill staff roles
     const existingRoles = [];
@@ -173,23 +224,22 @@ export function initializeIntakeAnswers(rawDiagram, activeNodes) {
       existingRoles.push(n.data.resource);
     }
 
-    const defaultMin = n.data?.duration_min != null ? Number(n.data.duration_min) : SPEED_MAPPINGS[initialSpeed].duration_min;
-    const defaultMax = n.data?.duration_max != null ? Number(n.data.duration_max) : SPEED_MAPPINGS[initialSpeed].duration_max;
-    const defaultUnit = n.data?.duration_unit || SPEED_MAPPINGS[initialSpeed].duration_unit || 'minutes';
+    const defaultUnit = n.data?.duration_unit || (initialSpeed ? SPEED_MAPPINGS[initialSpeed]?.duration_unit : 'minutes') || 'minutes';
 
     steps[n.id] = {
       speed: wrapValue(initialSpeed, isStatedDuration ? 'tap' : 'default', !isStatedDuration),
       duration_min: defaultMin,
       duration_max: defaultMax,
-      duration: defaultMin === defaultMax ? defaultMin : Math.round((defaultMin + defaultMax) / 2),
+      duration: defaultDuration,
       duration_unit: defaultUnit,
-      source: isStatedDuration ? 'bucket' : 'estimated',
+      source: durSource,
       staffRoles: wrapValue(existingRoles, existingRoles.length > 0 ? 'tap' : 'default', existingRoles.length === 0),
       kept: isKept || !isInferred,
     };
   });
 
   // Pre-fill busyness
+  const isBusynessStated = rawDiagram?.simulationConfig?.busynessSource === 'stated' || rawDiagram?.busynessSource === 'stated';
   const initialBusyness =
     rawDiagram?.simulationConfig?.busyness || rawDiagram?.busyness || DEFAULT_BUSYNESS;
 
@@ -208,28 +258,54 @@ export function initializeIntakeAnswers(rawDiagram, activeNodes) {
   const spaceName = fac?.name || DEFAULT_SPACE_NAME;
   const spaceUnits = Number(fac?.quantity) || DEFAULT_SPACE_UNITS;
 
+  // Pre-fill goal
+  let initialGoal = DEFAULT_GOAL;
+  let isGoalStated = false;
+  if (rawDiagram?.spec?.goals_or_issues?.length > 0) {
+    const goalsText = rawDiagram.spec.goals_or_issues.join(' ').toLowerCase();
+    if (/wait|delay|time|slow|speed|queue/i.test(goalsText)) {
+      initialGoal = 'waiting';
+      isGoalStated = true;
+    } else if (/cost|expense|salary|budget|saving/i.test(goalsText)) {
+      initialGoal = 'cost';
+      isGoalStated = true;
+    } else if (/throughput|volume|order|deliver|capacity/i.test(goalsText)) {
+      initialGoal = 'throughput';
+      isGoalStated = true;
+    } else if (/utiliz|idle|efficiency/i.test(goalsText)) {
+      initialGoal = 'utilization';
+      isGoalStated = true;
+    }
+  }
+
   // Pre-fill costs
   const costs = {};
+  let anyCostStated = false;
   (rawDiagram?.resources || []).forEach((r) => {
     if (r.type === 'staff') {
-      costs[r.name] = Number(r.monthly_salary) || 50000;
+      if ((r.costSource === 'stated' || r.cost_source === 'stated') && r.monthly_salary != null) {
+        costs[r.name] = Number(r.monthly_salary);
+        anyCostStated = true;
+      } else {
+        costs[r.name] = Number(r.monthly_salary) || 50000;
+      }
     }
   });
 
   return {
     steps,
-    busyness: wrapValue(initialBusyness, 'default', true),
+    busyness: wrapValue(initialBusyness, isBusynessStated ? 'tap' : 'default', !isBusynessStated),
     exceptions: wrapValue(
       detectedExceptions.length ? Array.from(new Set(detectedExceptions)) : [],
-      'default',
+      detectedExceptions.length > 0 ? 'tap' : 'default',
       detectedExceptions.length === 0
     ),
-    hasLimitedSpace: wrapValue(hasSpace, 'default', !hasSpace),
-    spaceName: wrapValue(spaceName, 'default', !hasSpace),
-    spaceUnits: wrapValue(spaceUnits, 'default', !hasSpace),
+    hasLimitedSpace: wrapValue(hasSpace, hasSpace ? 'tap' : 'default', !hasSpace),
+    spaceName: wrapValue(spaceName, hasSpace ? 'tap' : 'default', !hasSpace),
+    spaceUnits: wrapValue(spaceUnits, hasSpace ? 'tap' : 'default', !hasSpace),
     spaceStepId: wrapValue(nodes[0]?.id || null, 'default', true),
-    goal: wrapValue(DEFAULT_GOAL, 'default', true),
-    costs: wrapValue(costs, 'default', true),
+    goal: wrapValue(initialGoal, isGoalStated ? 'tap' : 'default', !isGoalStated),
+    costs: wrapValue(costs, anyCostStated ? 'tap' : 'default', !anyCostStated),
   };
 }
 

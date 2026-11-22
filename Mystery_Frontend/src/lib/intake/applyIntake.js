@@ -117,14 +117,27 @@ export function applyIntakeToRawDiagram(rawDiagram, answers = {}) {
     ));
   }
 
+  const isStatedArrival = rawDiagram?.simulationConfig?.busynessSource === 'stated' || rawDiagram?.busynessSource === 'stated';
+  const busynessUnchanged = busynessVal === (rawDiagram?.simulationConfig?.busyness || rawDiagram?.busyness);
+  const keepStatedArrival = isStatedArrival && (busynessUnchanged || Boolean(busynessEntry.estimated));
+
   const simulationConfig = {
-    arrival_rate: busynessData.arrival_rate,
-    arrival_gap_minutes: busynessData.arrival_gap_minutes,
-    customers_per_hour: busynessData.customers_per_hour,
+    arrival_rate: keepStatedArrival && rawDiagram?.simulationConfig?.arrival_rate != null
+      ? rawDiagram.simulationConfig.arrival_rate
+      : busynessData.arrival_rate,
+    arrival_gap_minutes: keepStatedArrival && rawDiagram?.simulationConfig?.arrival_gap_minutes != null
+      ? rawDiagram.simulationConfig.arrival_gap_minutes
+      : busynessData.arrival_gap_minutes,
+    customers_per_hour: keepStatedArrival && rawDiagram?.simulationConfig?.customers_per_hour != null
+      ? rawDiagram.simulationConfig.customers_per_hour
+      : busynessData.customers_per_hour,
+    busynessSource: isStatedArrival ? 'stated' : (busynessEntry.estimated ? 'assumed' : 'stated'),
     busyness: busynessVal,
     goal: goalVal,
     mode: 'deep',
     total_instances: 500,
+    capital: rawDiagram?.simulationConfig?.capital ?? null,
+    currency: rawDiagram?.simulationConfig?.currency ?? 'USD',
   };
 
   // 3. Process Steps (Durations and Staff)
@@ -158,9 +171,27 @@ export function applyIntakeToRawDiagram(rawDiagram, answers = {}) {
       stepAnswer?.source === 'custom' ||
       (stepAnswer?.duration_min != null && stepAnswer?.duration_max != null && !SPEED_MAPPINGS[speedVal]);
 
-    if (isCustom) {
-      const min = Number(stepAnswer?.duration_min ?? 3);
-      const max = Number(stepAnswer?.duration_max ?? Math.max(min, 8));
+    // If node already has stated duration from Stage 1/Stage 4, preserve it unless explicitly overridden
+    if (
+      (node.data?.duration_source === 'stated' || node.duration_source === 'stated') &&
+      node.data?.duration != null &&
+      (!stepAnswer || (speedEntry.estimated && stepAnswer?.source !== 'custom'))
+    ) {
+      const statedDur = Number(node.data.duration);
+      node.data.duration_min = statedDur;
+      node.data.duration_max = statedDur;
+      node.data.duration = statedDur;
+      node.data.duration_unit = node.data?.duration_unit || 'minutes';
+      node.data.duration_source = 'stated';
+      node.duration = statedDur;
+      node.duration_source = 'stated';
+      node.duration_unit = node.data.duration_unit;
+    } else if (isCustom) {
+      let min = Number(stepAnswer?.duration_min ?? 3);
+      let max = Number(stepAnswer?.duration_max ?? Math.max(min, 8));
+      if (min > max) {
+        [min, max] = [max, min];
+      }
       const isFixed = min === max;
       const duration = isFixed ? min : Math.round((min + max) / 2);
       const unit = stepAnswer?.duration_unit || 'minutes';
@@ -207,8 +238,9 @@ export function applyIntakeToRawDiagram(rawDiagram, answers = {}) {
       }
 
       const speedMap = SPEED_MAPPINGS[bucketKey];
-      const min = stepAnswer?.duration_min != null ? Number(stepAnswer.duration_min) : speedMap.duration_min;
-      const max = stepAnswer?.duration_max != null ? Number(stepAnswer.duration_max) : speedMap.duration_max;
+      // For preset buckets, always use the canonical preset bounds
+      const min = speedMap.duration_min;
+      const max = speedMap.duration_max;
       const unit = stepAnswer?.duration_unit || speedMap.duration_unit;
       const duration = speedMap.duration;
       const source = isEstimated ? 'estimated' : 'bucket';
@@ -462,6 +494,19 @@ export function applyIntakeToRawDiagram(rawDiagram, answers = {}) {
       }
     }
   }
+
+  if (rawDiagram?.scenarioSettings) {
+    patched.scenarioSettings = {
+      ...rawDiagram.scenarioSettings,
+    };
+  }
+  if (answers?.confirmedIndependentStarts) {
+    const list = unwrapValue(answers.confirmedIndependentStarts, []).value;
+    if (Array.isArray(list)) {
+      patched.confirmedIndependentTriggers = list;
+    }
+  }
+  patched.simulationConfig = simulationConfig;
 
   return {
     patched,

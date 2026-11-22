@@ -7,6 +7,7 @@ import ConfirmationCard from './ConfirmationCard';
 import IntakeFlow from './IntakeFlow';
 import { validateBpmn } from '../lib/intake/validateBpmn';
 import { compileBpmn } from '../lib/intake/compileBpmn';
+import { normalizeAndRepairBpmn } from '../lib/intake/deterministicNormalizer';
 import { useExpandablePanel } from '../hooks/useExpandablePanel';
 import { useAnalystView } from '../lib/labels';
 import {
@@ -39,7 +40,7 @@ export function describeDiagram(elements, connections) {
   return `Current diagram:\nNodes:\n${nodes}\nConnections:\n${edges}`;
 }
 
-function MessageBubble({ msg, onApply, onConfirmApply, onCopy, copied }) {
+function MessageBubble({ msg, onApply, onConfirmApply, onCopy, copied, onRetry, onDismiss }) {
   const [open, setOpen] = useState(true);
   const isUser = msg.role === 'user';
 
@@ -133,12 +134,12 @@ function MessageBubble({ msg, onApply, onConfirmApply, onCopy, copied }) {
                     background: '#fef2f2', border: '1px solid #fecaca',
                     borderRadius: 8, fontSize: 11.5, color: '#b91c1c',
                   }}>
-                    <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 5, marginBottom: 4 }}>
-                      <AlertCircle size={13} /> Cannot apply to canvas:
+                    <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 5, marginBottom: 4 }}>
+                      <AlertCircle size={13} /> I couldn't build a valid model yet
                     </div>
                     <ul style={{ margin: 0, paddingLeft: 16 }}>
                       {msg.validationErrors.map((err, i) => (
-                        <li key={i}>{err}</li>
+                        <li key={i}>{String(err)}</li>
                       ))}
                     </ul>
                   </div>
@@ -161,7 +162,30 @@ function MessageBubble({ msg, onApply, onConfirmApply, onCopy, copied }) {
                   </div>
                 )}
 
-                {msg.confirmations ? (
+                {msg.validationErrors && msg.validationErrors.length > 0 ? (
+                  <div style={{
+                    display: 'flex', gap: 6, padding: '8px 10px',
+                    borderTop: '1px solid #fecaca', background: '#fff5f5',
+                  }}>
+                    <button
+                      onClick={() => onRetry && onRetry(msg)}
+                      style={{
+                        flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        gap: 6, padding: '7px 0', borderRadius: 8, border: 'none', cursor: 'pointer',
+                        background: '#2563eb', color: '#fff', fontSize: 12, fontWeight: 600,
+                      }}>
+                      Try again
+                    </button>
+                    <button
+                      onClick={() => onDismiss && onDismiss(msg)}
+                      style={{
+                        padding: '7px 12px', borderRadius: 8, border: '1px solid #cbd5e1',
+                        background: '#fff', cursor: 'pointer', color: '#334155', fontSize: 12, fontWeight: 600,
+                      }}>
+                      Fix manually
+                    </button>
+                  </div>
+                ) : msg.confirmations ? (
                   <div style={{ padding: '8px 10px 10px', borderTop: '1px solid #ddd6fe', background: '#f5f3ff' }}>
                     <ConfirmationCard
                       diagram={msg.rawDiagram}
@@ -222,7 +246,7 @@ export { DiagramPreview };
 import { GUIDED_STORAGE_KEY, getInitialGuidedState } from '../lib/intake/guidedState';
 export { GUIDED_STORAGE_KEY, getInitialGuidedState };
 
-export default function AiPanel({ open, onClose, elements = [], connections = [], onApplyDiagram, onSaveToBackend }) {
+export default function AiPanel({ open, onClose, elements = [], connections = [], onApplyDiagram, onSaveToBackend, onNewModel }) {
   const [isAnalystView] = useAnalystView();
   const [mode,        setMode]       = useState('guided'); // 'guided' | 'chat'
   const [messages,   setMessages]   = useState([]);
@@ -289,22 +313,26 @@ export default function AiPanel({ open, onClose, elements = [], connections = []
   );
 
   const executeReset = useCallback(() => {
-    // Reset flowText, rawDiagram, kept steps, answers, step index, validation state
+    // Reset flowText, rawDiagram, kept steps, answers, assumptions, step index, validation state
     setGuidedState({
       flowText: '',
       rawDiagram: null,
       version: 1,
       keptSteps: [],
       answers: null,
+      assumptions: [],
+      simulationReadyData: null,
       currentStep: 1,
       validationResult: { errors: [], repairs: [] },
       intakeLanguage: 'en',
     });
 
-    // Clear the sessionStorage copy
+    // Clear the sessionStorage copies
     if (typeof window !== 'undefined') {
       try {
         sessionStorage.removeItem(GUIDED_STORAGE_KEY);
+        sessionStorage.removeItem('spot:guided:flowText');
+        sessionStorage.removeItem('spot:guided:draft');
       } catch (e) {
         console.warn('Could not clear guided state from sessionStorage:', e);
       }
@@ -480,9 +508,20 @@ export default function AiPanel({ open, onClose, elements = [], connections = []
           diag = compileBpmn(diag);
           result.diagram = diag;
         }
-        const previewLayout = layoutAiDiagram(diag);
+
+        // Validate draft and run auto-repair up to 3 passes
+        setMessages(prev => prev.map(m => m.id === loadingMsg.id ? { ...m, loadingText: 'Checking BPMN rules…' } : m));
+        let val = validateBpmn(diag);
+        let loopCount = 0;
+        while ((!val.valid || (val.errors && val.errors.length > 0)) && loopCount < 3) {
+          loopCount++;
+          setMessages(prev => prev.map(m => m.id === loadingMsg.id ? { ...m, loadingText: 'Fixing issues…' } : m));
+          diag = normalizeAndRepairBpmn(diag, { userDescription: description });
+          val = validateBpmn(diag);
+        }
+
+        const previewLayout = layoutAiDiagram(val.repaired || diag);
         setLastDiagram({ elements: previewLayout.elements, connections: previewLayout.connections });
-        const val = validateBpmn(diag);
         updateGuidedState(prev => ({
           rawDiagram: val.repaired || diag,
           version: (prev.version || 1) + 1,
@@ -493,10 +532,11 @@ export default function AiPanel({ open, onClose, elements = [], connections = []
             ? {
                 ...m,
                 loading: false,
-                text: diag.summary || null,
+                text: (!val.valid && val.errors?.length > 0) ? "I couldn't build a valid model yet" : (diag.summary || null),
                 diagram: { nodes: previewLayout.elements, connections: previewLayout.connections, resources: previewLayout.resources },
-                rawDiagram: diag,
+                rawDiagram: val.repaired || diag,
                 confirmations: result.confirmations,
+                validationErrors: val.errors?.length > 0 ? val.errors : null,
               }
             : m
         ));
@@ -507,9 +547,20 @@ export default function AiPanel({ open, onClose, elements = [], connections = []
       if (diagResult && (diagResult.type === 'spec' || (!diagResult.nodes && diagResult.pools))) {
         diagResult = compileBpmn(diagResult);
       }
-      const layout = layoutAiDiagram(diagResult);
+
+      // Validate draft and run auto-repair up to 3 passes
+      setMessages(prev => prev.map(m => m.id === loadingMsg.id ? { ...m, loadingText: 'Checking BPMN rules…' } : m));
+      let val = validateBpmn(diagResult);
+      let loopCount = 0;
+      while ((!val.valid || (val.errors && val.errors.length > 0)) && loopCount < 3) {
+        loopCount++;
+        setMessages(prev => prev.map(m => m.id === loadingMsg.id ? { ...m, loadingText: 'Fixing issues…' } : m));
+        diagResult = normalizeAndRepairBpmn(diagResult, { userDescription: description });
+        val = validateBpmn(diagResult);
+      }
+
+      const layout = layoutAiDiagram(val.repaired || diagResult);
       setLastDiagram({ elements: layout.elements, connections: layout.connections });
-      const val = validateBpmn(diagResult);
       updateGuidedState(prev => ({
         rawDiagram: val.repaired || diagResult,
         version: (prev.version || 1) + 1,
@@ -520,9 +571,10 @@ export default function AiPanel({ open, onClose, elements = [], connections = []
           ? {
               ...m,
               loading: false,
-              text: diagResult.summary || null,
+              text: (!val.valid && val.errors?.length > 0) ? "I couldn't build a valid model yet" : (diagResult.summary || null),
               diagram: { nodes: layout.elements, connections: layout.connections, resources: layout.resources },
-              rawDiagram: diagResult,
+              rawDiagram: val.repaired || diagResult,
+              validationErrors: val.errors?.length > 0 ? val.errors : null,
             }
           : m
       ));
@@ -747,8 +799,15 @@ export default function AiPanel({ open, onClose, elements = [], connections = []
           {/* Persistent "New" / "New chat" button */}
           <button
             type="button"
-            onClick={handleRequestReset}
-            title={mode === 'chat' ? 'New chat' : 'Start new guided draft'}
+            data-testid="ai-panel-new-btn"
+            onClick={() => {
+              if (onNewModel) {
+                onNewModel();
+              } else {
+                handleRequestReset();
+              }
+            }}
+            title={mode === 'chat' ? 'New chat' : 'Start new process'}
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -873,6 +932,13 @@ export default function AiPanel({ open, onClose, elements = [], connections = []
             onConfirmApply={handleConfirmApply}
             onCopy={handleCopy}
             copied={copiedId !== null}
+            onRetry={() => {
+              const lastUser = [...messages].reverse().find(m => m.role === 'user');
+              if (lastUser?.content) sendMessage(lastUser.content);
+            }}
+            onDismiss={() => {
+              setMessages(prev => prev.filter(m => m.id !== msg.id));
+            }}
           />
         ))}
 

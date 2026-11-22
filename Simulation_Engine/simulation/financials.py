@@ -33,6 +33,11 @@ def get_hourly_rate(resource: dict) -> float:
         monthly_equip = (price / lifespan) + running_cost
         return monthly_equip / working_hours_month
 
+    elif res_type in ("software", "subscription"):
+        # Recurring licence / subscription fee, e.g. a Rs 12,000/month kiosk or intake software.
+        monthly = safe_float(resource.get("monthly_cost"), 0.0) or safe_float(resource.get("monthly_running_cost"), 0.0)
+        return monthly / working_hours_month
+
     elif res_type == "facility":
         rent = safe_float(resource.get("monthly_rent"), 0.0)
         if rent > 0:
@@ -119,12 +124,19 @@ def generate_financial_report(resources, resource_busy_times: dict, total_sim_mi
             quantity = 1.0
 
         paid = round(quantity * rate * total_sim_hours, 2)
-        active = round(busy_hours * rate, 2)
-        idle = round(max(0.0, paid - active), 2)
+        if res.get("type") in ("software", "subscription"):
+            # A licence has no "idle" time: the whole fee is a running cost.
+            active = paid
+            idle = 0.0
+        else:
+            active = round(busy_hours * rate, 2)
+            idle = round(max(0.0, paid - active), 2)
         total = paid  # Correct model: total = paid; idle = paid - active
 
         total_avail_hours = quantity * total_sim_hours
         utilization_pct = round((busy_hours / total_avail_hours) * 100, 1) if total_avail_hours > 0 else 0.0
+        if res.get("type") in ("software", "subscription"):
+            utilization_pct = 100.0
 
         report["resources"][rid] = {
             "name": res.get("name") or rid,

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { generateAIProcess, saveProcess, updateProcess } from '../lib/apiService';
 import { layoutAiDiagram } from '../lib/aiDiagramLayout';
@@ -17,7 +17,7 @@ import {
   ensureDefaultBranchProbabilities,
   findHiddenStructuralIssues,
 } from '../lib/intake/friendlyErrors';
-import { normalizeAndRepairBpmn } from '../lib/intake/deterministicNormalizer';
+import { normalizeAndRepairBpmn, undoRepairChange } from '../lib/intake/deterministicNormalizer';
 import { stripTrailingPunctuation } from '../lib/intake/stepListHelper';
 import {
   Sparkles,
@@ -147,11 +147,14 @@ export default function IntakeFlow({
     const patched = ensureDefaultBranchProbabilities(rawDiagram);
     if (patched !== rawDiagram) {
       const val = validateBpmn(patched);
-      updateGuided((prev) => ({
-        ...prev,
-        rawDiagram: patched,
-        validationResult: val,
-      }));
+      updateGuided((prev) => {
+        if (prev?.rawDiagram === patched) return prev;
+        return {
+          ...prev,
+          rawDiagram: patched,
+          validationResult: val,
+        };
+      });
     }
   }, [rawDiagram, updateGuided]);
 
@@ -217,15 +220,17 @@ export default function IntakeFlow({
 
   const probSumError = useMemo(() => {
     if (!activeDecisionGateway) return null;
+    const stepLabel = activeDecisionGateway.label || 'Decision';
+    const cleanStep = stripTrailingPunctuation(stepLabel);
     if (hasInvalidBranchProb) {
       return intakeLanguage === 'ur-roman'
-        ? 'Har branch ka percentage 0 se 100 ke darmiyan hona chahiye'
-        : 'Each branch percentage must be between 0 and 100';
+        ? `'${cleanStep}' par har branch ka percentage 0 se 100 ke darmiyan hona chahiye`
+        : `Each branch percentage at '${cleanStep}' must be between 0 and 100`;
     }
     if (probSum !== 100) {
       return intakeLanguage === 'ur-roman'
-        ? `Total ${probSum}%, 100 hona zaroori hai`
-        : `Total ${probSum}%, must be 100`;
+        ? `'${cleanStep}' par split ka total ${probSum}%, 100 hona zaroori hai`
+        : `The split at '${cleanStep}' totals ${probSum}% instead of 100%`;
     }
     return null;
   }, [activeDecisionGateway, hasInvalidBranchProb, probSum, intakeLanguage]);
@@ -236,48 +241,125 @@ export default function IntakeFlow({
   }, [rawDiagram]);
 
   const isConfirmBlocked = useMemo(() => {
-    return (
-      (validationErrors && validationErrors.length > 0) ||
-      Boolean(probSumError) ||
-      hiddenStructuralIssues.length > 0
-    );
-  }, [validationErrors, probSumError, hiddenStructuralIssues]);
+    // Structural problems are self-healed by the auto-repair engine.
+    // Confirm is only blocked if the user explicitly created an invalid probability sum.
+    return Boolean(probSumError);
+  }, [probSumError]);
 
   const confirmBlockedReason = useMemo(() => {
-    // Priority order: structural first, then probabilities
-    if (hiddenStructuralIssues.length > 0) {
-      return intakeLanguage === 'ur-roman'
-        ? hiddenStructuralIssues[0].messageRu
-        : hiddenStructuralIssues[0].messageEn;
-    }
-    if (validationErrors && validationErrors.length > 0) {
-      return friendlyError(unresolvedGateway || validationErrors[0], intakeLanguage, rawDiagram);
-    }
     if (probSumError) {
       return probSumError;
     }
     return null;
-  }, [hiddenStructuralIssues, validationErrors, probSumError, intakeLanguage, unresolvedGateway, rawDiagram]);
+  }, [probSumError]);
 
   const confirmButtonLabel = useMemo(() => {
     if (!isConfirmBlocked) {
       return t('confirm', intakeLanguage);
     }
-    // Priority order: structural first, then probabilities
-    if (hiddenStructuralIssues.length > 0) {
-      return intakeLanguage === 'ur-roman'
-        ? 'Confirm (Quality check dobara jorain)'
-        : 'Confirm (Fix quality check loop)';
-    }
-    if (validationErrors && validationErrors.length > 0) {
-      const err = friendlyError(validationErrors[0], intakeLanguage, rawDiagram);
-      return `Confirm (${err.replace(/\.$/, '')})`;
-    }
     if (probSumError) {
       return `Confirm (${probSumError})`;
     }
-    return t('confirmBlockedErrors', intakeLanguage);
-  }, [isConfirmBlocked, hiddenStructuralIssues, validationErrors, probSumError, intakeLanguage, rawDiagram]);
+    return t('confirm', intakeLanguage);
+  }, [isConfirmBlocked, probSumError, intakeLanguage]);
+
+  const [isWhatChangedOpen, setIsWhatChangedOpen] = useState(true);
+
+  const handleUndoChange = useCallback(
+    (changeId) => {
+      if (!rawDiagram) return;
+      const deep = JSON.parse(JSON.stringify(rawDiagram));
+      const restored = undoRepairChange(deep, changeId);
+      const validation = validateBpmn(restored, { allowUnresolved: true });
+      updateGuided((prev) => ({
+        ...prev,
+        rawDiagram: restored,
+        version: (prev.version || 1) + 1,
+        validationResult: validation,
+      }));
+    },
+    [rawDiagram, updateGuided]
+  );
+
+  const unresolvedStep = useMemo(() => {
+    if (!rawDiagram?.nodes || !Array.isArray(rawDiagram.nodes)) return null;
+    const flowNodes = rawDiagram.nodes.filter(
+      (n) => n.type !== 'pool' && n.type !== 'lane' && !n.type?.includes('end') && !n.type?.includes('start')
+    );
+    const seqEdges = (rawDiagram.edges || []).filter((e) => e.flowType !== 'message');
+    const deadEnd = flowNodes.find((n) => !seqEdges.some((e) => e.source === n.id));
+    if (deadEnd) return deadEnd;
+    return null;
+  }, [rawDiagram]);
+
+  const candidateNextSteps = useMemo(() => {
+    if (!rawDiagram?.nodes || !unresolvedStep) return [];
+    const tasks = rawDiagram.nodes.filter(
+      (n) => (n.type === 'task' || n.type?.endsWith('-task')) && n.id !== unresolvedStep.id
+    );
+    return tasks.map((n) => ({
+      id: n.id,
+      label: n.data?.label || n.label || n.id,
+    }));
+  }, [rawDiagram, unresolvedStep]);
+
+  const handleConnectUnresolvedStep = useCallback(
+    (targetId) => {
+      if (!rawDiagram || !unresolvedStep) return;
+      const deep = JSON.parse(JSON.stringify(rawDiagram));
+      if (targetId === '__end__') {
+        let endNode = deep.nodes.find((n) => n.type?.includes('end'));
+        if (!endNode) {
+          endNode = {
+            id: `end_${Date.now()}`,
+            type: 'end-event',
+            label: 'End',
+            data: { label: 'End' },
+          };
+          deep.nodes.push(endNode);
+        }
+        deep.edges.push({
+          id: `seq_${unresolvedStep.id}_${endNode.id}`,
+          source: unresolvedStep.id,
+          target: endNode.id,
+          flowType: 'sequence',
+          data: {},
+        });
+      } else {
+        deep.edges.push({
+          id: `seq_${unresolvedStep.id}_${targetId}`,
+          source: unresolvedStep.id,
+          target: targetId,
+          flowType: 'sequence',
+          data: {},
+        });
+      }
+      const normalized = normalizeAndRepairBpmn(deep, { userDescription: description, lang: intakeLanguage });
+      const validation = validateBpmn(normalized, { allowUnresolved: true });
+      updateGuided((prev) => ({
+        ...prev,
+        rawDiagram: normalized,
+        version: (prev.version || 1) + 1,
+        validationResult: validation,
+      }));
+    },
+    [rawDiagram, unresolvedStep, description, intakeLanguage, updateGuided]
+  );
+
+  const formatDecisionQuestion = (label) => {
+    const clean = stripTrailingPunctuation(String(label || 'Decision')).trim();
+    if (/^how often/i.test(clean)) return `${clean}?`;
+    if (/^(is|are|does|do|can|should|will|has|have)\b/i.test(clean)) {
+      return `How often ${clean.charAt(0).toLowerCase() + clean.slice(1)}?`;
+    }
+    return `How often is ${clean.toLowerCase()}?`;
+  };
+
+  const formatBranchOptionLabel = (rawLabel, idx) => {
+    let lbl = String(rawLabel || `Option ${idx + 1}`).trim();
+    lbl = lbl.replace(/\s*[-–—:]\s*(proceed|route|go|prepare|send|continue|take|handle).+$/i, '').trim();
+    return stripTrailingPunctuation(lbl) || (idx === 0 ? 'Yes' : 'No');
+  };
 
   const [loading, setLoading] = useState(false);
   const [loadingText, setLoadingText] = useState('Analyzing your process…');
@@ -298,6 +380,9 @@ export default function IntakeFlow({
   const [confirmedData, setConfirmedData] = useState(null);
   const [simulationReadyData, setSimulationReadyData] = useState(null);
   const [inlineCorrection, setInlineCorrection] = useState('');
+  const [isConfirming, setIsConfirming] = useState(false);
+  const isConfirmingRef = useRef(false);
+  const isGeneratingRef = useRef(false);
 
   // Reset local flow state when guided state is reset to clean step 1
   useEffect(() => {
@@ -309,13 +394,17 @@ export default function IntakeFlow({
       setConfirmedData(null);
       setSimulationReadyData(null);
       setInlineCorrection('');
+      setIsConfirming(false);
+      isConfirmingRef.current = false;
+      isGeneratingRef.current = false;
     }
   }, [step, description, rawDiagram]);
 
   const handleGenerate = useCallback(
     async (textToSubmit, history = []) => {
       const prompt = textToSubmit || description;
-      if (!prompt.trim() || loading) return;
+      if (!prompt.trim() || loading || isGeneratingRef.current) return;
+      isGeneratingRef.current = true;
 
       // Detection is only a suggestion: if differs with confidence >= 0.8, suggest banner
       const detected = detectLanguageWithConfidence(prompt);
@@ -370,6 +459,7 @@ export default function IntakeFlow({
         setError(err.message || 'Unable to generate process. Please check your network or try again.');
       } finally {
         setLoading(false);
+        isGeneratingRef.current = false;
       }
     },
     [description, loading, preferredLanguage, updateGuided]
@@ -497,6 +587,63 @@ export default function IntakeFlow({
     [branchProbs, autoBalance, rawDiagram, editedBranches, updateGuided]
   );
 
+  const handleAutoBalance = useCallback(() => {
+    if (!activeDecisionGateway || !Array.isArray(activeDecisionGateway.branches) || activeDecisionGateway.branches.length === 0) return;
+    const branches = activeDecisionGateway.branches;
+    const currentVals = branches.map((_, idx) => {
+      const v = branchProbs[idx];
+      return typeof v === 'number' && !isNaN(v) ? Math.max(0, v) : 0;
+    });
+    const sum = currentVals.reduce((acc, v) => acc + v, 0);
+    const newProbs = {};
+    if (sum <= 0) {
+      const equalShare = Math.floor(100 / branches.length);
+      let running = 0;
+      branches.forEach((_, idx) => {
+        if (idx === branches.length - 1) {
+          newProbs[idx] = 100 - running;
+        } else {
+          newProbs[idx] = equalShare;
+          running += equalShare;
+        }
+      });
+    } else {
+      let running = 0;
+      branches.forEach((_, idx) => {
+        if (idx === branches.length - 1) {
+          newProbs[idx] = Math.max(0, 100 - running);
+        } else {
+          const normalized = Math.round((currentVals[idx] / sum) * 100);
+          newProbs[idx] = normalized;
+          running += normalized;
+        }
+      });
+    }
+    setBranchProbs(newProbs);
+    if (rawDiagram && Array.isArray(rawDiagram.edges)) {
+      const updatedEdges = rawDiagram.edges.map((e) => {
+        const brIdx = branches.findIndex((b) => b.edgeId === e.id);
+        if (brIdx !== -1 && newProbs[brIdx] != null) {
+          const frac = Number((newProbs[brIdx] / 100).toFixed(2));
+          return {
+            ...e,
+            probability: frac,
+            data: { ...(e.data || {}), probability: frac },
+          };
+        }
+        return e;
+      });
+      const patchedDiagram = { ...rawDiagram, edges: updatedEdges };
+      const newValidation = validateBpmn(patchedDiagram, { allowUnresolved: true });
+      updateGuided((prev) => ({
+        ...prev,
+        rawDiagram: patchedDiagram,
+        version: (prev.version || 1) + 1,
+        validationResult: newValidation,
+      }));
+    }
+  }, [activeDecisionGateway, branchProbs, rawDiagram, updateGuided]);
+
   const handleFixForMe = useCallback(() => {
     if (!rawDiagram || loading) return;
 
@@ -621,38 +768,111 @@ export default function IntakeFlow({
     }));
   }, [rawDiagram, updateGuided]);
 
-  const handleConfirm = useCallback(() => {
-    if (!rawDiagram || isConfirmBlocked) return;
+  const handleConfirm = useCallback(async () => {
+    if (!rawDiagram || isConfirmBlocked || isConfirming || isConfirmingRef.current || loading) return;
 
-    // Validate BPMN before applying
-    const validation = validateBpmn(rawDiagram);
-    if (validation.errors && validation.errors.length > 0) {
-      updateGuided({ validationResult: validation });
-      return;
+    isConfirmingRef.current = true;
+    setIsConfirming(true);
+    setError(null);
+
+    try {
+      // Check if any user-described task still needs duration before applying to canvas
+      const rawTasks = (rawDiagram.nodes || []).filter(
+        (n) => n.type === 'task' && n.origin !== 'structural' && n.origin !== 'inferred' && !n.data?.isStructural
+      );
+      const missingDurations = rawTasks.filter((n) => {
+        const d = n.data?.duration ?? n.duration;
+        const dMin = n.data?.duration_min ?? n.duration_min;
+        return (d == null || isNaN(Number(d))) && (dMin == null || isNaN(Number(dMin)));
+      });
+      if (missingDurations.length > 0) {
+        updateGuided({ currentStep: 2 });
+        setError(
+          intakeLanguage === 'ur-roman'
+            ? `${missingDurations.length} steps ke liye waqt darj karein canvas par kholne se pehle.`
+            : `${missingDurations.length} task${missingDurations.length > 1 ? 's' : ''} still need a duration before applying to the canvas.`
+        );
+        return;
+      }
+
+      // 1. Take already-repaired model from state
+      let modelToApply = rawDiagram;
+
+      // 2. Run normalization and validation on the model immediately before loading
+      modelToApply = normalizeAndRepairBpmn(modelToApply, {
+        userDescription: description,
+        lang: intakeLanguage,
+      });
+      modelToApply = ensureDefaultBranchProbabilities(modelToApply);
+      let validation = validateBpmn(modelToApply, { allowUnresolved: true });
+      if (validation.repaired) {
+        modelToApply = validation.repaired;
+      }
+
+      if (validation.errors && validation.errors.length > 0) {
+        modelToApply = normalizeAndRepairBpmn(modelToApply, {
+          userDescription: description,
+          lang: intakeLanguage,
+        });
+        modelToApply = ensureDefaultBranchProbabilities(modelToApply);
+        validation = validateBpmn(modelToApply, { allowUnresolved: true });
+        if (validation.repaired) {
+          modelToApply = validation.repaired;
+        }
+      }
+
+      const finalRaw = validation.repaired || modelToApply;
+      const finalLayout = layoutAiDiagram(finalRaw);
+
+      // 3. After confirm, assert the canvas has nodes and connections; if empty, show error instead of a blank canvas
+      const canvasNodes = finalLayout?.elements || [];
+      const canvasConnections = finalLayout?.connections || [];
+      if (!canvasNodes || canvasNodes.length === 0 || !canvasConnections || canvasConnections.length === 0) {
+        const friendlyMsg = validation.errors?.[0] ? friendlyError(validation.errors[0], intakeLanguage, modelToApply) : null;
+        setError(friendlyMsg || t('confirmError', intakeLanguage) || "We couldn't open your process, tap to try again");
+        return;
+      }
+
+      const confirmedPayload = {
+        rawDiagram: finalRaw,
+        layout: finalLayout,
+        description,
+        repairs: validation.repairs || [],
+        confirmedAt: new Date().toISOString(),
+      };
+      setConfirmedData(confirmedPayload);
+
+      // 4. Load onto canvas
+      if (onApplyDiagram && finalLayout) {
+        onApplyDiagram(finalLayout.elements, finalLayout.connections, finalLayout.resources);
+      }
+      if (onConfirmApply) {
+        onConfirmApply(finalRaw, validation.repairs || []);
+      }
+
+      updateGuided({
+        rawDiagram: finalRaw,
+        validationResult: validation,
+        currentStep: 2,
+      });
+    } catch (err) {
+      console.error('Confirm error:', err);
+      setError(t('confirmError', intakeLanguage) || "We couldn't open your process, tap to try again");
+    } finally {
+      setIsConfirming(false);
+      isConfirmingRef.current = false;
     }
-
-    const finalRaw = validation.repaired || rawDiagram;
-    const finalLayout = layoutAiDiagram(finalRaw);
-
-    const confirmedPayload = {
-      rawDiagram: finalRaw,
-      layout: finalLayout,
-      description,
-      repairs: validation.repairs || [],
-      confirmedAt: new Date().toISOString(),
-    };
-    setConfirmedData(confirmedPayload);
-
-    if (onApplyDiagram && finalLayout) {
-      onApplyDiagram(finalLayout.elements, finalLayout.connections, finalLayout.resources);
-    }
-
-    updateGuided({
-      rawDiagram: finalRaw,
-      validationResult: validation,
-      currentStep: 2,
-    });
-  }, [rawDiagram, isConfirmBlocked, description, onApplyDiagram, updateGuided]);
+  }, [
+    rawDiagram,
+    isConfirmBlocked,
+    isConfirming,
+    loading,
+    description,
+    intakeLanguage,
+    onApplyDiagram,
+    onConfirmApply,
+    updateGuided,
+  ]);
 
   const handleApplyAutoRepair = useCallback(() => {
     if (!rawDiagram) return;
@@ -1555,182 +1775,199 @@ export default function IntakeFlow({
                     </div>
                   )}
 
-                  {/* Assumptions & Auto-Repairs List */}
-                  {assumptions.length > 0 && (
+                  {/* "What Changed" Auto-Repair Changelog (Collapsible with per-change Undo) */}
+                  {rawDiagram?.repairChanges && rawDiagram.repairChanges.length > 0 && (
                     <div
                       style={{
-                        padding: '8px 12px',
+                        padding: '10px 14px',
                         background: '#eff6ff',
                         borderTop: '1px solid #bfdbfe',
-                        fontSize: 11.5,
+                        fontSize: 12,
                         color: '#1e40af',
                       }}
                     >
-                      <div style={{ fontWeight: 700, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 5 }}>
-                        <CheckCircle size={13} /> {t('assumptionsHeader', intakeLanguage)}
-                      </div>
-                      <ul style={{ margin: 0, paddingLeft: 16 }}>
-                        {assumptions.map((r, i) => (
-                          <li key={i} style={{ marginBottom: 2 }}>{r.description || r}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  {/* Validation Errors Block: friendly error, inline probability input, Fix for me button */}
-                  {isConfirmBlocked && (
-                    <div
-                      style={{
-                        padding: '12px 14px',
-                        background: '#fef2f2',
-                        borderTop: '1px solid #fecaca',
-                        fontSize: 12,
-                        color: '#b91c1c',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 10,
-                      }}
-                    >
-                      <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6, color: '#991b1b', fontSize: 12.5 }}>
-                        <AlertCircle size={15} /> {t('processNeedsAdjustment', intakeLanguage)}
+                      <div
+                        onClick={() => setIsWhatChangedOpen((prev) => !prev)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          cursor: 'pointer',
+                          userSelect: 'none',
+                          fontWeight: 700,
+                          color: '#1d4ed8',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <CheckCircle size={14} color="#2563eb" />
+                          <span>{t('whatChangedHeader', intakeLanguage)}</span>
+                        </div>
+                        <span style={{ fontSize: 11, color: '#3b82f6' }}>
+                          {isWhatChangedOpen ? '▲' : '▼'} ({rawDiagram.repairChanges.length})
+                        </span>
                       </div>
 
-                      {/* Single friendly error message: structural first, then probabilities */}
-                      <div style={{ fontSize: 12, lineHeight: 1.45, color: '#7f1d1d', fontWeight: 500 }}>
-                        {hiddenStructuralIssues.length > 0
-                          ? (intakeLanguage === 'ur-roman' ? hiddenStructuralIssues[0].messageRu : hiddenStructuralIssues[0].messageEn)
-                          : validationErrors.length > 0
-                          ? friendlyError(validationErrors[0], intakeLanguage, rawDiagram)
-                          : probSumError
-                          ? friendlyError({ type: 'probability-sum', sum: probSum }, intakeLanguage, rawDiagram)
-                          : friendlyError(unresolvedGateway || validationErrors[0], intakeLanguage, rawDiagram)}
-                      </div>
-
-                      {/* Structural error primary button: Fix for me */}
-                      {(hiddenStructuralIssues.length > 0 || (validationErrors.length > 0 && !probSumError && !unresolvedGateway)) && (
-                        <button
-                          type="button"
-                          onClick={handleFixForMe}
-                          disabled={loading}
-                          style={{
-                            alignSelf: 'flex-start',
-                            marginTop: 2,
-                            padding: '6px 12px',
-                            borderRadius: 6,
-                            border: 'none',
-                            background: 'linear-gradient(135deg, #4f46e5, #7c3aed)',
-                            color: '#fff',
-                            fontSize: 12,
-                            fontWeight: 600,
-                            cursor: loading ? 'not-allowed' : 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 5,
-                            boxShadow: '0 1px 3px rgba(79, 70, 229, 0.25)',
-                          }}
-                        >
-                          {loading ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Wand2 size={13} />}
-                          {t('fixForMe', intakeLanguage)}
-                        </button>
-                      )}
-
-                      {/* Inline percentage inputs inside error card when probability error exists */}
-                      {activeDecisionGateway && Array.isArray(activeDecisionGateway.branches) && activeDecisionGateway.branches.length > 0 && (
-                        <div
-                          style={{
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: 8,
-                            marginTop: 2,
-                            background: '#fff',
-                            padding: '10px 12px',
-                            borderRadius: 8,
-                            border: '1px solid #fecaca',
-                          }}
-                        >
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'center' }}>
-                            {activeDecisionGateway.branches.map((branch, bIdx) => {
-                              const currentVal = currentBranchProbs[bIdx] !== undefined ? currentBranchProbs[bIdx] : '';
-                              const branchLabel = stripTrailingPunctuation(branch.label || `Branch ${bIdx + 1}`);
-                              const isEstimated = !editedBranches.has(bIdx) && (branch.isEstimated !== false);
-
-                              return (
-                                <div key={branch.edgeId || bIdx} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                  <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>
-                                    {branchLabel}:
-                                  </span>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                                    <input
-                                      type="number"
-                                      min="0"
-                                      max="100"
-                                      value={currentVal}
-                                      onChange={(e) =>
-                                        handleBranchProbChange(bIdx, e.target.value, activeDecisionGateway.branches)
-                                      }
-                                      style={{
-                                        width: 54,
-                                        padding: '4px 6px',
-                                        fontSize: 12,
-                                        fontWeight: 600,
-                                        borderRadius: 6,
-                                        border: '1px solid #d1d5db',
-                                        textAlign: 'center',
-                                        outline: 'none',
-                                        color: '#111827',
-                                      }}
-                                    />
-                                    <span style={{ fontSize: 12, fontWeight: 600, color: '#4b5563' }}>%</span>
-                                    {isEstimated && (
-                                      <span
-                                        style={{
-                                          fontSize: 10,
-                                          fontWeight: 500,
-                                          color: '#6b7280',
-                                          background: '#f3f4f6',
-                                          padding: '1px 5px',
-                                          borderRadius: 4,
-                                        }}
-                                      >
-                                        {t('estimated', intakeLanguage)}
-                                      </span>
-                                    )}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
-                            {/* Total indicator */}
-                            <span
+                      {isWhatChangedOpen && (
+                        <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          {rawDiagram.repairChanges.map((change) => (
+                            <div
+                              key={change.id}
                               style={{
-                                fontSize: 11.5,
-                                fontWeight: 700,
-                                color: probSum === 100 ? '#059669' : '#dc2626',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                gap: 8,
+                                background: '#fff',
+                                padding: '6px 10px',
+                                borderRadius: 6,
+                                border: '1px solid #dbeafe',
                               }}
                             >
-                              {t('totalIndicator', intakeLanguage, probSum)}
-                            </span>
-
-                            {activeDecisionGateway.branches.length === 2 && (
-                              <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#6b7280', cursor: 'pointer' }}>
-                                <input
-                                  type="checkbox"
-                                  checked={autoBalance}
-                                  onChange={(e) => setAutoBalance(e.target.checked)}
-                                />
-                                {t('autoBalance', intakeLanguage)}
-                              </label>
-                            )}
-                          </div>
+                              <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, flex: 1, minWidth: 0 }}>
+                                <span style={{ color: '#1e3a8a', fontWeight: 500, fontSize: 11.5 }}>
+                                  • {change.description}
+                                </span>
+                                {change.assumed && (
+                                  <span
+                                    style={{
+                                      fontSize: 10,
+                                      fontWeight: 600,
+                                      background: '#e0e7ff',
+                                      color: '#4338ca',
+                                      padding: '1px 6px',
+                                      borderRadius: 4,
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                  >
+                                    {t('assumedBadge', intakeLanguage)}
+                                  </span>
+                                )}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleUndoChange(change.id)}
+                                style={{
+                                  fontSize: 11,
+                                  fontWeight: 600,
+                                  color: '#4b5563',
+                                  background: '#f3f4f6',
+                                  border: '1px solid #d1d5db',
+                                  padding: '2px 8px',
+                                  borderRadius: 4,
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                {t('undoChange', intakeLanguage)}
+                              </button>
+                            </div>
+                          ))}
                         </div>
                       )}
                     </div>
                   )}
 
-                  {/* Clean Decision Branches Card when valid & no error */}
-                  {!isConfirmBlocked && activeDecisionGateway && Array.isArray(activeDecisionGateway.branches) && activeDecisionGateway.branches.length > 0 && (
+                  {/* Fallback Failure Case: Connect Unresolved Step with Simple Tap Choices */}
+                  {unresolvedStep && (
+                    <div
+                      style={{
+                        padding: '12px 14px',
+                        background: '#fffbeb',
+                        borderTop: '1px solid #fde68a',
+                        fontSize: 12,
+                        color: '#92400e',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 8,
+                      }}
+                    >
+                      <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <HelpCircle size={15} color="#d97706" />
+                        <span>
+                          {t('unresolvedStepPrompt', intakeLanguage, unresolvedStep.data?.label || unresolvedStep.label || 'this step')}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+                        {candidateNextSteps.map((cand) => (
+                          <button
+                            key={cand.id}
+                            type="button"
+                            onClick={() => handleConnectUnresolvedStep(cand.id)}
+                            style={{
+                              padding: '5px 10px',
+                              borderRadius: 6,
+                              border: '1px solid #fcd34d',
+                              background: '#fff',
+                              color: '#78350f',
+                              fontSize: 11.5,
+                              fontWeight: 600,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            → {cand.label}
+                          </button>
+                        ))}
+                        <button
+                          type="button"
+                          onClick={() => handleConnectUnresolvedStep('__end__')}
+                          style={{
+                            padding: '5px 10px',
+                            borderRadius: 6,
+                            border: '1px solid #fcd34d',
+                            background: '#fef3c7',
+                            color: '#92400e',
+                            fontSize: 11.5,
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          ✓ {t('finishEndProcess', intakeLanguage)}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Probability error notice if user entered percentages that don't add to 100 */}
+                  {probSumError && (
+                    <div
+                      style={{
+                        padding: '10px 14px',
+                        background: '#fef2f2',
+                        borderTop: '1px solid #fecaca',
+                        fontSize: 12,
+                        color: '#b91c1c',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 8,
+                        fontWeight: 600,
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <AlertCircle size={15} />
+                        <span>{probSumError}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleAutoBalance}
+                        style={{
+                          padding: '3px 9px',
+                          borderRadius: 5,
+                          border: 'none',
+                          background: '#dc2626',
+                          color: '#fff',
+                          fontSize: 11,
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {t('autoBalanceTo100', intakeLanguage)}
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Clean Decision Branches Card when decision gateway exists */}
+                  {activeDecisionGateway && Array.isArray(activeDecisionGateway.branches) && activeDecisionGateway.branches.length > 0 && (
                     <div
                       style={{
                         padding: '10px 12px',
@@ -1744,13 +1981,13 @@ export default function IntakeFlow({
                     >
                       <div style={{ fontSize: 11.5, fontWeight: 700, color: '#475569', display: 'flex', alignItems: 'center', gap: 6 }}>
                         <Sliders size={13} color="#6366f1" />
-                        <span>{stripTrailingPunctuation(activeDecisionGateway.label)}?</span>
+                        <span>{formatDecisionQuestion(activeDecisionGateway.label)}</span>
                       </div>
 
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'center' }}>
                         {activeDecisionGateway.branches.map((branch, bIdx) => {
                           const currentVal = currentBranchProbs[bIdx] !== undefined ? currentBranchProbs[bIdx] : '';
-                          const branchLabel = stripTrailingPunctuation(branch.label || `Branch ${bIdx + 1}`);
+                          const branchLabel = formatBranchOptionLabel(branch.label, bIdx);
                           const isEstimated = !editedBranches.has(bIdx) && (branch.isEstimated !== false);
 
                           return (
@@ -1816,7 +2053,7 @@ export default function IntakeFlow({
                     </div>
                   )}
 
-                  {/* Decision Block: "Is this right?" */}
+                  {/* Decision Block: "Does this match how your business works?" */}
                   <div
                     style={{
                       padding: '12px 12px',
@@ -1828,14 +2065,34 @@ export default function IntakeFlow({
                     }}
                   >
                     <div style={{ fontSize: 12.5, fontWeight: 700, color: '#111827', textAlign: 'center' }}>
-                      {t('isThisRight', intakeLanguage)}
+                      {t('doesThisMatchBusiness', intakeLanguage)}
                     </div>
+
+                    {error && (
+                      <div
+                        style={{
+                          padding: '8px 12px',
+                          background: '#fef2f2',
+                          border: '1px solid #fecaca',
+                          borderRadius: 8,
+                          fontSize: 12,
+                          color: '#b91c1c',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          fontWeight: 500,
+                        }}
+                      >
+                        <AlertCircle size={15} style={{ flexShrink: 0 }} />
+                        <span style={{ flex: 1 }}>{error}</span>
+                      </div>
+                    )}
 
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                       {/* Confirm Button */}
                       <button
                         onClick={handleConfirm}
-                        disabled={isConfirmBlocked}
+                        disabled={isConfirmBlocked || isConfirming || loading}
                         style={{
                           width: '100%',
                           display: 'flex',
@@ -1844,20 +2101,29 @@ export default function IntakeFlow({
                           gap: 6,
                           padding: '9px 0',
                           borderRadius: 8,
-                          border: isConfirmBlocked ? '1px solid #d1d5db' : 'none',
-                          cursor: isConfirmBlocked ? 'not-allowed' : 'pointer',
-                          background: isConfirmBlocked
+                          border: (isConfirmBlocked || isConfirming || loading) ? '1px solid #d1d5db' : 'none',
+                          cursor: (isConfirmBlocked || isConfirming || loading) ? 'not-allowed' : 'pointer',
+                          background: (isConfirmBlocked || isConfirming || loading)
                             ? '#f3f4f6'
                             : 'linear-gradient(135deg, #10b981, #059669)',
-                          color: isConfirmBlocked ? '#9ca3af' : '#fff',
+                          color: (isConfirmBlocked || isConfirming || loading) ? '#9ca3af' : '#fff',
                           fontSize: 12.5,
                           fontWeight: 600,
-                          boxShadow: isConfirmBlocked ? 'none' : '0 1px 4px rgba(16,185,129,0.25)',
+                          boxShadow: (isConfirmBlocked || isConfirming || loading) ? 'none' : '0 1px 4px rgba(16,185,129,0.25)',
                         }}
                         title={confirmButtonLabel}
                       >
-                        <CheckCircle size={14} />
-                        {confirmButtonLabel}
+                        {isConfirming ? (
+                          <>
+                            <Loader2 size={14} className="animate-spin" />
+                            <span>{t('updatingProcess', intakeLanguage) || 'Confirming...'}</span>
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle size={14} />
+                            {confirmButtonLabel}
+                          </>
+                        )}
                       </button>
                     </div>
 

@@ -17,8 +17,6 @@ import { useLanguage } from '@/context/LanguageContext';
 import { getScenarios, listRuns, getRun, deleteRun, runSimulation, runScenarioSimulation } from '../lib/apiService';
 import AIInsightsPanel from './AIInsightsPanel';
 import AIChatWidget from './AIChatWidget';
-import ResourceChangesView from '../components/ResourceChangesView';
-import { computeResourceChanges, computeTaskChanges } from '../lib/resourceDiff';
 import { computeComparisonMetrics } from '../lib/whatIfComparison';
 import { getBottleneckView, prepareResultForMetrics } from '../lib/resultsHelper';
 import { useAnalystView, Hint, LABELS, formatPlainLanguage } from '../lib/labels';
@@ -652,6 +650,79 @@ function ResourceUtilizationSection({ results, isAnalystView = false, lang = 'en
   );
 }
 
+function CostComparisonCard({ cm, baseFin, wiFin, currency, isAnalystView, lang }) {
+  const money = (n) => `${currency} ${Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+  const worse = cm.costMeaningful && cm.costDelta > 0;
+  const better = cm.costMeaningful && cm.costDelta < 0;
+  const noBenefit = !cm.cycleTimeMeaningful && !cm.throughputMeaningful;
+  const baseRes = baseFin?.resources || {};
+  const wiRes = wiFin?.resources || {};
+  const ids = Array.from(new Set([...Object.keys(baseRes), ...Object.keys(wiRes)]));
+  const resRows = ids.map((id) => ({
+    id,
+    name: wiRes[id]?.name || baseRes[id]?.name || id,
+    qtyBefore: baseRes[id]?.quantity ?? 0,
+    qtyAfter: wiRes[id]?.quantity ?? 0,
+    before: Number(baseRes[id]?.total_cost || 0),
+    after: Number(wiRes[id]?.total_cost || 0),
+  })).filter((r) => r.before > 0 || r.after > 0);
+  return (
+    <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: 20, marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <span style={{ fontSize: 15, fontWeight: 800, color: '#0f172a' }}>{isAnalystView ? 'Cost comparison' : 'Cost: current setup vs idea'}</span>
+        <span style={{
+          fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 6,
+          background: worse ? '#fee2e2' : better ? '#dcfce7' : '#f1f5f9',
+          color: worse ? '#b91c1c' : better ? '#15803d' : '#64748b',
+        }}>
+          {cm.costMeaningful ? `${cm.costDelta > 0 ? '+' : ''}${cm.costDelta.toFixed(1)}%` : t('results_noMeaningfulChange', lang)}
+        </span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, fontSize: 13 }}>
+        <div><div style={{ color: '#64748b' }}>{isAnalystView ? t('results_baseline', lang) : t('results_currentSetup', lang)}</div><div style={{ fontWeight: 800, fontSize: 18 }}><bdi dir="ltr">{money(cm.baseCost)}</bdi></div></div>
+        <div><div style={{ color: '#6b4de6' }}>{isAnalystView ? t('results_whatIfScenario', lang) : t('results_ideaToTry', lang)}</div><div style={{ fontWeight: 800, fontSize: 18 }}><bdi dir="ltr">{money(cm.wiCost)}</bdi> <span style={{ fontSize: 12, color: cm.costAbs > 0 ? '#b91c1c' : '#15803d' }}>({cm.costAbs > 0 ? '+' : ''}{money(cm.costAbs)})</span></div></div>
+        <div><div style={{ color: '#64748b' }}>Cost per customer</div><div style={{ fontWeight: 700 }}><bdi dir="ltr">{money(cm.baseCostPerCustomer)} → {money(cm.wiCostPerCustomer)}</bdi></div></div>
+        <div><div style={{ color: '#64748b' }}>Paid time with no work</div><div style={{ fontWeight: 700 }}><bdi dir="ltr">{money(cm.baseIdleCost)} → {money(cm.wiIdleCost)}</bdi></div></div>
+      </div>
+      {resRows.length > 0 && (
+        <div style={{ marginTop: 14, overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+            <thead>
+              <tr style={{ color: '#64748b', textAlign: 'left' }}>
+                <th style={{ padding: '6px 8px 6px 0' }}>Resource</th>
+                <th style={{ padding: '6px 8px' }}>Quantity</th>
+                <th style={{ padding: '6px 8px' }}>{isAnalystView ? 'Cost before' : 'Cost now'}</th>
+                <th style={{ padding: '6px 8px' }}>{isAnalystView ? 'Cost after' : 'Cost with idea'}</th>
+                <th style={{ padding: '6px 0 6px 8px' }}>Difference</th>
+              </tr>
+            </thead>
+            <tbody>
+              {resRows.map((r) => {
+                const diff = r.after - r.before;
+                return (
+                  <tr key={r.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                    <td style={{ padding: '6px 8px 6px 0', fontWeight: 600 }}>{r.name}</td>
+                    <td style={{ padding: '6px 8px' }}>{r.qtyBefore === r.qtyAfter ? r.qtyAfter : `${r.qtyBefore} → ${r.qtyAfter}`}</td>
+                    <td style={{ padding: '6px 8px' }}><bdi dir="ltr">{money(r.before)}</bdi></td>
+                    <td style={{ padding: '6px 8px' }}><bdi dir="ltr">{money(r.after)}</bdi></td>
+                    <td style={{ padding: '6px 0 6px 8px', fontWeight: 700, color: diff > 0 ? '#b91c1c' : diff < 0 ? '#15803d' : '#64748b' }}><bdi dir="ltr">{diff > 0 ? '+' : ''}{money(diff)}</bdi></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {worse && noBenefit && (
+        <div style={{ marginTop: 12, fontSize: 12.5, color: '#b91c1c', fontWeight: 600 }}>Costs more but gives no meaningful improvement in time or output.</div>
+      )}
+      {!cm.costHasCI && (
+        <div style={{ marginTop: 8, fontSize: 11.5, color: '#94a3b8' }}>Single-run estimate: no confidence interval available.</div>
+      )}
+    </div>
+  );
+}
+
 function KeyTakeaways({ lines, isAnalystView = false, lang = 'en' }) {
   if (!lines || lines.length === 0) return null;
   const look = {
@@ -1046,91 +1117,6 @@ export default function ResultsPage() {
     const safeWI = prepareResultForMetrics(whatifResults, idToLabel);
     return computeComparisonMetrics(safeBase, safeWI, idToLabel);
   }, [hasWhatIf, baselineResults, whatifResults, idToLabel]);
-
-  // Determine if currently viewing a scenario run
-  const isScenarioRun = useMemo(() => {
-    if (selectedRun) {
-      return Boolean(selectedRun.scenarioId);
-    }
-    if (activeScenarioKey && activeScenarioKey !== 'baseline') {
-      return true;
-    }
-    if (hasWhatIf) {
-      return true;
-    }
-    if (results && (results.resource_changes !== undefined || results.is_scenario)) {
-      return true;
-    }
-    return false;
-  }, [selectedRun, activeScenarioKey, hasWhatIf, results]);
-
-  const currentResourceChanges = useMemo(() => {
-    if (!isScenarioRun) return [];
-    if (results && Array.isArray(results.resource_changes)) {
-      return results.resource_changes;
-    }
-    if (selectedRun && Array.isArray(selectedRun.results?.resource_changes)) {
-      return selectedRun.results.resource_changes;
-    }
-    if (selectedRun && Array.isArray(selectedRun.resource_changes)) {
-      return selectedRun.resource_changes;
-    }
-    if (whatifResults && Array.isArray(whatifResults.resource_changes)) {
-      return whatifResults.resource_changes;
-    }
-    // Check active scenario entry in scenarioList
-    if (activeScenarioKey && activeScenarioKey !== 'baseline') {
-      const entry = scenarioList.find((s) => s.id === activeScenarioKey);
-      if (entry?.results && Array.isArray(entry.results.resource_changes)) {
-        return entry.results.resource_changes;
-      }
-      if (entry && Array.isArray(entry.resource_changes)) {
-        return entry.resource_changes;
-      }
-    }
-    // Fallback: compare scenario resources vs baseline resources if available
-    try {
-      const rawBase = localStorage.getItem('spot:baselineResults');
-      const baseProc = rawBase ? JSON.parse(rawBase) : null;
-      if (baseProc?.resources && results?.resources) {
-        return computeResourceChanges(baseProc, results);
-      }
-    } catch {}
-    return [];
-  }, [isScenarioRun, results, selectedRun, whatifResults, activeScenarioKey, scenarioList]);
-
-  const currentTaskChanges = useMemo(() => {
-    if (!isScenarioRun) return [];
-    if (results && Array.isArray(results.task_changes)) {
-      return results.task_changes;
-    }
-    if (selectedRun && Array.isArray(selectedRun.results?.task_changes)) {
-      return selectedRun.results.task_changes;
-    }
-    if (selectedRun && Array.isArray(selectedRun.task_changes)) {
-      return selectedRun.task_changes;
-    }
-    if (whatifResults && Array.isArray(whatifResults.task_changes)) {
-      return whatifResults.task_changes;
-    }
-    if (activeScenarioKey && activeScenarioKey !== 'baseline') {
-      const entry = scenarioList.find((s) => s.id === activeScenarioKey);
-      if (entry?.results && Array.isArray(entry.results.task_changes)) {
-        return entry.results.task_changes;
-      }
-      if (entry && Array.isArray(entry.task_changes)) {
-        return entry.task_changes;
-      }
-    }
-    try {
-      const rawBase = localStorage.getItem('spot:baselineResults');
-      const baseProc = rawBase ? JSON.parse(rawBase) : null;
-      if (baseProc?.nodes && results?.nodes) {
-        return computeTaskChanges(baseProc, results);
-      }
-    } catch {}
-    return [];
-  }, [isScenarioRun, results, selectedRun, whatifResults, activeScenarioKey, scenarioList]);
   
   const { id: bnId, label: bnLabel, data: bnData } = getPrimaryBottleneck(results, idToLabel);
 
@@ -1417,16 +1403,6 @@ export default function ResultsPage() {
       {/* DASHBOARD CONTAINER */}
       <main style={{ padding: '32px', display: 'flex', flexDirection: 'column', gap: 24 }}>
 
-        {/* Changes from baseline section (shown for any scenario run, hidden for baseline) */}
-        {isScenarioRun && (
-          <ResourceChangesView
-            changes={currentResourceChanges}
-            taskChanges={currentTaskChanges}
-            title={isAnalystView ? "Changes from baseline" : "Changes from current setup"}
-            target={results?.target || selectedRun?.config?.target}
-          />
-        )}
-
         {/* TABS */}
         <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e2e8f0', overflowX: 'auto' }}>
           {tabs.map(t => {
@@ -1596,6 +1572,9 @@ export default function ResultsPage() {
 
         {tab === 'financial' && (
           <>
+            {hasWhatIf && comparisonMetrics?.hasCost && (
+              <CostComparisonCard cm={comparisonMetrics} baseFin={baselineResults?.financial_summary} wiFin={whatifResults?.financial_summary} currency={currency} isAnalystView={isAnalystView} lang={effectiveLanguage} />
+            )}
             {!(results?.financial_summary?.total_cost > 0) && (
               <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', borderLeft: '4px solid #06b6d4', padding: '18px 22px' }}>
                 <p style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', margin: '0 0 6px' }}>{t('results_noCostFigures', effectiveLanguage)}</p>
@@ -2077,6 +2056,11 @@ export default function ResultsPage() {
                 </div>
               </div>
             </div>
+
+            {/* Financial comparison */}
+            {comparisonMetrics.hasCost && (
+              <CostComparisonCard cm={comparisonMetrics} baseFin={baselineResults?.financial_summary} wiFin={whatifResults?.financial_summary} currency={currency} isAnalystView={isAnalystView} lang={effectiveLanguage} />
+            )}
 
             {/* Descriptive callout */}
             <div style={{

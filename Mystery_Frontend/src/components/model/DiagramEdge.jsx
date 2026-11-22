@@ -1,27 +1,47 @@
-import { bestPorts, connectionAnchors, elCenter, isXorGateway, outlineAnchor } from './bpmnGeometry';
+import {
+  bestPorts,
+  connectionAnchors,
+  elCenter,
+  isXorGateway,
+  outlineAnchor,
+  computeOrthogonalWaypoints,
+  generateRoundedSvgPath,
+  computeEdgeLabelPosition,
+  isMergeGateway,
+} from './bpmnGeometry';
 
 function xorBranchLabel(conn, from, elements, connections) {
   let labelText = conn.label || conn.name;
-  if (labelText || !from?.type || !isXorGateway(from.type)) return labelText;
-  const outgoing = connections.filter(c => (c.fromId === from.id || c.from === from.id));
-  if (outgoing.length >= 2) {
-    const sorted = [...outgoing].sort((a, b) => {
-      const toA = elements.find(e => e.id === a.toId || e.id === a.to);
-      const toB = elements.find(e => e.id === b.toId || e.id === b.to);
-      return (toA ? toA.position.y : 0) - (toB ? toB.position.y : 0);
-    });
-    const idx = sorted.findIndex(c => c.id === conn.id);
-    if (idx === 0) return 'Yes';
-    if (idx === 1) return 'No';
-    return `Branch ${idx + 1}`;
+  if (!labelText && from?.type && isXorGateway(from.type) && !isMergeGateway(from, connections)) {
+    const outgoing = connections.filter(c => (c.fromId === from.id || c.from === from.id));
+    if (outgoing.length >= 2) {
+      const sorted = [...outgoing].sort((a, b) => {
+        const toA = elements.find(e => e.id === a.toId || e.id === a.to);
+        const toB = elements.find(e => e.id === b.toId || e.id === b.to);
+        return (toA ? toA.position.y : 0) - (toB ? toB.position.y : 0);
+      });
+      const idx = sorted.findIndex(c => c.id === conn.id);
+      if (idx === 0) labelText = 'Yes';
+      else if (idx === 1) labelText = 'No';
+      else labelText = `Branch ${idx + 1}`;
+    }
   }
-  if (outgoing.length === 1) return 'Yes';
-  return labelText;
+
+  if (!labelText) return '';
+
+  if (conn.probability !== undefined && conn.probability !== null && !String(labelText).includes('%')) {
+    const probVal = Number(conn.probability);
+    if (!Number.isNaN(probVal)) {
+      const probPct = Math.round(probVal <= 1 ? probVal * 100 : probVal);
+      return `${labelText} (${probPct}%)`;
+    }
+  }
+  return String(labelText);
 }
 
 /**
- * Sequence / message / association flow. Endpoints sit on each element's
- * drawn outline so both ends meet the glyphs.
+ * BPMN 2.0 Sequence / message / association flow with 90-degree orthogonal Manhattan routing,
+ * rounded corners, and crisp pill badge labels.
  */
 export function DiagramEdge({
   conn,
@@ -38,44 +58,28 @@ export function DiagramEdge({
   const to = elements.find(e => e.id === conn.toId || e.id === conn.to);
   if (!from || !to) return null;
 
-  const { fp, tp } = bestPorts(from, to);
-  if (typeof window !== 'undefined' && window.__DEBUG_BPMN__) {
-    console.debug(`[DiagramEdge] type=${conn.type} (${from.type}->${to.type}) fp=(${Math.round(fp.x)},${Math.round(fp.y)}) tp=(${Math.round(tp.x)},${Math.round(tp.y)})`);
-  }
-  const mx = (fp.x + tp.x) / 2;
-  const my = (fp.y + tp.y) / 2;
-  const bend = conn.bend || { x: 0, y: 0 };
-  const cx = mx + bend.x;
-  const cy = my + bend.y;
+  const waypoints = computeOrthogonalWaypoints(from, to, conn, elements, connections);
+  const fp = waypoints[0] || { x: 0, y: 0 };
+  const tp = waypoints[waypoints.length - 1] || { x: 0, y: 0 };
+
+  const midIndex = Math.floor((waypoints.length - 1) / 2);
+  const pA = waypoints[midIndex] || fp;
+  const pB = waypoints[midIndex + 1] || tp;
+  const cx = (pA.x + pB.x) / 2;
+  const cy = (pA.y + pB.y) / 2;
+
   const isMsg = conn.type === 'message-flow';
   const isAssoc = conn.type === 'association';
   const col = selected ? '#0284c7' : active ? '#0ea5e9' : '#4b5563';
-  const d = `M ${fp.x} ${fp.y} Q ${cx} ${cy} ${tp.x} ${tp.y}`;
+  const d = generateRoundedSvgPath(waypoints, 6);
   const safeId = String(conn.id).replace(/[^a-zA-Z0-9_-]/g, '_');
   const markerId = `arrow-${isMsg ? 'open' : 'filled'}-${safeId}-${selected ? 'sel' : active ? 'act' : 'norm'}`;
   const startMarkerId = `circle-start-${safeId}-${selected ? 'sel' : active ? 'act' : 'norm'}`;
 
   const labelText = xorBranchLabel(conn, from, elements, connections);
-
-  let textX = 0;
-  let textY = 0;
-  if (labelText) {
-    const t = 0.35;
-    const lx = (1 - t) * (1 - t) * fp.x + 2 * (1 - t) * t * cx + t * t * tp.x;
-    const ly = (1 - t) * (1 - t) * fp.y + 2 * (1 - t) * t * cy + t * t * tp.y;
-    const segDx = cx - fp.x;
-    const segDy = cy - fp.y;
-    const segLen = Math.hypot(segDx, segDy) || 1;
-    let nx = -segDy / segLen;
-    let ny = segDx / segLen;
-    if (ny > 0) { nx = -nx; ny = -ny; }
-    if (Math.abs(ny) < 0.1 && Math.abs(segDy) > Math.abs(segDx)) {
-      nx = segDx >= 0 ? -1 : 1;
-      ny = -0.5;
-    }
-    textX = lx + nx * 14;
-    textY = ly + ny * 14;
-  }
+  const labelPos = labelText ? computeEdgeLabelPosition(waypoints, conn, from, to) : { x: 0, y: 0 };
+  const badgeW = labelText ? Math.max(34, labelText.length * 7 + 14) : 0;
+  const badgeH = 20;
 
   return (
     <g
@@ -148,18 +152,26 @@ export function DiagramEdge({
       />
 
       {labelText && (
-        <g transform={`translate(${textX}, ${textY})`} style={{ pointerEvents: 'none', userSelect: 'none' }}>
-          <text x={0} y={0} textAnchor="middle" dominantBaseline="central" fontSize="11" fontWeight="700" stroke="#ffffff" strokeWidth="4" strokeLinejoin="round">
-            {labelText}
-          </text>
+        <g transform={`translate(${labelPos.x}, ${labelPos.y})`} style={{ pointerEvents: 'none', userSelect: 'none' }}>
+          <rect
+            x={-badgeW / 2}
+            y={-badgeH / 2}
+            width={badgeW}
+            height={badgeH}
+            rx={4}
+            fill="#ffffff"
+            stroke="#cbd5e1"
+            strokeWidth={1}
+            filter="drop-shadow(0px 1px 2px rgba(0,0,0,0.06))"
+          />
           <text
             x={0}
             y={0}
             textAnchor="middle"
             dominantBaseline="central"
-            fontSize="11"
+            fontSize="10.5"
             fontWeight="700"
-            fill={labelText === 'Yes' ? '#16a34a' : labelText === 'No' ? '#dc2626' : '#1e293b'}
+            fill={labelText.startsWith('Yes') ? '#16a34a' : labelText.startsWith('No') ? '#dc2626' : '#1e293b'}
           >
             {labelText}
           </text>

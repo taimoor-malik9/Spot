@@ -4,24 +4,33 @@ import { Loader2, Send, Sparkles, X, Maximize2, Minimize2, Plus, AlertCircle, Ch
 import { useNavigate } from 'react-router-dom';
 import { applyAiOption, solveProblem } from '../lib/apiService';
 import { useExpandablePanel } from '../hooks/useExpandablePanel';
-import { useAnalystView, Hint, formatPlainLanguage } from '../lib/labels';
-import ResourceChangesView from './ResourceChangesView';
+import { useAnalystView, formatPlainLanguage } from '../lib/labels';
+import { fmtMin, fmtRs, pctChange, buildVerdict, VERDICT_TONES } from '../lib/optionVerdict';
 
 function number(value, digits = 1) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric.toFixed(digits) : '—';
 }
 
-function changeText(value) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return '—';
-  return `${numeric > 0 ? '+' : ''}${numeric.toFixed(1)}%`;
-}
-
-function changeColor(value) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric) || numeric === 0) return '#64748b';
-  return numeric < 0 ? '#15803d' : '#dc2626';
+function OptionStat({ label, value, pct, goodWhen }) {
+  let note = null;
+  let color = '#64748b';
+  if (pct != null) {
+    if (Math.abs(pct) < 5) {
+      note = 'about the same';
+    } else {
+      note = `${pct > 0 ? '+' : ''}${pct.toFixed(0)}%`;
+      const good = goodWhen === 'up' ? pct > 0 : pct < 0;
+      color = good ? '#15803d' : '#dc2626';
+    }
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: '#64748b', lineHeight: 1.3 }}>{label}</div>
+      <div style={{ fontSize: 15, fontWeight: 800, color: '#0f172a' }}>{value}</div>
+      {note && <div style={{ fontSize: 11, fontWeight: 700, color }}>{note}</div>}
+    </div>
+  );
 }
 
 function makeId(prefix = 'msg') {
@@ -166,6 +175,7 @@ export default function SpotAssistant({ open, onClose, processId, ensureProcessS
           id: makeId('question'),
           type: 'question',
           content: response.question,
+          suggestedMinutes: response.suggested_minutes ?? null,
           answered: false,
           answerValue: null,
           userPrompt: trimmed,
@@ -233,6 +243,7 @@ export default function SpotAssistant({ open, onClose, processId, ensureProcessS
     const newConfig = {
       ...threadConfig,
       arrival_rate: 1 / value,
+      arrival_confirmed: true,
     };
     setThreadConfig(newConfig);
     saveThread(nextList, newConfig);
@@ -265,6 +276,7 @@ export default function SpotAssistant({ open, onClose, processId, ensureProcessS
           id: makeId('question'),
           type: 'question',
           content: response.question,
+          suggestedMinutes: response.suggested_minutes ?? null,
           answered: false,
           answerValue: null,
           userPrompt: promptToRun,
@@ -321,8 +333,6 @@ export default function SpotAssistant({ open, onClose, processId, ensureProcessS
 
       const scenario = await applyAiOption(id, definition);
       const scenarioId = scenario?._id || scenario?.id;
-      const resource_changes = scenario?.resource_changes || definition.resource_changes || [];
-      const task_changes = scenario?.task_changes || definition.task_changes || [];
 
       setMessages((prev) => {
         const next = prev.map((m) => {
@@ -332,13 +342,7 @@ export default function SpotAssistant({ open, onClose, processId, ensureProcessS
               ...m,
               scenarioState: {
                 ...currentScenarioState,
-                [variant.label]: {
-                  loading: false,
-                  created: true,
-                  scenarioId,
-                  resource_changes,
-                  task_changes,
-                },
+                [variant.label]: { loading: false, created: true, scenarioId },
               },
             };
           }
@@ -374,6 +378,23 @@ export default function SpotAssistant({ open, onClose, processId, ensureProcessS
   }
 
   // New Chat handler
+  function handleChangeArrival() {
+    const current = threadConfig.arrival_rate > 0 ? Number((1 / threadConfig.arrival_rate).toFixed(2)) : null;
+    const questionMsg = {
+      id: makeId('question'),
+      type: 'question',
+      content: 'How often does a customer arrive? (e.g. every 10 minutes)',
+      suggestedMinutes: current,
+      answered: false,
+      answerValue: null,
+      userPrompt: lastUserPrompt,
+      timestamp: Date.now(),
+    };
+    const updated = [...messages, questionMsg];
+    setMessages(updated);
+    saveThread(updated);
+  }
+
   function handleClearChat() {
     setMessages([]);
     setThreadConfig({});
@@ -658,6 +679,7 @@ export default function SpotAssistant({ open, onClose, processId, ensureProcessS
                   isExpanded={isExpanded}
                   onApplyVariant={(variant) => handleApplyVariant(msg.id, variant, msg.evidenceData)}
                   onOpenScenario={handleOpenScenario}
+                  onChangeArrival={handleChangeArrival}
                 />
               );
             }
@@ -774,7 +796,7 @@ export default function SpotAssistant({ open, onClose, processId, ensureProcessS
  * Answers a pending question right inside the thread without replacing anything.
  */
 function InlineQuestionCard({ questionMsg, isExpanded, disabled, onAnswer }) {
-  const [minutesInput, setMinutesInput] = useState('');
+  const [minutesInput, setMinutesInput] = useState(questionMsg.suggestedMinutes ? String(questionMsg.suggestedMinutes) : '');
   const [localError, setLocalError] = useState('');
 
   const handleInlineSubmit = (e) => {
@@ -880,7 +902,7 @@ function InlineQuestionCard({ questionMsg, isExpanded, disabled, onAnswer }) {
  * Evidence Card Component:
  * Each card maintains its own table and scenario creation state.
  */
-function EvidenceCard({ evidenceMsg, isExpanded, onApplyVariant, onOpenScenario }) {
+function EvidenceCard({ evidenceMsg, isExpanded, onApplyVariant, onOpenScenario, onChangeArrival }) {
   const [isAnalystView] = useAnalystView();
   const evidence = evidenceMsg.evidenceData;
   const scenarioState = evidenceMsg.scenarioState || {};
@@ -891,36 +913,13 @@ function EvidenceCard({ evidenceMsg, isExpanded, onApplyVariant, onOpenScenario 
     evidence?.target?.metric === 'cycle_time' ||
     (target?.metric !== 'waiting' && target?.metric !== 'throughput' && target?.metric !== 'cost' && (evidenceMsg?.userPrompt && /cycle[- ]?time/i.test(evidenceMsg.userPrompt)));
 
-  const isCostGoal =
-    target?.metric === 'cost' ||
-    evidence?.target?.metric === 'cost' ||
-    (!target?.metric && /cost|money|expensive|reduce cost/i.test(evidenceMsg?.userPrompt || ''));
-
-  const isWaitingGoal =
-    target?.metric === 'waiting' ||
-    evidence?.target?.metric === 'waiting';
-
-  const isThroughputGoal =
-    target?.metric === 'throughput' ||
-    evidence?.target?.metric === 'throughput';
-
-  let changeColumnHeader = isAnalystView ? 'Change vs baseline (%)' : 'Change vs current setup (%)';
-  if (isCostGoal) {
-    changeColumnHeader = 'Cost change (%)';
-  } else if (isCycleTimeGoal) {
-    changeColumnHeader = isAnalystView ? 'Cycle time change (%)' : 'Total time change (%)';
-  } else if (isWaitingGoal) {
-    changeColumnHeader = 'Wait time change (%)';
-  } else if (isThroughputGoal) {
-    changeColumnHeader = 'Throughput change (%)';
-  }
-
   const getMetricChange = (variant) => {
     if (!variant || !variant.delta_vs_baseline) return null;
-    const metric = target?.metric || (isCostGoal ? 'cost' : (isCycleTimeGoal ? 'cycle_time' : 'waiting'));
+    const metric = target?.metric || (isCycleTimeGoal ? 'cycle_time' : 'waiting');
     if (metric === 'cycle_time') return variant.delta_vs_baseline.cycle_time_pct;
     if (metric === 'throughput') return variant.delta_vs_baseline.throughput_pct ?? variant.delta_vs_baseline.wait_pct;
     if (metric === 'cost') {
+      if (variant.delta_vs_baseline.cost_per_customer_pct != null) return variant.delta_vs_baseline.cost_per_customer_pct;
       const baseCost = Number(evidence?.baseline?.total_cost);
       const costAbs = Number(variant.delta_vs_baseline.cost_abs);
       if (!baseCost || Number.isNaN(costAbs)) return null;
@@ -932,33 +931,19 @@ function EvidenceCard({ evidenceMsg, isExpanded, onApplyVariant, onOpenScenario 
   const rows = evidence
     ? [
         { label: isAnalystView ? 'Baseline' : 'Current setup', metrics: evidence.baseline, change: null, baseline: true },
-        ...evidence.variants.map((variant) => {
-          const matchingDef = evidence?.variant_definitions?.find((d) => d.label === variant.label || d.name === variant.label);
-          const fullVariant = {
-            ...variant,
-            action: variant.action || matchingDef?.action || variant.label,
-            how_to_do: variant.how_to_do || matchingDef?.how_to_do,
-            option_type: variant.option_type || matchingDef?.option_type || 'realistic',
-            is_realistic: variant.is_realistic ?? matchingDef?.is_realistic ?? true,
-            trade_off_exceeded: variant.trade_off_exceeded ?? matchingDef?.trade_off_exceeded ?? false,
-            trade_off_summary: variant.trade_off_summary || matchingDef?.trade_off_summary || '',
-          };
-          return {
-            label: variant.label,
-            action: fullVariant.action,
-            how_to_do: fullVariant.how_to_do,
-            metrics: variant.metrics,
-            change: getMetricChange(variant),
-            variant: fullVariant,
-          };
-        }),
+        ...evidence.variants.map((variant) => ({
+          label: variant.label,
+          metrics: variant.metrics,
+          change: getMetricChange(variant),
+          variant,
+        })),
       ]
     : [];
 
   const recommendedLabel = evidence?.best?.label;
   const targetMet = evidence?.target_met;
   const achievedPct = evidence?.achieved_pct;
-  const bestCostDelta = evidence?.best?.delta_vs_baseline?.cost_abs;
+  const bestCostDelta = evidence?.best?.delta_vs_baseline?.cost_per_customer_abs;
 
   return (
     <div
@@ -1006,7 +991,7 @@ function EvidenceCard({ evidenceMsg, isExpanded, onApplyVariant, onOpenScenario 
                 {targetMet ? 'Target reached' : 'Best achievable'}: {achievedPct != null ? `${achievedPct}%` : '—'}
               </span>
               <span style={{ color: '#475569', fontWeight: 600 }}>
-                Cost change: {bestCostDelta > 0 ? `+Rs ${bestCostDelta}` : bestCostDelta < 0 ? `-Rs ${Math.abs(bestCostDelta)}` : 'Rs 0'}
+                {bestCostDelta != null && (<>Cost per customer: {bestCostDelta > 0 ? `+Rs ${bestCostDelta}` : bestCostDelta < 0 ? `-Rs ${Math.abs(bestCostDelta)}` : 'no change'}</>)}
               </span>
             </div>
           </div>
@@ -1064,320 +1049,129 @@ function EvidenceCard({ evidenceMsg, isExpanded, onApplyVariant, onOpenScenario 
         {formatPlainLanguage(evidence?.summary, { isAnalystView })}
       </div>
 
-      {/* Comparison Table */}
-      <div
-        style={{
-          overflowX: 'auto',
-          background: '#fff',
-          border: '1px solid #e2e8f0',
-          borderRadius: 10,
-        }}
-      >
-        <table
-          style={{
-            width: '100%',
-            minWidth: isExpanded ? 820 : 700,
-            borderCollapse: 'collapse',
-            fontSize: isExpanded ? 13.5 : 12.5,
-          }}
-        >
-          <thead>
-            <tr style={{ background: '#f8fafc', color: '#475569', textAlign: 'left' }}>
-              <th style={{ padding: '10px 12px' }}>Option</th>
-              <th style={{ padding: '10px 8px' }}>Avg wait time</th>
-              <th style={{ padding: '10px 8px' }}>Wait time change</th>
-              <th style={{ padding: '10px 8px' }}>Total time per patient (start to finish)</th>
-              <th style={{ padding: '10px 8px' }}>{changeColumnHeader}</th>
-              <th style={{ padding: '10px 8px' }}>{isAnalystView ? 'Throughput' : <Hint term="throughput">Customers served / hr</Hint>}</th>
-              <th style={{ padding: '10px 8px' }}>Cost for this run</th>
-              <th style={{ padding: '10px 12px' }} />
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => {
-              const isRowRecommended =
-                !row.baseline &&
-                evidence?.best?.recommended === true &&
-                evidence?.no_meaningful_change !== true &&
-                row.label === recommendedLabel &&
-                row.variant?.option_type !== 'what_if' &&
-                row.variant?.is_realistic !== false &&
-                Math.abs(row.change || 0) >= 5.0;
-              const state = scenarioState[row.label] || {};
-              const isCreating = Boolean(state.loading);
-              const createdScenarioId = state.scenarioId;
-              const hasCreated = Boolean(state.created);
+      {/* One card per option */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {rows.map((row) => {
+          const base = evidence.baseline || {};
+          const m = row.metrics || {};
+          const goalMetric = target?.metric || (isCycleTimeGoal ? 'cycle_time' : 'waiting');
+          const waitPct = pctChange(base.avg_wait_time, m.avg_wait_time);
+          const cycPct = pctChange(base.avg_cycle_time, m.avg_cycle_time);
+          const tpPct = pctChange(base.throughput_per_hour, m.throughput_per_hour);
+          const cpcPct = pctChange(base.cost_per_customer, m.cost_per_customer);
+          const cpcAbs = Number.isFinite(Number(base.cost_per_customer)) && Number.isFinite(Number(m.cost_per_customer))
+            ? Number(m.cost_per_customer) - Number(base.cost_per_customer) : null;
 
-              return (
-                <tr
-                  key={row.label}
-                  style={{
-                    background: isRowRecommended ? '#f0fdf4' : '#fff',
-                    borderTop: '1px solid #e2e8f0',
-                  }}
-                >
-                  <td
-                    style={{
-                      padding: '10px 12px',
-                      fontWeight: row.baseline || isRowRecommended ? 700 : 600,
-                      color: '#334155',
-                    }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
-                      <span>{formatPlainLanguage(row.action || row.label, { isAnalystView })}</span>
-                      {isRowRecommended && (
-                        <span
-                          style={{
-                            color: '#166534',
-                            background: '#dcfce7',
-                            borderRadius: 999,
-                            padding: '2px 8px',
-                            fontSize: 10.5,
-                            fontWeight: 700,
-                          }}
-                        >
-                          Recommended
-                        </span>
-                      )}
-                      {!row.baseline && !isRowRecommended && (row.variant?.option_type === 'what_if' || row.variant?.is_realistic === false) && (
-                        <span
-                          style={{
-                            color: '#92400e',
-                            background: '#fef3c7',
-                            borderRadius: 999,
-                            padding: '2px 8px',
-                            fontSize: 10.5,
-                            fontWeight: 700,
-                          }}
-                        >
-                          What-if only (needs a real change you must arrange)
-                        </span>
-                      )}
-                      {!row.baseline && !isRowRecommended && (row.variant?.option_type === 'realistic' || row.variant?.is_realistic === true) && (
-                        <span
-                          style={{
-                            color: '#1e40af',
-                            background: '#dbeafe',
-                            borderRadius: 999,
-                            padding: '2px 8px',
-                            fontSize: 10.5,
-                            fontWeight: 600,
-                          }}
-                        >
-                          Realistic option
-                        </span>
-                      )}
-                    </div>
+          const verdict = buildVerdict({ row, goalMetric, cpcPct, cpcAbs });
+          const vt = VERDICT_TONES[verdict.tone];
 
-                    {/* Short "How to do this" line per option */}
-                    {!row.baseline && (row.how_to_do || row.variant?.how_to_do) && (
-                      <div style={{ marginTop: 4, color: '#475569', fontSize: 11.5, fontWeight: 500, lineHeight: 1.4 }}>
-                        <strong style={{ color: '#334155' }}>How to do this: </strong>
-                        {formatPlainLanguage(row.how_to_do || row.variant?.how_to_do, { isAnalystView })}
-                      </div>
-                    )}
+          const isRowRecommended =
+            !row.baseline &&
+            evidence?.best?.recommended === true &&
+            evidence?.no_meaningful_change !== true &&
+            row.label === recommendedLabel &&
+            Math.abs(row.change || 0) >= 5.0;
+          const state = scenarioState[row.label] || {};
+          const isCreating = Boolean(state.loading);
+          const hasCreated = Boolean(state.created);
 
-                    {/* Before creation: show proposed resource and task changes */}
-                    {!row.baseline && (() => {
-                      const def = evidence?.variant_definitions?.find((d) => d.label === row.label);
-                      const resChanges = def?.resource_changes || row.variant?.resource_changes || [];
-                      const taskChanges = def?.task_changes || row.variant?.task_changes || [];
+          return (
+            <div
+              key={row.label}
+              style={{
+                border: `1px solid ${isRowRecommended ? '#86efac' : '#e2e8f0'}`,
+                background: isRowRecommended ? '#f0fdf4' : row.baseline ? '#f8fafc' : '#fff',
+                borderRadius: 12,
+                padding: '12px 14px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 10,
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <div style={{ fontWeight: 800, color: '#0f172a', fontSize: isExpanded ? 14.5 : 13.5 }}>
+                  {formatPlainLanguage(row.label, { isAnalystView })}
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {isRowRecommended && (
+                    <span style={{ background: '#dcfce7', color: '#166534', borderRadius: 999, padding: '2px 9px', fontSize: 11, fontWeight: 700 }}>Recommended</span>
+                  )}
+                  <span style={{ background: vt.bg, color: vt.fg, borderRadius: 999, padding: '2px 9px', fontSize: 11, fontWeight: 700 }}>{verdict.text}</span>
+                </div>
+              </div>
 
-                      return (
-                        <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11 }}>
-                          <div>
-                            <span style={{ fontWeight: 700, color: '#475569' }}>Resource changes: </span>
-                            {resChanges.length === 0 ? (
-                              <span style={{ color: '#94a3b8' }}>None</span>
-                            ) : (
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 2, paddingLeft: 6 }}>
-                                {resChanges.map((ch, ci) => (
-                                  <span
-                                    key={ci}
-                                    style={{
-                                      fontWeight: 600,
-                                      color: ch.direction === 'decrease' || ch.direction === 'removed'
-                                        ? '#dc2626'
-                                        : (ch.direction === 'increase' || ch.direction === 'new' ? '#15803d' : '#b45309'),
-                                    }}
-                                  >
-                                    {ch.summary || `${ch.name}: ${ch.before} → ${ch.after} (${ch.delta_text})`}
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-                          </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10 }}>
+                <OptionStat
+                  label={isAnalystView ? 'Avg wait' : 'Waiting in line'}
+                  value={fmtMin(m.avg_wait_time)}
+                  pct={row.baseline ? null : waitPct}
+                  goodWhen="down"
+                />
+                <OptionStat
+                  label={isAnalystView ? 'Cycle time' : 'Total time per customer'}
+                  value={fmtMin(m.avg_cycle_time)}
+                  pct={row.baseline ? null : cycPct}
+                  goodWhen="down"
+                />
+                <OptionStat
+                  label={isAnalystView ? 'Throughput / hr' : 'Customers served per hour'}
+                  value={number(m.throughput_per_hour, 1)}
+                  pct={row.baseline ? null : tpPct}
+                  goodWhen="up"
+                />
+                <OptionStat
+                  label="Cost per customer"
+                  value={fmtRs(m.cost_per_customer)}
+                  pct={row.baseline ? null : cpcPct}
+                  goodWhen="down"
+                />
+              </div>
 
-                          <div>
-                            <span style={{ fontWeight: 700, color: '#475569' }}>Task changes: </span>
-                            {taskChanges.length === 0 ? (
-                              <span style={{ color: '#94a3b8' }}>None</span>
-                            ) : (
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 2, paddingLeft: 6 }}>
-                                {taskChanges.map((tch, ti) => (
-                                  <span
-                                    key={ti}
-                                    style={{
-                                      fontWeight: 600,
-                                      color: tch.direction === 'decrease' ? '#15803d' : '#dc2626',
-                                    }}
-                                  >
-                                    {tch.summary || `${tch.task}: ${tch.before} → ${tch.after} (${tch.delta_text})`}
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })()}
-                  </td>
-                  <td style={{ padding: '10px 8px', color: '#334155' }}>
-                    {number(row.metrics?.avg_wait_time, 1)} min
-                  </td>
-                  <td style={{ padding: '10px 8px', color: '#334155' }}>
-                    {row.baseline ? (
-                      '—'
-                    ) : (() => {
-                      const baseWait = evidence.baseline?.avg_wait_time ?? 0;
-                      const candWait = row.metrics?.avg_wait_time ?? 0;
-                      const delta = Number((candWait - baseWait).toFixed(1));
-                      const deltaPct = baseWait >= 0.05
-                        ? Number((((candWait - baseWait) / baseWait) * 100).toFixed(1))
-                        : (delta > 0 ? 100 : 0);
-                      const isWorse = delta > 0;
-                      const exceedsLimit = row.variant?.trade_off_exceeded || (deltaPct > 15.0 && delta > 0.5);
-
-                      return (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                          <span style={{ fontWeight: 600, color: delta === 0 ? '#64748b' : (isWorse ? '#dc2626' : '#15803d') }}>
-                            {delta > 0 ? `+${delta}` : delta} min ({deltaPct > 0 ? `+${deltaPct}` : deltaPct}%)
-                          </span>
-                          {exceedsLimit && (
-                            <span style={{ fontSize: 10, fontWeight: 700, color: '#dc2626' }}>
-                              ⚠️ Exceeds +15% limit
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })()}
-                  </td>
-                  <td style={{ padding: '10px 8px', color: '#334155' }}>
-                    {number(row.metrics?.avg_cycle_time, 1)} min
-                    {!row.baseline && evidence.baseline?.avg_cycle_time != null && row.metrics?.avg_cycle_time != null && (
-                      (() => {
-                        const delta = Number((row.metrics.avg_cycle_time - evidence.baseline.avg_cycle_time).toFixed(1));
-                        if (delta === 0) return null;
-                        return (
-                          <span style={{ marginLeft: 4, fontSize: 11, color: delta < 0 ? '#15803d' : '#dc2626' }}>
-                            ({delta > 0 ? `+${delta}` : delta} min)
-                          </span>
-                        );
-                      })()
-                    )}
-                  </td>
-                  <td style={{ padding: '10px 8px', color: changeColor(row.change), fontWeight: 700 }}>
-                    {row.baseline ? '—' : changeText(row.change)}
-                  </td>
-                  <td style={{ padding: '10px 8px', color: '#334155' }}>
-                    {number(row.metrics?.throughput_per_hour, 1)}
-                    {!row.baseline && evidence.baseline?.throughput_per_hour != null && row.metrics?.throughput_per_hour != null && (
-                      (() => {
-                        const delta = Number((row.metrics.throughput_per_hour - evidence.baseline.throughput_per_hour).toFixed(1));
-                        if (delta === 0) return null;
-                        return (
-                          <span style={{ marginLeft: 4, fontSize: 11, color: delta > 0 ? '#15803d' : '#dc2626' }}>
-                            ({delta > 0 ? `+${delta}` : delta})
-                          </span>
-                        );
-                      })()
-                    )}
-                  </td>
-                  <td style={{ padding: '10px 8px', color: '#334155' }}>
-                    Rs {number(row.metrics?.total_cost, 1)}
-                    {!row.baseline && evidence.baseline?.total_cost != null && row.metrics?.total_cost != null && (
-                      (() => {
-                        const delta = Number((row.metrics.total_cost - evidence.baseline.total_cost).toFixed(1));
-                        if (delta === 0) return null;
-                        return (
-                          <span style={{ marginLeft: 4, fontSize: 11, color: delta > 0 ? '#b45309' : '#15803d' }}>
-                            ({delta > 0 ? `+Rs ${delta}` : `-Rs ${Math.abs(delta)}`})
-                          </span>
-                        );
-                      })()
-                    )}
-                  </td>
-                  <td style={{ padding: '8px 12px' }}>
-                    {row.variant && (
-                      hasCreated ? (
-                        <button
-                          type="button"
-                          onClick={() => onOpenScenario(createdScenarioId)}
-                          style={{
-                            whiteSpace: 'nowrap',
-                            border: '1px solid #bbf7d0',
-                            borderRadius: 7,
-                            background: '#f0fdf4',
-                            color: '#166534',
-                            padding: '6px 10px',
-                            fontWeight: 700,
-                            fontSize: 12,
-                            cursor: 'pointer',
-                          }}
-                        >
-                          Scenario created · Open it
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => onApplyVariant(row.variant)}
-                          disabled={isCreating}
-                          style={{
-                            whiteSpace: 'nowrap',
-                            border: '1px solid #c4b5fd',
-                            borderRadius: 7,
-                            background: isCreating ? '#f1f5f9' : '#f5f3ff',
-                            color: isCreating ? '#94a3b8' : '#6b4de6',
-                            padding: '6px 10px',
-                            fontWeight: 700,
-                            fontSize: 12,
-                            cursor: isCreating ? 'not-allowed' : 'pointer',
-                          }}
-                        >
-                          {isCreating ? 'Creating…' : 'Apply as scenario'}
-                        </button>
-                      )
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+              {row.variant && (
+                <div>
+                  {hasCreated ? (
+                    <button
+                      type="button"
+                      onClick={() => onOpenScenario(state.scenarioId)}
+                      style={{ border: '1px solid #bbf7d0', borderRadius: 7, background: '#f0fdf4', color: '#166534', padding: '6px 12px', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}
+                    >
+                      Scenario created · Open it
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => onApplyVariant(row.variant)}
+                      disabled={isCreating}
+                      style={{ border: '1px solid #c4b5fd', borderRadius: 7, background: isCreating ? '#f1f5f9' : '#f5f3ff', color: isCreating ? '#94a3b8' : '#6b4de6', padding: '6px 12px', fontWeight: 700, fontSize: 12, cursor: isCreating ? 'not-allowed' : 'pointer' }}
+                    >
+                      {isCreating ? 'Creating…' : 'Try this as a scenario'}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
 
-      {/* After creation: show confirmed resource and task changes for any scenario created in this card */}
-      {Object.entries(scenarioState).map(([label, s]) => {
-        if (!s?.created) return null;
-        const resChanges = s.resource_changes || [];
-        const taskChanges = s.task_changes || [];
-        return (
-          <div key={label} style={{ marginTop: 8 }}>
-            <ResourceChangesView
-              changes={resChanges}
-              taskChanges={taskChanges}
-              target={evidence?.target}
-              title={`Changes applied for "${label}"`}
-              isCompact={true}
-            />
-          </div>
-        );
-      })}
-
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <p style={{ margin: 0, color: '#64748b', fontSize: 11.5 }}>
-          Simulated over 300 customers, 3 runs. Results depend on run length.
-        </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, color: '#64748b', fontSize: 11.5, lineHeight: 1.5 }}>
+        <span>
+          Percentages compare each option with your current setup. Cost per customer = everything paid out during the test ÷ customers served, so options of different length can be compared fairly.
+        </span>
+        <span>
+          {evidence.assumptions
+            ? `Tested assuming a customer arrives every ${evidence.assumptions.interval_minutes} min, with ${evidence.assumptions.customers_simulated} customers and ${evidence.assumptions.runs} run${evidence.assumptions.runs > 1 ? 's' : ''}${evidence.assumptions.hours_simulated ? ` (about ${fmtMin(evidence.assumptions.hours_simulated * 60)} of activity)` : ''}. This is a quick estimate; use Simulate for a full result. `
+            : 'Quick estimate from a small test. Use Simulate for a full result. '}
+          {onChangeArrival && (
+            <button
+              type="button"
+              onClick={onChangeArrival}
+              style={{ border: 0, background: 'none', color: '#6b4de6', fontWeight: 700, fontSize: 11.5, cursor: 'pointer', padding: 0, textDecoration: 'underline' }}
+            >
+              Change arrival rate
+            </button>
+          )}
+        </span>
       </div>
 
       {/* Row-level errors if any */}

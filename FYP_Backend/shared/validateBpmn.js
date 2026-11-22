@@ -24,6 +24,8 @@
  * @returns {{ errors: string[], repairs: Array<{ rule: string, description: string, nodeId?: string }>, repaired: object }}
  */
 
+import { areExternalPoolAliases } from './stepListHelper.js';
+
 function isStartEvent(type) {
   return type === 'start-event' || (typeof type === 'string' && type.endsWith('-start-event'));
 }
@@ -161,6 +163,7 @@ export function validateBpmn(rawDiagram, options = {}) {
   const repairs = [];
   const unresolvedGateways = [];
   const duplicateWarnings = [];
+  const warnings = [];
 
   // 1. Pure: Deep copy input
   const repaired = JSON.parse(JSON.stringify(rawDiagram || { nodes: [], edges: [], resources: [] }));
@@ -248,19 +251,72 @@ export function validateBpmn(rawDiagram, options = {}) {
   });
 
   // 4. Tasks have a lane Check (Rule 8)
+  const laneNodes = repaired.nodes.filter((n) => n.type === 'lane');
+  const layoutLanes = (rawDiagram.layoutElements || []).filter((l) => l.type === 'lane');
+  const allAvailableLanes = [...laneNodes, ...layoutLanes];
+
   modelNodes.forEach((n) => {
     if (isTask(n.type)) {
       const lane = n.lane || n.data?.lane;
       if (!lane || String(lane).trim() === '') {
         errors.push(`Task "${n.data?.label || n.id}" must be assigned to a swimlane.`);
+        return;
+      }
+
+      // Check canvas lane existence & containment when positions are present
+      if (n.position && n.position.y != null) {
+        const matchingLane = allAvailableLanes.find(
+          (l) => l.id === lane || l.label === lane || l.data?.label === lane
+        );
+        if (!matchingLane) {
+          errors.push(`Task "${n.data?.label || n.id}" is assigned to lane "${lane}" but no matching swimlane exists on the canvas.`);
+        } else if (matchingLane.position && matchingLane.height) {
+          const taskY = n.position.y;
+          const laneY = matchingLane.position.y;
+          const laneH = matchingLane.height;
+          if (taskY < laneY - 15 || taskY > laneY + laneH + 15) {
+            errors.push(`Task "${n.data?.label || n.id}" position (${n.position.x}, ${taskY}) is outside its lane "${matchingLane.label || lane}" bounds.`);
+          }
+        }
       }
     }
   });
 
+  // 4b. Lane has at least one node warning check
+  // Condition 2: Warning ONLY. Must never block Save, and must not flag lanes in manually built or previously saved processes.
+  const isAiContext = Boolean(
+    options.isAiGenerated ||
+    options.origin === 'ai' ||
+    rawDiagram?.isAiGenerated ||
+    rawDiagram?.origin === 'ai' ||
+    rawDiagram?.spec
+  );
+  if (isAiContext) {
+    const lanes = repaired.nodes.filter((n) => n.type === 'lane');
+    lanes.forEach((l) => {
+      const lId = String(l.id || '').toLowerCase();
+      const lLabel = String(l.label || l.data?.label || '').toLowerCase();
+      const hasNode = modelNodes.some((n) => {
+        const nLane = String(n.lane || n.data?.lane || '').toLowerCase();
+        return nLane === lId || nLane === lLabel;
+      });
+      if (!hasNode) {
+        warnings.push(`Lane "${l.label || l.data?.label || l.id}" contains no steps.`);
+      }
+    });
+  }
+
   // 5. Sequence Flows never cross pools, Message Flows only between different pools (Rule 7)
+  const poolNodes = repaired.nodes.filter((n) => n.type === 'pool');
+  const defaultPool = poolNodes.find((p) => !p.data?.isExternal && !p.id.includes('ext')) || poolNodes[0];
+
   const nodePoolMap = {};
   repaired.nodes.forEach((n) => {
-    nodePoolMap[n.id] = n.pool || n.data?.pool || null;
+    if (n.type === 'pool') {
+      nodePoolMap[n.id] = n.id;
+    } else {
+      nodePoolMap[n.id] = n.pool || n.data?.pool || (defaultPool ? defaultPool.id : null);
+    }
   });
 
   // Auto-repair same-pool message events and message flows (Rule 3.ii)
@@ -322,7 +378,7 @@ export function validateBpmn(rawDiagram, options = {}) {
     }
   });
 
-  // Also convert any intermediate message events inside a pool that have no cross-pool message flows
+  // Also convert or connect any intermediate message events inside a pool that have no cross-pool message flows
   modelNodes.forEach((n) => {
     if (isMessageIntermediateCatchEvent(n.type) || isMessageIntermediateThrowEvent(n.type)) {
       const incidentEdges = repaired.edges.filter((e) => e.source === n.id || e.target === n.id);
@@ -332,14 +388,109 @@ export function validateBpmn(rawDiagram, options = {}) {
         return nodePoolMap[n.id] && nodePoolMap[otherId] && nodePoolMap[n.id] !== nodePoolMap[otherId];
       });
       if (!hasCrossPoolMessage) {
-        n.type = 'task';
-        if (n.data) n.data.type = 'task';
-        const nodeLabel = n.data?.label || n.label || n.id;
+        const nodeLabel = String(n.data?.label || n.label || n.id).trim();
+        let extPool = repaired.nodes.find((poolNode) =>
+          poolNode.type === 'pool' && (poolNode.data?.isExternal || poolNode.id.includes('ext'))
+        );
+        if (!extPool) {
+          const partyTitle = 'External Party';
+          const extPoolId = `pool_ext_party`;
+          extPool = {
+            id: extPoolId,
+            type: 'pool',
+            label: partyTitle,
+            origin: 'structural',
+            data: {
+              label: partyTitle,
+              isExternal: true,
+              origin: 'structural',
+            },
+          };
+          repaired.nodes.push(extPool);
+          nodePoolMap[extPool.id] = extPool.id;
+          repairs.push({
+            rule: 'create-external-pool',
+            description: `Created external pool "${partyTitle}" for message flow.`,
+            nodeId: extPool.id,
+          });
+        }
+
+        if (extPool) {
+          const isCatch = isMessageIntermediateCatchEvent(n.type);
+          const msgEdge = {
+            id: `msg_auto_${extPool.id}_${n.id}`,
+            source: isCatch ? extPool.id : n.id,
+            target: isCatch ? n.id : extPool.id,
+            flowType: 'message',
+            type: 'message-flow',
+            data: { label: nodeLabel },
+          };
+          repaired.edges.push(msgEdge);
+          repairs.push({
+            rule: 'message-event-external-flow',
+            description: `Connected message event "${nodeLabel}" to external pool "${extPool.label || extPool.id}".`,
+            nodeId: n.id,
+          });
+        } else {
+          n.type = 'task';
+          if (n.data) n.data.type = 'task';
+          repairs.push({
+            rule: 'same-pool-message',
+            description: `Converted same-pool message event "${nodeLabel}" to task. What role performs "${nodeLabel}"?`,
+            nodeId: n.id,
+            question: `What role performs "${nodeLabel}"?`,
+          });
+        }
+      }
+    }
+  });
+
+  // Also check send-task and receive-task for external pool message connections
+  modelNodes.forEach((n) => {
+    if (n.type === 'send-task' || n.type === 'receive-task') {
+      const incidentEdges = repaired.edges.filter((e) => e.source === n.id || e.target === n.id);
+      const hasCrossPoolMessage = incidentEdges.some((e) => {
+        if (!isMessageFlow(e)) return false;
+        const otherId = e.source === n.id ? e.target : e.source;
+        return nodePoolMap[n.id] && nodePoolMap[otherId] && nodePoolMap[n.id] !== nodePoolMap[otherId];
+      });
+      if (!hasCrossPoolMessage) {
+        const nodeLabel = String(n.data?.label || n.label || n.id).trim();
+        let extPool = repaired.nodes.find((poolNode) =>
+          poolNode.type === 'pool' && (poolNode.data?.isExternal || poolNode.id.includes('ext'))
+        );
+        if (!extPool) {
+          const partyTitle = 'External Party';
+          const extPoolId = `pool_ext_party`;
+          extPool = {
+            id: extPoolId,
+            type: 'pool',
+            label: partyTitle,
+            origin: 'structural',
+            data: { label: partyTitle, isExternal: true, origin: 'structural' },
+          };
+          repaired.nodes.push(extPool);
+          nodePoolMap[extPool.id] = extPool.id;
+          repairs.push({
+            rule: 'create-external-pool',
+            description: `Created external pool "${partyTitle}" for message task.`,
+            nodeId: extPool.id,
+          });
+        }
+        const isRecv = n.type === 'receive-task';
+        const msgEdge = {
+          id: `msg_auto_${extPool.id}_${n.id}`,
+          source: isRecv ? extPool.id : n.id,
+          target: isRecv ? n.id : extPool.id,
+          flowType: 'message',
+          type: 'message-flow',
+          data: { label: nodeLabel },
+        };
+        repaired.edges.push(msgEdge);
         repairs.push({
-          rule: 'same-pool-message',
-          description: `Converted same-pool message event "${nodeLabel}" to task. What role performs "${nodeLabel}"?`,
+          rule: 'message-task-external-flow',
+          description: `Connected message task "${nodeLabel}" to external pool "${extPool.label || extPool.id}".`,
           nodeId: n.id,
-          question: `What role performs "${nodeLabel}"?`,
         });
       }
     }
@@ -361,19 +512,78 @@ export function validateBpmn(rawDiagram, options = {}) {
     }
   });
 
-  // 6. Durations: duration_min <= duration <= duration_max (Rule 10)
-  modelNodes.forEach((n) => {
-    const d = n.data?.duration;
-    const dMin = n.data?.duration_min;
-    const dMax = n.data?.duration_max;
-
-    if (dMin != null && dMax != null) {
-      if (Number(dMin) > Number(dMax)) {
-        errors.push(`Step "${n.data?.label || n.id}" duration_min (${dMin}) cannot be greater than duration_max (${dMax}).`);
+  // External pools are collapsed black boxes with 0 internal elements
+  const extPools = repaired.nodes.filter(
+    (n) => n.type === 'pool' && (n.data?.isExternal || n.isExternal || String(n.id).includes('ext'))
+  );
+  const extPoolIdSet = new Set(extPools.map((p) => p.id));
+  if (extPoolIdSet.size > 0) {
+    modelNodes.forEach((n) => {
+      const p = n.pool || n.data?.pool;
+      if (p && extPoolIdSet.has(p)) {
+        if (defaultPool && defaultPool.id !== p) {
+          n.pool = defaultPool.id;
+          if (n.data) n.data.pool = defaultPool.id;
+          repairs.push({
+            rule: 'collapsed-external-pool',
+            description: `Moved node "${n.data?.label || n.id}" out of external black-box pool "${p}" into main pool "${defaultPool.id}".`,
+            nodeId: n.id,
+          });
+        } else {
+          errors.push(`External pool "${p}" must be a collapsed black box with no internal elements; found node "${n.data?.label || n.id}".`);
+        }
       }
-      if (d != null) {
-        if (Number(d) < Number(dMin) || Number(d) > Number(dMax)) {
-          errors.push(`Step "${n.data?.label || n.id}" duration (${d}) must be between duration_min (${dMin}) and duration_max (${dMax}).`);
+    });
+  }
+
+  // 6. Durations: duration_min <= duration <= duration_max, unit validity, and required presence (Rule 10)
+  const VALID_DURATION_UNITS = new Set([
+    'seconds', 'sec', 's',
+    'minutes', 'min', 'm',
+    'hours', 'hour', 'hr', 'h',
+    'days', 'day', 'd',
+  ]);
+
+  modelNodes.forEach((n) => {
+    const d = n.data?.duration ?? n.duration;
+    const dMin = n.data?.duration_min ?? n.duration_min;
+    const dMax = n.data?.duration_max ?? n.duration_max;
+
+    const hasMin = dMin != null && dMin !== '' && !Number.isNaN(Number(dMin));
+    const hasMax = dMax != null && dMax !== '' && !Number.isNaN(Number(dMax));
+    const hasD = d != null && d !== '' && !Number.isNaN(Number(d));
+
+    if (hasMin && hasMax) {
+      const numMin = Number(dMin);
+      const numMax = Number(dMax);
+      if (Number.isFinite(numMin) && Number.isFinite(numMax)) {
+        if (numMin > numMax) {
+          errors.push(`Step "${n.data?.label || n.label || n.id}" duration_min (${dMin}) cannot be greater than duration_max (${dMax}).`);
+        }
+        if (hasD) {
+          const numD = Number(d);
+          if (Number.isFinite(numD) && (numD < numMin || numD > numMax)) {
+            errors.push(`Step "${n.data?.label || n.label || n.id}" duration (${d}) must be between duration_min (${dMin}) and duration_max (${dMax}).`);
+          }
+        }
+      }
+    }
+
+    if (isTask(n.type)) {
+      const origin = n.origin || n.data?.origin;
+      const isStructural = origin === 'structural' || origin === 'inferred' || n.data?.isStructural === true;
+
+      if (!isStructural && (options.requireDurations || options.strictData)) {
+        if (!hasD && !hasMin) {
+          errors.push(`Task "${n.data?.label || n.label || n.id}" is missing a duration.`);
+        }
+      }
+
+      const rawUnit = n.data?.duration_unit || n.duration_unit;
+      if (rawUnit) {
+        const unit = String(rawUnit).toLowerCase().trim();
+        if (!VALID_DURATION_UNITS.has(unit)) {
+          errors.push(`Task "${n.data?.label || n.label || n.id}" has an invalid duration unit "${rawUnit}". Valid units are seconds, minutes, hours, or days.`);
         }
       }
     }
@@ -593,6 +803,55 @@ export function validateBpmn(rawDiagram, options = {}) {
       }
     }
   });
+
+  // Auto-repair: Remove degenerate Split -> Merge pairs where all branches contain 0 tasks/events
+  let degeneratePairFound = true;
+  while (degeneratePairFound) {
+    degeneratePairFound = false;
+    const currentSeq = repaired.edges.filter((e) => !isMessageFlow(e));
+    const currentGateways = repaired.nodes.filter(isGateway);
+
+    for (const splitGw of currentGateways) {
+      const outEdges = currentSeq.filter((e) => e.source === splitGw.id);
+      if (outEdges.length < 2) continue;
+
+      const firstTarget = outEdges[0].target;
+      const allDirectToSameTarget = outEdges.every((e) => e.target === firstTarget);
+      if (allDirectToSameTarget) {
+        const targetNode = repaired.nodes.find((n) => n.id === firstTarget);
+        if (targetNode && isGateway(targetNode)) {
+          const inSeqToSplit = currentSeq.filter((e) => e.target === splitGw.id);
+          const outFromMerge = currentSeq.filter((e) => e.source === targetNode.id);
+          if (outFromMerge.length > 0) {
+            const nextTargetId = outFromMerge[0].target;
+            inSeqToSplit.forEach((ie) => {
+              ie.target = nextTargetId;
+              delete ie.label;
+              if (ie.data) {
+                delete ie.data.label;
+                ie.data.probability = 1.0;
+              }
+            });
+            const removeEdgeIds = new Set([...outEdges.map((e) => e.id), ...outFromMerge.map((e) => e.id)]);
+            repaired.edges = repaired.edges.filter((e) => !removeEdgeIds.has(e.id));
+            repaired.nodes = repaired.nodes.filter((n) => n.id !== splitGw.id && n.id !== targetNode.id);
+            const sIdx = modelNodes.findIndex((n) => n.id === splitGw.id);
+            if (sIdx !== -1) modelNodes.splice(sIdx, 1);
+            const mIdx = modelNodes.findIndex((n) => n.id === targetNode.id);
+            if (mIdx !== -1) modelNodes.splice(mIdx, 1);
+
+            repairs.push({
+              rule: 'remove-degenerate-gateways',
+              description: `Removed degenerate decision pair "${splitGw.id}" and "${targetNode.id}" with 0 tasks in branches.`,
+              nodeId: splitGw.id,
+            });
+            degeneratePairFound = true;
+            break;
+          }
+        }
+      }
+    }
+  }
 
   // Refresh seqEdges after removals
   seqEdges.length = 0;
@@ -877,6 +1136,42 @@ export function validateBpmn(rawDiagram, options = {}) {
     }
   });
 
+  // 13. Resource Assignment and Quantity Checks (Rule 14)
+  modelNodes.forEach((n) => {
+    if (!isTask(n.type)) return;
+    const res = n.data?.resource || n.resource || n.lane || n.data?.lane;
+    const resObj = n.data?.resources || n.resources;
+    const hasRes = Boolean(res) || (resObj && typeof resObj === 'object' && Object.keys(resObj).length > 0);
+    if (!hasRes) {
+      const fallbackRole = n.lane || n.data?.lane || 'Staff';
+      if (!n.data) n.data = {};
+      n.data.resource = fallbackRole;
+      n.data.resources = { [fallbackRole]: 1 };
+      repairs.push({
+        rule: 'assign-default-resource',
+        description: `Assigned role "${fallbackRole}" to task "${n.data?.label || n.id}".`,
+        nodeId: n.id,
+      });
+    }
+  });
+
+  if (Array.isArray(repaired.resources)) {
+    repaired.resources.forEach((r) => {
+      const q = r.quantity != null ? Number(r.quantity) : (r.count != null ? Number(r.count) : 1);
+      if (Number.isNaN(q) || q < 1) {
+        if (options.strictData) {
+          errors.push(`Resource "${r.name || r.id}" must have quantity >= 1 (found ${r.quantity ?? r.count}).`);
+        } else {
+          r.quantity = 1;
+          repairs.push({
+            rule: 'normalize-resource-count',
+            description: `Set quantity for resource "${r.name || r.id}" to 1.`,
+          });
+        }
+      }
+    });
+  }
+
   if (Array.isArray(rawDiagram?.connections)) {
     repaired.connections = repaired.edges.map((e) => {
       const isMsg = isMessageFlow(e);
@@ -893,11 +1188,16 @@ export function validateBpmn(rawDiagram, options = {}) {
     });
   }
 
+  const rulesCheckedCount = 14;
   return {
+    valid: errors.length === 0,
     errors,
+    warnings,
     repairs,
     repaired,
     unresolvedGateways,
     duplicateWarnings,
+    rulesChecked: rulesCheckedCount,
+    repairsCount: repairs.length,
   };
 }
