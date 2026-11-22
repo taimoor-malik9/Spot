@@ -240,6 +240,14 @@ async function generateInsights(summary, language = 'en', resultId = null) {
     throw new ResultsAiError('summary is required', null);
   }
 
+  // Validate summary is JSON-serializable
+  try {
+    JSON.stringify(summary);
+  } catch (err) {
+    console.error('❌ Summary is not JSON-serializable:', err.message);
+    throw new ResultsAiError('Invalid summary data: contains non-serializable values', null);
+  }
+
   // Check cache by (resultId, language)
   if (resultId) {
     const cached = getCachedExplanation(resultId, language);
@@ -289,8 +297,15 @@ async function chatAboutResults(summary, message, history = [], language = 'en')
     throw new ResultsAiError('message is required', null);
   }
 
+  // Validate summary is JSON-serializable
+  try {
+    JSON.stringify(summary);
+  } catch (err) {
+    console.error('❌ Summary is not JSON-serializable:', err.message);
+    throw new ResultsAiError('Invalid summary data: contains non-serializable values', null);
+  }
+
   // Build conversation history by converting history to Gemini format.
-  // Include context (JSON summary) in the system prompt, not as a fake message.
   const historyTurns = (history || []).slice(-8).map(h => ({
     role: h.role === 'assistant' ? 'model' : 'user',
     parts: [{ text: h.content }],
@@ -301,8 +316,7 @@ async function chatAboutResults(summary, message, history = [], language = 'en')
     { role: 'user', parts: [{ text: message }] },
   ];
 
-  const contextForSystem = `You have access to the following current simulation results:\n${JSON.stringify(summary)}\n\nUse this data to answer the user's questions.`;
-  const promptWithLang = `${CHAT_SYSTEM_PROMPT}\n${contextForSystem}\n${buildLanguagePrompt(language)}`;
+  const promptWithLang = `${CHAT_SYSTEM_PROMPT}\n${buildLanguagePrompt(language)}`;
 
   const raw = await callGemini({
     systemPrompt: promptWithLang,
@@ -310,7 +324,7 @@ async function chatAboutResults(summary, message, history = [], language = 'en')
     expectJson: false,
     maxModels: 1,
     maxAttempts: 1,
-    timeoutMs: 10000,
+    timeoutMs: 15000,
   });
 
   return raw;
