@@ -289,24 +289,17 @@ async function chatAboutResults(summary, message, history = [], language = 'en')
     throw new ResultsAiError('message is required', null);
   }
 
-  // Ground the model in the current numbers on every turn (not just the first),
-  // since the user can switch which scenario/results are being viewed mid-chat.
-  const contextTurn = {
-    role: 'user',
-    parts: [{ text: `Current simulation results summary (JSON):\n${JSON.stringify(summary)}` }],
-  };
-  const ack = { role: 'model', parts: [{ text: 'Got it — I have the current results in context.' }] };
-
+  // Ground the model in the current numbers by injecting context into the first user message.
+  // This avoids fabricated assistant messages which Claude's API does not allow.
   const historyTurns = (history || []).slice(-8).map(h => ({
     role: h.role === 'assistant' ? 'model' : 'user',
     parts: [{ text: h.content }],
   }));
 
+  const contextText = `Current simulation results summary (JSON):\n${JSON.stringify(summary)}\n\nUser question: ${message}`;
   const contents = [
-    contextTurn,
-    ack,
     ...historyTurns,
-    { role: 'user', parts: [{ text: message }] },
+    { role: 'user', parts: [{ text: contextText }] },
   ];
 
   const promptWithLang = `${CHAT_SYSTEM_PROMPT}\n${buildLanguagePrompt(language)}`;
