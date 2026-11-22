@@ -311,15 +311,10 @@ async function chatAboutResults(summary, message, history = [], language = 'en')
     parts: [{ text: h.content }],
   }));
 
-  // On first turn (no history), include the summary. On follow-ups, omit it (keep history).
-  const contents = historyTurns.length === 0
-    ? [
-        { role: 'user', parts: [{ text: `Simulation Results (JSON):\n\n${JSON.stringify(summary)}\n\n---\n\nQuestion: ${message}` }] },
-      ]
-    : [
-        ...historyTurns,
-        { role: 'user', parts: [{ text: message }] },
-      ];
+  const contents = [
+    ...historyTurns,
+    { role: 'user', parts: [{ text: message }] },
+  ];
 
   const promptWithLang = `${CHAT_SYSTEM_PROMPT}\n${buildLanguagePrompt(language)}`;
 
