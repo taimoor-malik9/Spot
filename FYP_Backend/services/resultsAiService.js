@@ -311,10 +311,19 @@ async function chatAboutResults(summary, message, history = [], language = 'en')
     parts: [{ text: h.content }],
   }));
 
+  // Create a compact summary to avoid oversized payloads
+  const compactSummary = {
+    bottleneck: summary.primary_bottleneck,
+    resources: summary.resource_utilization?.slice(0, 3),
+    activities: summary.top_wait_activities?.slice(0, 3),
+    financial: summary.financial,
+    efficiency: summary.system_efficiency_pct,
+  };
+
   // On first turn (no history), include the summary. On follow-ups, omit it (keep history).
   const contents = historyTurns.length === 0
     ? [
-        { role: 'user', parts: [{ text: `Simulation Results (JSON):\n\n${JSON.stringify(summary)}\n\n---\n\nQuestion: ${message}` }] },
+        { role: 'user', parts: [{ text: `Simulation Results (compact):\n\n${JSON.stringify(compactSummary, null, 2)}\n\n---\n\nQuestion: ${message}` }] },
       ]
     : [
         ...historyTurns,
@@ -329,7 +338,7 @@ async function chatAboutResults(summary, message, history = [], language = 'en')
     expectJson: false,
     maxModels: 1,
     maxAttempts: 1,
-    timeoutMs: 15000,
+    timeoutMs: 30000,
   });
 
   return raw;
