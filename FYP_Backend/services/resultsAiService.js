@@ -289,20 +289,20 @@ async function chatAboutResults(summary, message, history = [], language = 'en')
     throw new ResultsAiError('message is required', null);
   }
 
-  // Build conversation history by converting history to Gemini format.
-  // Include context (JSON summary) in the system prompt, not as a fake message.
+  // Ground the model in the current numbers by injecting context into the first user message.
+  // This avoids fabricated assistant messages which Claude's API does not allow.
   const historyTurns = (history || []).slice(-8).map(h => ({
     role: h.role === 'assistant' ? 'model' : 'user',
     parts: [{ text: h.content }],
   }));
 
+  const contextText = `Current simulation results summary (JSON):\n${JSON.stringify(summary)}\n\nUser question: ${message}`;
   const contents = [
     ...historyTurns,
-    { role: 'user', parts: [{ text: message }] },
+    { role: 'user', parts: [{ text: contextText }] },
   ];
 
-  const contextForSystem = `You have access to the following current simulation results:\n${JSON.stringify(summary)}\n\nUse this data to answer the user's questions.`;
-  const promptWithLang = `${CHAT_SYSTEM_PROMPT}\n${contextForSystem}\n${buildLanguagePrompt(language)}`;
+  const promptWithLang = `${CHAT_SYSTEM_PROMPT}\n${buildLanguagePrompt(language)}`;
 
   const raw = await callGemini({
     systemPrompt: promptWithLang,
